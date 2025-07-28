@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import random
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, fbeta_score
 from torch.amp import GradScaler, autocast
 from optim_utils import step_scheduler
 
@@ -32,7 +32,8 @@ def epoch_loop(model,
                task_name,
                bce_thr,
                amp = True,
-               clip_grad = 1.0
+               clip_grad = 1.0,
+               beta = 0.9
                ):
     """
     One epoch over 'loader' considering:
@@ -63,9 +64,9 @@ def epoch_loop(model,
     losses, preds_cpu, targets_cpu = [], [], []
 
     with torch.set_grad_enabled(is_train):
-        # Main Loop
+        # ┏━━━━━━━━━━ Main Loop ━━━━━━━━━━┓
         for xb, y_up, y_dn in loader:
-            # For faster transfer
+            # ┏━━━━━━━━━━ For faster transfer ━━━━━━━━━━┓
             xb = xb.to(device, non_blocking=True)
             targ = (y_up if task_name == "UP" else y_dn).to(device, non_blocking=True)
             
@@ -79,21 +80,10 @@ def epoch_loop(model,
                     logits = model(xb)
                     loss   = criterion(logits, targ.long())
                     pred   = logits.argmax(dim=1)
-            
-            # ┏━━━━━━━━━━ Simplied Forward Pass + Predictions ━━━━━━━━━━┓
-            # if isinstance(criterion, nn.BCEWithLogitsLoss):
-            #     logits = model(xb).squeeze(1)
-            #     loss   = criterion(logits, targ.float())
-            #     pred   = (torch.sigmoid(logits) > bce_thr).long()
-            # else:
-            #     logits = model(xb)
-            #     loss   = criterion(logits, targ.long())
-            #     pred   = logits.argmax(dim=1)
-
 
             # ┏━━━━━━━━━━ Back-prop ━━━━━━━━━━┓
             if is_train:
-                # Cheaper
+                # ┏━━━━━━━━━━ Cheaper ━━━━━━━━━━┓
                 optimizer.zero_grad(set_to_none=True)
                 
                 if amp:
@@ -127,12 +117,13 @@ def epoch_loop(model,
     mean_loss = float(np.mean(losses))
 
     # ┏━━━━━━━━━━ Compute Metrics ━━━━━━━━━━┓
-    acc  = accuracy_score(targs, preds)
-    prec = precision_score(targs, preds, zero_division=0)
-    rec  = recall_score(targs, preds, zero_division=0)
-    f1   = f1_score(targs, preds, zero_division=0)
+    acc   = accuracy_score(targs, preds)
+    prec  = precision_score(targs, preds, zero_division=0)
+    rec   = recall_score(targs, preds, zero_division=0)
+    f1    = f1_score(targs, preds, zero_division=0)
+    fbeta = fbeta_score(targs, preds, beta = beta, zero_division = 0)
 
-    return mean_loss, acc, prec, rec, f1
+    return mean_loss, acc, prec, rec, f1, fbeta
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -149,7 +140,8 @@ def model_train(model,
                 MAX_EPOCHS, 
                 task_name,
                 scheduler,
-                bce_thr
+                bce_thr,
+                beta
                 ):
     """
     Full training loop with early stopping on validation loss.
@@ -167,28 +159,30 @@ def model_train(model,
 
     for epoch in range(1, MAX_EPOCHS+1):
         # ┏━━━━━━━━━━ Training ━━━━━━━━━━┓
-        tr_loss, tr_acc, tr_prec, tr_rec, tr_f1 = epoch_loop(model, 
-                                                             train_loader, 
-                                                             criterion, 
-                                                             device, 
-                                                             optimizer, 
-                                                             task_name,
-                                                             bce_thr,
-                                                             amp = True,
-                                                             clip_grad = 1.0
-                                                  )
+        tr_loss, tr_acc, tr_prec, tr_rec, tr_f1, tr_fbeta = epoch_loop(model, 
+                                                                       train_loader, 
+                                                                       criterion, 
+                                                                       device, 
+                                                                       optimizer, 
+                                                                       task_name,
+                                                                       bce_thr,
+                                                                       amp = True,
+                                                                       clip_grad = 1.0,
+                                                                       beta = beta
+                                                            )
 
         # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
-        val_loss, val_acc, val_prec, val_rec, val_f1 = epoch_loop(model, 
-                                                                  val_loader, 
-                                                                  criterion, 
-                                                                  device, 
-                                                                  None, 
-                                                                  task_name,
-                                                                  bce_thr,
-                                                                  amp = True,
-                                                                  clip_grad = 0.0
-                                                       )
+        val_loss, val_acc, val_prec, val_rec, val_f1, val_fbeta = epoch_loop(model, 
+                                                                             val_loader, 
+                                                                             criterion, 
+                                                                             device, 
+                                                                             None, 
+                                                                             task_name,
+                                                                             bce_thr,
+                                                                             amp = True,
+                                                                             clip_grad = 0.0,
+                                                                             beta = beta
+                                                                   )
         
         # ┏━━━━━━━━━━ Record losses ━━━━━━━━━━┓
         train_losses.append(tr_loss)
@@ -219,8 +213,8 @@ def model_train(model,
     # ┏━━━━━━━━━━ Compute and print averages ━━━━━━━━━━┓
     avg_train = sum(train_losses) / len(train_losses)
     avg_val   = sum(val_losses)   / len(val_losses)
-    print(f"   ▶︎ Average Train Loss: {avg_train:.4f}")
-    print(f"   ▶︎ Average Val   Loss: {avg_val:.4f}\n")
+    print(f"   ▶︎ Average Train Loss: {avg_train:.8f}")
+    print(f"   ▶︎ Average Val   Loss: {avg_val:.8f}\n")
 
     # ┏━━━━━━━━━━ Footer ━━━━━━━━━━┓
     footer = f"▶▶▶ Finished {task_name} training for {MAX_EPOCHS} epochs ◀◀◀"
@@ -241,7 +235,8 @@ def model_test(model,
                device,
                step, 
                task_name,
-               bce_thr
+               bce_thr,
+               beta
             ):
     """
     Run one pass over 'test_loader', print metrics, and log test-loss at given 'step'.
@@ -253,15 +248,17 @@ def model_test(model,
     print("="*len(header) + "\n")
     
     # ┏━━━━━━━━━━ Testing ━━━━━━━━━━┓
-    loss, acc, prec, rec, f1 = epoch_loop(model, 
-                                          test_loader, 
-                                          criterion, 
-                                          device, 
-                                          None, 
-                                          task_name,
-                                          bce_thr,
-                                          amp = True,
-                                          clip_grad = 1.0)
+    loss, acc, prec, rec, f1, fbeta = epoch_loop(model, 
+                                                 test_loader, 
+                                                 criterion, 
+                                                 device, 
+                                                 None, 
+                                                 task_name,
+                                                 bce_thr,
+                                                 amp = True,
+                                                 clip_grad = 1.0,
+                                                 beta = beta   
+                                      )
 
     #  ━━━━━━━━━━┓ Pretty test banner ━━━━━━━━━━┓
     print("#"*23)
@@ -275,49 +272,10 @@ def model_test(model,
     print(f"{'F1':<10}{f1:>10.4f}")
     print("#"*23 + "\n")
 
-    # ┏━━━━━━━━━━ TensorBoard at the provided 'step' ━━━━━━━━━━┓
-    # writer.add_scalar(f"{task_name}/Loss/Test", loss, step)
-
     # ┏━━━━━━━━━━ Footer ━━━━━━━━━━┓
     footer = f"▶▶▶ Finished {task_name} Testing ◀◀◀"
     print("="*len(footer))
     print(footer)
     print("="*len(footer) + "\n")
 
-    return loss, acc, prec, rec, f1
-
-
-# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-# ┃ THRESHOLD FINDER                                                      ┃
-# ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    # def find_best_threshold(model: nn.Module,
-    #                         val_loader: DataLoader,
-    #                         device: torch.device,
-    #                         resolution: float = 0.01) -> float:
-    #     """
-    #     Sweeps τ ∈ {0.00, 0.01, …, 1.00} on the *validation* split and
-    #     returns the τ that maximises binary F1-score (positive class = TP).
-
-    #     • model is used in eval() mode, weights are **not** changed
-    #     • works for BCE-with-logits heads (shape [B,1])
-    #     """
-    #     model.eval()
-    #     logits_all, targets_all = [], []
-    #     with torch.no_grad():
-    #         for xb, y_up, y_dn in val_loader:
-    #             xb   = xb.to(device, non_blocking=True)
-    #             targ = y_up.to(device, non_blocking=True)    # caller decides UP/DN
-    #             log  = model(xb).squeeze(1)
-    #             logits_all.append(log.cpu())
-    #             targets_all.append(targ.cpu())
-
-    #     logits  = torch.cat(logits_all).numpy()
-    #     targets = torch.cat(targets_all).numpy()
-
-    #     best_f1, best_thr = -1.0, 0.5
-    #     for τ in np.arange(0.0, 1.0 + 1e-9, resolution):
-    #         preds = (torch.sigmoid(torch.tensor(logits)) > τ).int().numpy()
-    #         f1    = f1_score(targets, preds, zero_division=0)
-    #         if f1 > best_f1:
-    #             best_f1, best_thr = f1, τ
-    #     return float(best_thr)
+    return loss, acc, prec, rec, f1, fbeta

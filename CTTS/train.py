@@ -2,6 +2,7 @@ import os
 import datetime
 import yaml
 import torch
+import copy
 
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
@@ -10,9 +11,9 @@ from paths import dataset_path
 from data_preprocessing import merge_meta_targets, build_loaders, prepare_dataset
 from model import CTTSModel, EarlyStopping
 
-from train_utils import init_seeds, model_train, model_test
+from train_utils import init_seeds, model_train, model_test, epoch_loop
 from test_utils import get_preds_and_targets, plot_cm_with_metrics
-from optim_utils import get_optimizer,  make_scheduler
+from optim_utils import get_optimizer,  make_scheduler, step_scheduler
 
 
 def main():
@@ -20,7 +21,7 @@ def main():
     # ┃ 1) CONFIG & ASSET SELECTION                                           ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
     base = Path(__file__).parent
-    cfg  = yaml.safe_load(open(base / "config.yaml", "r"))
+    cfg  = yaml.safe_load(open(base / "Candidates/M2_RevIn_LPE_UP/Trial_195/config_195.yaml", "r"))
 
     # Architectural and Hyper & Paramenters Config
     # ┏━━━━━━━━━━ 1.a) For the model architecture parameters i.e. CNN, Transformer, MLP ━━━━━━━━━━┓
@@ -29,13 +30,6 @@ def main():
     # ┏━━━━━━━━━━ 1.b) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
     train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
 
-    # ┏━━━━━━━━━━ 1.c) Training with Cross-Validation or without ━━━━━━━━━━┓
-    cross_validation = cfg["training_mode"]["cross_validation"]
-    if cross_validation:
-        cross_val_props = cfg["training_mode"]["cross_val_props"]
-
-
-
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 2) DIRECTORY STRUCTURE: Data Source and Data Preparation              ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -43,7 +37,7 @@ def main():
     csv_path = dataset_path(cfg["dataset"]["source"],
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
-                            "up")
+                            "merge")
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -57,34 +51,35 @@ def main():
 
     # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    init_seeds(42, force_cuda_deterministic = False)
+    init_seeds(42, force_cuda_deterministic = True)
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
     df_asset = merge_meta_targets(asset_type = cfg["dataset"]["type"],
-                                  asset       = cfg["dataset"]["symbol"],
-                                  data_dir    = str(Path(csv_path).parent),
-                                  output_dir  = str(Path(csv_path).parent)
+                                  asset      = cfg["dataset"]["symbol"],
+                                  data_dir   = str(Path(csv_path).parent),
+                                  output_dir = str(Path(csv_path).parent)
                                 )
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 5) DATALOADERS & CRITERION                                            ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    for task in [("UP")]: # Replace by [("UP", "DN")] for both
+    for task in [(cfg["training_mode"]["optuna_task"])]: # Replace by [("UP", "DN")] for both
         print(f"\n────────── {task} model ──────────")
         model_cfg = architecture_cfg[task]
         trainer_cfg = train_cfg[task]
 
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
-        # Preparation of Dataloaders
+        # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
         dataset_tensor = prepare_dataset(df_asset, seq_len=cfg["sequence_length"])
         
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
+        init_seeds(42, force_cuda_deterministic = True)
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
-                                                 cross_validation = cfg["training_mode"]["cross_validation"],
+                                                 cross_validation = False,
                                                  target           = task,
                                                  props            = cfg["training_mode"]["cross_val_props"],  # list only used if Cross-Validation
                                                  train_frac       = cfg["splits"]["train"],
@@ -92,9 +87,10 @@ def main():
                                                  test_frac        = cfg["splits"]["test"],
                                                  batch_size       = trainer_cfg["batch_size"],
                                                  loss_type        = cfg["training_mode"]["loss_function"],
+                                                 focal_gamma      = cfg["training_mode"]["focal_gamma"],
+                                                 focal_alpha      = (2.954 / (2.954 + 1.1514)),
                                                  device           = device
-                                   )   
-
+                                   )
         
         # ┏━━━━━━━━━━ 5.c) Get the model parameters ━━━━━━━━━━┓
         model_kwargs = dict(
@@ -106,7 +102,7 @@ def main():
             
             # ┏━━━━━━━━━━ Transformer Parameters ━━━━━━━━━━┓
             trans_heads   = model_cfg["transformer"]["heads"],
-            trans_ff      = model_cfg["transformer"]["ffn_dim"],
+            trans_ff      = model_cfg["transformer"]["ffn_dim"] * model_cfg["cnn_embed_dim"][-1],
             trans_layers  = model_cfg["transformer"]["layers"],
             trans_dropout = model_cfg["transformer"]["dropout"],
             trans_activ   = model_cfg["transformer"]["activation"],
@@ -119,7 +115,7 @@ def main():
             
 
             # ┏━━━━━━━━━━ Training Mode Parameters ━━━━━━━━━━┓
-            num_classes   = cfg["training_mode"]["num_classes"],
+            num_classes   = 1 if cfg["training_mode"]["loss_function"] == "bce" else 2,
             padding       = cfg["training_mode"]["padding"],
             context_len   = cfg["sequence_length"]
         )
@@ -127,14 +123,22 @@ def main():
         # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
         # ┃ 6) LOOP OVER FOLDS: MODEL, OPTIMIZER, SCHEDULER & EARLY STOPPING      ┃
         # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-        
-        # Store validation losses
+        n_folds        = len(train_folds)
+        test_precision = None
+        fold_losses    = []
+        fold_accs      = []
+        fold_precs     = []
+        fold_f1s       = []
+        fold_recs      = []
+        fold_fbetas    = []
+
+        # ┏━━━━━━━━━━ Store validation losses ━━━━━━━━━━┓
         val_losses_all_folds = []
         for fold_idx, (train_loader, val_loader, crit) in enumerate(train_folds):
-
             print(f"\n🌀 Fold {fold_idx + 1} / {len(train_folds)}")
 
             # ┏━━━━━━━━━━ 6.a) Instantiate the model (fresh for each fold) ━━━━━━━━━━┓
+            init_seeds(42, force_cuda_deterministic = True)
             model = CTTSModel(**model_kwargs).to(device)
 
             # ┏━━━━━━━━━━ 6.b) Optimizer ━━━━━━━━━━┓
@@ -146,109 +150,153 @@ def main():
             scheduler = make_scheduler(optimizer, sch_cfg, trainer_cfg["max_epochs"])
 
             # ┏━━━━━━━━━━ 6.d) Checkpoints Early Stoppings ━━━━━━━━━━┓
-            fold_suffix = f"fold_{fold_idx + 1}" if cross_validation else "no_cv"
-            checkpoint_dir  = (Path(cfg["paths"]["output_root"]) / "checkpoints" / cfg["dataset"]["symbol"])
-            checkpoint_CV_dir = checkpoint_dir / "CV"
-            checkpoint_No_CV_dir = checkpoint_dir / "No_CV"
-            # Create all directories if they do not exist
-            for path in [checkpoint_dir, checkpoint_CV_dir, checkpoint_No_CV_dir]:
+            checkpoint_dir  = (Path(cfg["paths"]["output_root"]) / "Usual" / cfg["dataset"]["symbol"]) / "Run"
+            
+            # ┏━━━━━━━━━━ 6.e) Create all directories if they do not exist ━━━━━━━━━━┓
+            for path in [checkpoint_dir]:
                 path.mkdir(parents=True, exist_ok=True)
             
-            # ┏━━━━━━━━━━ 6.e) Early Stoppings ━━━━━━━━━━┓
-            checkpoint_path = checkpoint_CV_dir / f"{task}_{fold_suffix}_best.pt" if cross_validation else checkpoint_No_CV_dir / f"{task}_best.pt"
+            # ┏━━━━━━━━━━ 6.f) Early Stoppings ━━━━━━━━━━┓
+            checkpoint_path = checkpoint_dir / f"{task}_best.pt"
             stopper = EarlyStopping(patience   = trainer_cfg["patience"],
-                                    verbose    = True,
+                                    verbose    = False,
                                     delta      = 1e-4,
                                     path       = str(checkpoint_path),
-                                    just_count = False
+                                    just_count = True
                         )
             
             # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
             # ┃ 7) TENSORBOARD WRITERS                                                ┃
             # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-            # TensorBoard Terminal Command: 1) ls ~/miniconda3/envs/CTTS/bin/tensorboard 2) ~/miniconda3/envs/CTTS/bin/tensorboard --logdir Output/runs
+            # ┏━━━━━━━━━━ TensorBoard Terminal Command  ━━━━━━━━━━┓
+            # ┏━━━━━━━━━━ 1) ls ~/miniconda3/envs/CTTS/bin/tensorboard  ━━━━━━━━━━┓
+            # ┏━━━━━━━━━━ 2) ~/miniconda3/envs/CTTS/bin/tensorboard --logdir Output/runs  ━━━━━━━━━━┓
             run_stamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-            tb_dir_fold = Path(cfg["paths"]["output_root"]) / "runs" / cfg["dataset"]["symbol"] / "CV" / f"{task}_{fold_suffix}_{run_stamp}" if cross_validation else Path(cfg["paths"]["output_root"]) / "runs" / cfg["dataset"]["symbol"] / "No_CV" / f"{task}_{run_stamp}"
+            tb_dir_fold = Path(cfg["paths"]["output_root"]) / "Usual" / "Tensorboard" / cfg["dataset"]["symbol"] / f"{task}_{run_stamp}"
             writer = SummaryWriter(tb_dir_fold)
             
+            # ┏━━━━━━━━━━ Best Metrics (temporary) ━━━━━━━━━━┓
+            best_loss  = float('inf')
+            best_acc   = 0.0
+            best_prec  = 0.0
+            best_rec   = 0.0
+            best_f1    = 0.0
+            best_fbeta = 0.0
+            best_state = None        
+
+
+            # ┏━━━━━━━━━━ Train & Validation ━━━━━━━━━━┓
+            for epoch in range(trainer_cfg["max_epochs"]):
+                # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
+                train_loss, _, _, _, _, _ = epoch_loop(model, 
+                                                    train_loader, 
+                                                    crit, 
+                                                    device, 
+                                                    optimizer, 
+                                                    task_name    = cfg["training_mode"]["optuna_task"],
+                                                    bce_thr      = 0.5,
+                                                    amp          = True,
+                                                    clip_grad    = 1.0,
+                                                    beta         = trainer_cfg["fbeta"])
+                
+                # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
+                val_loss, vacc, vprec, vrec, vf1, vfbeta = epoch_loop(model, 
+                                                                    val_loader,   
+                                                                    crit, 
+                                                                    device, 
+                                                                    optimizer = None,
+                                                                    task_name = cfg["training_mode"]["optuna_task"],
+                                                                    bce_thr   = 0.5, 
+                                                                    amp       = True, 
+                                                                    clip_grad = 0.0,
+                                                                    beta      = trainer_cfg["fbeta"])
+                            
+                # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
+                if writer is not None:
+                    writer.add_scalar("Loss/train",      train_loss, epoch)
+                    writer.add_scalar("Loss/validation", val_loss  , epoch)
+
+                # ┏━━━━━━━━━━ Early Stopping ━━━━━━━━━━┓
+                stopper(val_loss, model)
+                step_scheduler(scheduler, epoch, val_loss)
+                if stopper.early_stop:
+                    break
+                
+                # ┏━━━━━━━━━━ If this epoch is the best so far, record its metrics ━━━━━━━━━━┓
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    best_acc  = vacc
+                    best_prec = vprec
+                    best_f1   = vf1
+                    best_rec  = vrec
+                    best_fbeta  = vfbeta
+                    best_state = copy.deepcopy(model.state_dict())
             
-            # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-            # ┃ 8) MODEL TRAINING                                                     ┃
-            # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-            # ┏━━━━━━━━━━ 8.a) Training ━━━━━━━━━━┓
-            val_loss = model_train(model, 
-                                   optimizer, 
-                                   crit, 
-                                   stopper,
-                                   train_loader, 
-                                   val_loader, 
-                                   writer, 
-                                   device,
-                                   MAX_EPOCHS = trainer_cfg["max_epochs"],
-                                   task_name  = task,
-                                   scheduler  = scheduler,
-                                   bce_thr    = trainer_cfg["bce_thr"]
-                       )
+            # ┏━━━━━━━━━━ Close writer after last fold training ━━━━━━━━━━┓
+            if writer is not None:
+                writer.close()
+                writer = None
+
+            # ┏━━━━━━━━━━ Store Best Validation Loss and Metrics (per fold) ━━━━━━━━━━┓
+            fold_losses.append(best_loss)
+            fold_accs.append(best_acc)
+            fold_precs.append(best_prec)
+            fold_f1s.append(best_f1)
+            fold_recs.append(best_rec)
+            fold_fbetas.append(best_fbeta)
+
+            # ┏━━━━━━━━━━ Store Best Precision in Test ━━━━━━━━━━┓
+            if fold_idx == n_folds - 1:
+                
+                # ┏━━━━━━━━━━ Reload the best state into model ━━━━━━━━━━┓
+                model.load_state_dict(best_state)
+
+                # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
+                ckpt_path = checkpoint_dir / f'{cfg["training_mode"]["optuna_task"]}_best.pt'
+                torch.save(best_state, ckpt_path)
+
+                # ┏━━━━━━━━━━ Original split's Model Evaluation on Validation Set & Confusion Matrix ━━━━━━━━━━┓
+                vpreds, vtargets = get_preds_and_targets(model, val_loader, device, cfg["training_mode"]["optuna_task"], cfg["training_mode"]["loss_function"])
+                plot_cm_with_metrics(vpreds, 
+                                    vtargets,
+                                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
+                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Validation',
+                                    out_dir = checkpoint_dir,
+                                    cmap    = "Oranges"
+                                )
+                
+                # ┏━━━━━━━━━━ Original split's Model Evaluation on Test Set & Confusion Matrix ━━━━━━━━━━┓
+                with torch.no_grad():
+                    t_loss, t_acc, t_prec, t_rec, t_f1, t_fbeta = epoch_loop(model, 
+                                                                    test_loader, 
+                                                                    crit, 
+                                                                    device,
+                                                                    optimizer = None, 
+                                                                    task_name = cfg["training_mode"]["optuna_task"], 
+                                                                    bce_thr   = 0.5, 
+                                                                    amp       = True, 
+                                                                    clip_grad = 0.0,
+                                                                    beta      = trainer_cfg["fbeta"])
+                test_accuracy  = t_acc
+                test_precision = t_prec
+                test_recall    = t_rec
+                test_f1        = t_f1
+                test_fbeta     = t_fbeta
+
+                # ┏━━━━━━━━━━ Test Confusion Matrix  ━━━━━━━━━━┓
+                tpreds, ttargets = get_preds_and_targets(model, test_loader, device, cfg["training_mode"]["optuna_task"], cfg["training_mode"]["loss_function"])
+                plot_cm_with_metrics(tpreds, 
+                                    ttargets,
+                                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
+                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test',
+                                    out_dir = checkpoint_dir,
+                                    cmap    = "Blues"
+                                )
+
             
-            # ┏━━━━━━━━━━ 8.b) Store Val Losses ━━━━━━━━━━┓
-            val_losses_all_folds.append(val_loss)            
+            # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
+            torch.cuda.empty_cache()
 
-            # ┏━━━━━━━━━━ 8.c) Save final model info from last fold ━━━━━━━━━━┓
-            if fold_idx == len(train_folds) - 1:
-                final_model = model
-                final_criterion = crit
-                final_checkpoint = stopper.path
-                final_writer = writer
-
-                # Final fold's validation loader for Confusion Matrix and metric purposes
-                final_val_loader = val_loader
-
-        #  ┏━━━━━━━━━━ 8.d) Average Validation Losses from Cross-Validation ━━━━━━━━━━┓
-        if cross_validation:
-            print("🌟 Validation Results 🌟")
-            for i, v in enumerate(val_losses_all_folds, 1):
-                print(f"   Fold {i}: {v:.4f}")
-            print(f"   📊 Average Validation Loss: {sum(val_losses_all_folds) / len(val_losses_all_folds):.4f}")
-
-        
-        # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        # ┃ 9) LOAD MODEL & WEIGHTS         ┃
-        # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-        # ┏━━━━━━━━━━ Reload best weights from last fold (CV) or only model (no CV) ━━━━━━━━━━┓
-        if Path(final_checkpoint).exists():
-            final_model.load_state_dict(torch.load(final_checkpoint, map_location=device))
-        else:
-            print(f"[WARN] No checkpoint found at {final_checkpoint} - testing last-epoch weights")
-
-
-        # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        # ┃ 10) MODEL TESTING               ┃
-        # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-        # ┏━━━━━━━━━━ Run testing on final test_loader ━━━━━━━━━━┓
-        model_test(final_model,
-                   final_criterion,
-                   test_loader,
-                   final_writer,
-                   device,
-                   step      = trainer_cfg["max_epochs"],
-                   task_name = task,
-                   bce_thr   = trainer_cfg["bce_thr"]
-                )
-
-        # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-        # ┃ 11) PLOT & SAVE ALL CONFUSION ┃
-        # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-        # ┏━━━━━━━━━━ Confusion Matrices with metrics ━━━━━━━━━━┓
-        confusion_matrices_dir = checkpoint_CV_dir / "confusion_matrices" if cross_validation else checkpoint_No_CV_dir / "confusion_matrices"
-        for phase, loader, color in [("Validation", final_val_loader, "Oranges"), ("Test", test_loader, "Blues")]:
-            preds, targets = get_preds_and_targets(final_model, loader, device, task, loss_type=cfg["training_mode"]["loss_function"])
-            plot_cm_with_metrics(
-                preds, targets,
-                labels  = (f"No_TP_{task}",f"TP_{task}"),
-                title   = f"{task} — {phase}",
-                out_dir = confusion_matrices_dir,
-                cmap    = color
-            )
 
 
 if __name__ == "__main__":

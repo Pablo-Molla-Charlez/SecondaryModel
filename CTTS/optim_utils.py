@@ -255,5 +255,3 @@ def step_scheduler(sched, epoch: int, val_loss: float):
     else:
         # 4) Other schedulers (e.g. LinearLR, CosineAnnealingLR) → step without metric
         sched.step()
-
-
