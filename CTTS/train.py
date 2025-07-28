@@ -51,7 +51,7 @@ def main():
 
     # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    init_seeds(42, force_cuda_deterministic = True)
+    init_seeds(1493583942, force_cuda_deterministic = True)
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -77,7 +77,7 @@ def main():
         dataset_tensor = prepare_dataset(df_asset, seq_len=cfg["sequence_length"])
         
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
-        init_seeds(42, force_cuda_deterministic = True)
+        init_seeds(1493583942, force_cuda_deterministic = True)
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
                                                  cross_validation = False,
                                                  target           = task,
@@ -138,7 +138,7 @@ def main():
             print(f"\n🌀 Fold {fold_idx + 1} / {len(train_folds)}")
 
             # ┏━━━━━━━━━━ 6.a) Instantiate the model (fresh for each fold) ━━━━━━━━━━┓
-            init_seeds(42, force_cuda_deterministic = True)
+            init_seeds(1493583942, force_cuda_deterministic = True)
             model = CTTSModel(**model_kwargs).to(device)
 
             # ┏━━━━━━━━━━ 6.b) Optimizer ━━━━━━━━━━┓

@@ -250,7 +250,7 @@ def build_loaders(ds: TensorDataset,
     folds = []
 
     # ┏━━━━━━━━━━ Seed for all train‐set shuffles ━━━━━━━━━━┓
-    _seed = 42
+    _seed = 1493583942
 
 
     if not cross_validation:
