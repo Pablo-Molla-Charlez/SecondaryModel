@@ -399,11 +399,11 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     metrics = cv_folds(dataset, params, props, optuna_task, trial.number)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
-    mean_val_loss = metrics["mean_val_loss"]
-    test_prec = metrics["test_prec"]
-    test_rec = metrics["test_rec"]
-    if mean_val_loss > 0.7 or test_prec < 0.5:
-        raise optuna.TrialPruned()
+    # mean_val_loss = metrics["mean_val_loss"]
+    # test_prec = metrics["test_prec"]
+    # test_rec = metrics["test_rec"]
+    # if mean_val_loss > 0.7 or test_prec < 0.4:
+    #     raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
     trial.set_user_attr("mean_val_loss",       metrics["mean_val_loss"])

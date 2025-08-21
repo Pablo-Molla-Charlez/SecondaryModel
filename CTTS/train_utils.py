@@ -19,7 +19,7 @@ def init_seeds(seed: int, force_cuda_deterministic: bool = False):
     if force_cuda_deterministic:
         # Enforce deterministic algorithms
         torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark   = True
+        torch.backends.cudnn.benchmark   = False
         torch.use_deterministic_algorithms(True)
         # Disable TF32 on Ampere+ GPUs for reproducibility
         torch.backends.cuda.matmul.allow_tf32 = False

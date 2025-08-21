@@ -9,8 +9,8 @@ paths:
 
 # ┏━━━━━━━━━━ Which dataset to train on ━━━━━━━━━┓
 dataset:
-  source:  "Bolt"                                   # Chronos | Bolt | Tirex
-  type:    "equities"                               # equities | crypto
+  source:  "Chronos"                                # Chronos | Bolt | Tirex
+  type:    "equities"                               # Equities | Crypto
   symbol:  "SPY"                                    # e.g. SPY or BTC
 
 
@@ -26,123 +26,131 @@ future_offset:   7                                  # Horizon used when generati
 # ┏━━━━━━━━━━━━━━ Training Mode ━━━━━━━━━━━━━━━┓
 training_mode:
   # ┏━━━━━━━━━━━━━━ Optuna ━━━━━━━━━━━━━━━┓
-  cross_validation: false                            # Training with (true) or without (false) Cross-Validation (including Optuna)
-  cross_val_props: 0.40                             # Proportion for the Cross-Validation within the Training Split
-  optuna_task: "UP"                                 # Only for Optuna Optimization
+  cross_validation: false                           # Training with (true) or without (false) Cross-Validation (including Optuna)
+  cross_val_props:  0.40                             # Proportion for the Cross-Validation within the Training Split
+  optuna_task:      "DN"                                 # Only for Optuna Optimization
 
-  loss_function: "cross_entropy"                    # "bce" or "cross_entropy" as loss function
-  num_classes: 2                                    # 1 for bce, 2 for cross_entropy
-  padding: true                                     # For the 1D-CNN
+  loss_function:    "cross_entropy"                              # bce | cross_entropy | focal
+  focal_gamma:      3.5852105111000805
+  focal_alpha:      0.18850587399901642
+  num_classes:      1                                   # 1 (bce) | 2 (cross_entropy, focal)
+  padding:          true                                     # For 1D-CNN
 
   
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
 model_up:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
-  cnn_embed_dim: 128
-  cnn_kernel:    16
-  cnn_stride:    1
-  p_pos_drop:    0.2                                # Positional-dropout
+  cnn_embed_dim: [64]
+  cnn_kernel:    [4]
+  cnn_stride:    [2]
+  p_pos_drop:    0.1490361359420283                # Positional-dropout
 
   # ┏━━━━━━━━━━━━━━ Transformer ━━━━━━━━━━━━━━━┓
   transformer:
     heads:      4
-    layers:     4
-    ffn_dim:    512                                  # Feed-forward inner dim
-    dropout:    0.3
-    activation: "silu"                               # gelu | relu | silu | mish
+    layers:     3
+    ffn_dim:    8                                  # Feed-forward inner dim
+    dropout:    0.2918083354050411
+    activation: "mish"                               # gelu | relu | silu | mish
 
   # ┏━━━━━━━━━━━━━━ MLP Classifier ━━━━━━━━━━━━━━━┓
   classifier:
-    mlp_hidden:   256
-    mlp_dropout:  0.3
-    mlp_activation:   "silu"                          # gelu | relu | silu | mish
+    mlp_hidden:   512
+    mlp_dropout:  0.12831719171010209
+    mlp_activation:   "relu"                          # gelu | relu | silu | mish
     mlp_pooling:      "attention"                     # attention | meanmax
 
 # ┏━━━━━━━━━━ Training hyper-params (UP) ━━━━━━━━┓
 train_up:
   # ┏━━━━━━━━━━ Optimizer ━━━━━━━━┓
-  optimizer:      "ranger"                            # adagrad | rmsprop | adam | adamw | adabelief | ranger
-  lr:             1.0e-4
-  weight_decay:   1.0e-4
+  optimizer:      "adagrad"                            # adagrad | rmsprop | adam | adamw | adabelief | ranger
+  lr:             9.235383791641308e-05
+  weight_decay:   5.405750695992303e-05
 
   # ┏━━━━━━━━━━ Optimizer Parameters ━━━━━━━━┓
-  eps:              1e-8                              # Common for adam | adamw | adabelief | ranger
-  betas:            [0.9, 0.999]                      # Common for adam | adamw | adabelief | ranger
-  lr_decay:         0.0                               # Only for Adagrad
-  alpha:            0.99                              # Only for rmsprop
-  momentum:         0.0                               # Only for rmsprop
-  lookahead_k:      5                                 # Only for ranger (Lookahead)
-  lookahead_alpha:  0.5                               # Only for ranger (Lookahead)
+  eps:              1e-16                              # Only for adabelief
+  betas:            [0.95, 0.98]                      # [beta1, beta2] Common for adam | adamw | adabelief | ranger
+  lr_decay:         0.051591260301809654            # Only for Adagrad
+  #rms_alpha:        0.9336763960402219                # Only for rmsprop
+  #rms_momentum:     0.30881101362483226               # Only for rmsprop
+  lookahead_k:      6                                  # Only for ranger (Lookahead)
+  lookahead_alpha:  0.5                 # Only for ranger (Lookahead)
+  weight_decouple:  True                              # Only for adabelief
+  rectify:          False                               # Only for adabelief
 
   # ┏━━━━━━━━━━ Basic ━━━━━━━━┓
-  batch_size:    128
+  batch_size:    64
   max_epochs:    50
   patience:      35                                   # Early-stopping
-  bce_thr:       0.5                                  # BCE threshold 
+  bce_thr:       0.5                                  # BCE threshold
+  fbeta:         0.9                                  # F-Beta Score (<1 + weight for precision, >1 for recall)
 
   # ┏━━━━━━━━━━ Learning Rate Scheduler ━━━━━━━━┓
   scheduler:                                          # Omit entire block → "none"
-    sch_name: power                                   # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
-    warmup_epochs: 10
-    plateau_patience: 12
-    plateau_factor: 0.3067735184891873
-    power_s: 10                                       # Power Scheduling
-    power_c: 2.0                                      # Power Scheduling
+    sch_name: linear_plateau                                    # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
+    warmup_epochs: 5
+    plateau_patience: 19
+    plateau_factor: 0.46818975818776315
+    power_s: 0.23630352134198931                      # Power Scheduling
+    power_c: 0.42006764977060695                      # Power Scheduling
     exp_s: 5                                          # Exponential Scheduling
     exp_factor: 0.1                                   # Exponential Scheduling
 
 # ┏━━━━━━━━━━━━━━ Model – DN task ━━━━━━━━━━━━━━━┓
 model_dn:
-  # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
-  cnn_embed_dim: 128
-  cnn_kernel:    16
-  cnn_stride:     1
-  p_pos_drop:   0.0                                 # Positional-dropout
+# ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
+  cnn_embed_dim: [256, 128]
+  cnn_kernel:    [8, 8]
+  cnn_stride:    [4, 4]
+  p_pos_drop:    0.3442287792661535                # Positional-dropout
 
   # ┏━━━━━━━━━━━━━━ Transformer ━━━━━━━━━━━━━━━┓
   transformer:
-    heads:      4
-    layers:     4
-    ffn_dim:    512                                   # Feed-forward inner dim
-    dropout:    0.3
-    activation: "silu"                                # gelu | relu | silu | mish
-  
+    heads:      2
+    layers:     3
+    ffn_dim:    8                                  # Feed-forward inner dim
+    dropout:    0.41113158694327917
+    activation: "silu"                               # gelu | relu | silu | mish
+
   # ┏━━━━━━━━━━━━━━ MLP Classifier ━━━━━━━━━━━━━━━┓
   classifier:
-    mlp_hidden:   256
-    mlp_dropout:  0.3
-    mlp_activation:   "silu"                              # gelu | relu | silu | mish
-    mlp_pooling:      "attention"                         # attention | meanmax
+    mlp_hidden:   512
+    mlp_dropout:  0.05732176738929834
+    mlp_activation:   "silu"                          # gelu | relu | silu | mish
+    mlp_pooling:      "meanmax"                     # attention | meanmax
 
 # ┏━━━━━━━━━━ Training hyper-params (DN) ━━━━━━━━┓
 train_dn:
   # ┏━━━━━━━━━━ Optimizer ━━━━━━━━┓
-  optimizer:      "ranger"                            # adagrad | rmsprop | adam | adamw | adabelief | ranger
-  lr:             1.0e-4
-  weight_decay:   1.0e-4
+  optimizer:      "adagrad"                            # adagrad | rmsprop | adam | adamw | adabelief | ranger
+  lr:             1.1256334802872668e-05
+  weight_decay:   0.0003861427434610027
 
   # ┏━━━━━━━━━━ Optimizer Parameters ━━━━━━━━┓
-  eps:              1e-8                              # Common for adam | adamw | adabelief | ranger
-  betas:            [0.9, 0.999]                      # Common for adam | adamw | adabelief | ranger
-  lr_decay:         0.0                               # Only for Adagrad
-  alpha:            0.99                              # Only for rmsprop
-  momentum:         0.0                               # Only for rmsprop
-  lookahead_k:      5                                 # Only for ranger (Lookahead)
-  lookahead_alpha:  0.5                               # Only for ranger (Lookahead)
+  eps:              1e-16                              # Only for adabelief
+  betas:            [0.9, 0.98]                      # [beta1, beta2] Common for adam | adamw | adabelief | ranger
+  lr_decay:         1.4376152378774033e-05          # Only for Adagrad
+  #rms_alpha:        0.9336763960402219                # Only for rmsprop
+  #rms_momentum:     0.30881101362483226               # Only for rmsprop
+  lookahead_k:      6                                  # Only for ranger (Lookahead)
+  lookahead_alpha:  0.5                 # Only for ranger (Lookahead)
+  weight_decouple:  True                              # Only for adabelief
+  rectify:          False                               # Only for adabelief
 
   # ┏━━━━━━━━━━ Basic ━━━━━━━━┓
-  batch_size:    128
+  batch_size:    256
   max_epochs:    50
   patience:      35                                   # Early-stopping
-  bce_thr:       0.5                                  # BCE threshold 
+  bce_thr:       0.5                                  # BCE threshold
+  fbeta:         0.9                                  # F-Beta Score (<1 + weight for precision, >1 for recall)
 
   # ┏━━━━━━━━━━ Learning Rate Scheduler ━━━━━━━━┓
   scheduler:                                          # Omit entire block → "none"
-    sch_name: power                                   # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
-    warmup_epochs: 10
-    plateau_patience: 12
-    plateau_factor: 0.3067735184891873
-    power_s: 10                                       # Power Scheduling
-    power_c: 2.0                                      # Power Scheduling
+    sch_name: cosine_plateau                                    # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
+    warmup_epochs: 5
+    plateau_patience: 20
+    plateau_factor: 0.35715625826383646
+    power_s: 0.23630352134198931                      # Power Scheduling
+    power_c: 0.42006764977060695                      # Power Scheduling
     exp_s: 5                                          # Exponential Scheduling
     exp_factor: 0.1                                   # Exponential Scheduling
