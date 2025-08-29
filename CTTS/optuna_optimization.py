@@ -426,7 +426,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     trial.set_user_attr("test_f1",        metrics["test_f1"])
     trial.set_user_attr("test_fbeta",     metrics["test_fbeta"])
               
-    return metrics["mean_val_loss"], metrics["test_prec"]
+    return metrics["mean_val_loss"], metrics["best_prec"]
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
