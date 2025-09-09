@@ -163,7 +163,84 @@ class LearnablePosEnc(nn.Module):
         return x + pos_vec
 
 
-class CNNEncoder1D(nn.Module):
+# class CNNEncoder1D(nn.Module):
+#     """
+#     1D CNN encoder with optional SAME padding.
+#     - Supports multiple convolutional layers in sequence
+#     - Always starts with in_channels=1
+#     - Learnable positional encoding applied after the final conv
+#     """
+#     def __init__(self,
+#                  context_len: int,
+#                  embed_dim:   [int], # list of out_channels
+#                  kernel_size: [int], # list of kernel sizes
+#                  stride:      [int], # list of strides
+#                  p_pos_drop:  float,
+#                  padding:     bool):
+#         super().__init__()
+
+#         # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
+#         assert len(embed_dim) == len(kernel_size) == len(stride), \
+#             "Error: embed_dim, kernel_size and stride must have the same length "
+        
+#         self.use_padding = padding
+#         self.context_len = context_len
+
+#         # ┏━━━━━━━━━━ Build a Conv1d block for each (embed, kernel, stride) ━━━━━━━━━━┓
+#         convs: list[nn.Module] = []
+#         in_ch   = 1
+
+#         for out_ch, kernel_size, stride in zip(embed_dim, kernel_size, stride):
+#             if self.use_padding:
+#                 # ┏━━━━━━━━━━ Compute number of output tokens: ceil(context_len / stride) ━━━━━━━━━━┓
+#                 out_tokens = math.ceil(context_len / stride)
+#                 # ┏━━━━━━━━━━ Compute total padding needed to produce that many tokens ━━━━━━━━━━┓
+#                 pad_needed = max(0, (out_tokens - 1) * stride + kernel_size - context_len)
+#                 pad_left = pad_needed // 2
+#                 pad_right = pad_needed - pad_left
+#                 convs.append(nn.Sequential(
+#                     nn.ConstantPad1d((pad_left, pad_right), 0),
+#                     nn.Conv1d(in_ch, 
+#                               out_ch, 
+#                               kernel_size = kernel_size, 
+#                               stride = stride, 
+#                               padding = 0)))
+
+#                 n_tokens = out_tokens
+#             else:
+#                 # ┏━━━━━━━━━━ No padding: classic “valid” convolution ━━━━━━━━━━┓
+#                 convs.append(nn.Conv1d(in_ch, 
+#                                        out_ch, 
+#                                        kernel_size = kernel_size, 
+#                                        stride = stride, 
+#                                        padding = 0))
+#                 n_tokens = (context_len - kernel_size) // stride + 1
+
+#             in_ch = out_ch  # next layer’s in_channels
+
+#         # ┏━━━━━━━━━━ Multiple Conv1d always internal-padding=0; we pad manually if requested ━━━━━━━━━━┓
+#         self.convs   = nn.ModuleList(convs)
+        
+#         # ┏━━━━━━━━━━ Learnable positions for exactly n_tokens ━━━━━━━━━━┓
+#         self.pos_enc = LearnablePosEnc(embed_dim[-1], max_len = n_tokens, p_dropout = p_pos_drop)
+
+#         # ┏━━━━━━━━━━ Positional Encoding for exactly n_tokens ━━━━━━━━━━┓
+#         #self.pos_enc = PositionalEncoding(embed_dim[-1], max_len = n_tokens)
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         """
+#         Args:
+#             x: (batch, 1, context_len)
+#         Returns:
+#             (batch, n_tokens, embed_dim)
+#         """
+#         for layer in self.convs:
+#             x = layer(x)                # (batch, out_ch_i, length_i)
+
+#         x = x.transpose(1, 2)           # (batch, length, embed_dims[-1])
+#         return self.pos_enc(x)          # still (batch, length, embed_dims[-1])
+
+class CNNEncoder(nn.Module):
     """
     1D CNN encoder with optional SAME padding.
     - Supports multiple convolutional layers in sequence
@@ -176,7 +253,8 @@ class CNNEncoder1D(nn.Module):
                  kernel_size: [int], # list of kernel sizes
                  stride:      [int], # list of strides
                  p_pos_drop:  float,
-                 padding:     bool):
+                 padding:     bool,
+                 in_channels: int = 1):
         super().__init__()
 
         # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
@@ -186,9 +264,9 @@ class CNNEncoder1D(nn.Module):
         self.use_padding = padding
         self.context_len = context_len
 
-        # ┏━━━━━━━━━━ Build a Conv1d block for each (embed, kernel, stride) ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Build a Conv block for each (embed, kernel, stride) and in_channels is the number of features ━━━━━━━━━━┓
         convs: list[nn.Module] = []
-        in_ch   = 1
+        in_ch   = in_channels
 
         for out_ch, kernel_size, stride in zip(embed_dim, kernel_size, stride):
             if self.use_padding:
@@ -239,6 +317,7 @@ class CNNEncoder1D(nn.Module):
 
         x = x.transpose(1, 2)           # (batch, length, embed_dims[-1])
         return self.pos_enc(x)          # still (batch, length, embed_dims[-1])
+
 
 
 class TransformerEncoder(nn.Module):
@@ -400,6 +479,7 @@ class CTTSModel(nn.Module):
                  cnn_kernel:    [int],
                  cnn_stride:    [int],
                  p_pos_drop:    float,
+                 nb_features:   int,
                  
                  trans_heads:   int,
                  trans_layers:  int,
@@ -431,15 +511,16 @@ class CTTSModel(nn.Module):
         last_embed = cnn_embed_dim[-1]
 
         # ┏━━━━━━━━━━ RevIn ━━━━━━━━━━┓
-        self.revIn = RevIN()
+        self.revIn = RevIN(num_features = nb_features)
 
         # ┏━━━━━━━━━━ CNN ━━━━━━━━━━┓
-        self.cnn   = CNNEncoder1D(context_len = context_len,
+        self.cnn   = CNNEncoder(context_len   = context_len,
                                   embed_dim   = cnn_embed_dim,
                                   kernel_size = cnn_kernel,
                                   stride      = cnn_stride,
                                   p_pos_drop  = p_pos_drop,
-                                  padding     = padding)
+                                  padding     = padding,
+                                  in_channels = nb_features)
         
         # ┏━━━━━━━━━━ Transformer Encoder ━━━━━━━━━━┓
         self.trans = TransformerEncoder(embed_dim  = last_embed,
