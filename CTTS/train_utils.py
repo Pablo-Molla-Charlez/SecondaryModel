@@ -9,22 +9,14 @@ from optim_utils import step_scheduler
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ INITIALIZATION OF SEEDS                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def init_seeds(seed: int, force_cuda_deterministic: bool = False):
+def seed_everything(seed):
     random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    if force_cuda_deterministic:
-        # Enforce deterministic algorithms
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark   = False
-        torch.use_deterministic_algorithms(True)
-        # Disable TF32 on Ampere+ GPUs for reproducibility
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32        = False
-
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ EPOCH LOOPS: TRAINING & TESTING                                       ┃
