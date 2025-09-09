@@ -11,7 +11,7 @@ from paths import dataset_path
 from data_preprocessing import merge_meta_targets, build_loaders, prepare_dataset
 from model import CTTSModel, EarlyStopping
 
-from train_utils import init_seeds, model_train, model_test, epoch_loop
+from train_utils import epoch_loop, seed_everything
 from test_utils import get_preds_and_targets, plot_cm_with_metrics
 from optim_utils import get_optimizer,  make_scheduler, step_scheduler
 
@@ -37,7 +37,7 @@ def main():
     csv_path = dataset_path(cfg["dataset"]["source"],
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
-                            "merge")
+                            "up")
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -50,20 +50,23 @@ def main():
     # device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
     # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    init_seeds(42, force_cuda_deterministic = True)
+    #os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    #os.environ['PYTHONHASHSEED'] = str(1493583942)
+    #init_seeds(1493583942, force_cuda_deterministic = True)
+    seed_everything(1493583942)   
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    df_asset = merge_meta_targets(asset_type = cfg["dataset"]["type"],
-                                  asset      = cfg["dataset"]["symbol"],
-                                  data_dir   = str(Path(csv_path).parent),
-                                  output_dir = str(Path(csv_path).parent)
+    df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
+                                  asset           = cfg["dataset"]["symbol"],
+                                  data_dir        = str(Path(csv_path).parent),
+                                  output_dir      = str(Path(csv_path).parent),
+                                  column_features = cfg['column_features']
                                 )
 
-
+    
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 5) DATALOADERS & CRITERION                                            ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -74,10 +77,14 @@ def main():
 
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
         # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
-        dataset_tensor = prepare_dataset(df_asset, seq_len=cfg["sequence_length"])
+        dataset_tensor = prepare_dataset(df_asset, 
+                                  seq_len          = cfg["sequence_length"],
+                                  column_features  = cfg["column_features"],
+                                  context_features = cfg["context_features"])
         
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
-        init_seeds(42, force_cuda_deterministic = True)
+        #init_seeds(1493583942, force_cuda_deterministic = True)
+        seed_everything(1493583942)  # Re-seed for reproducibility
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
                                                  cross_validation = False,
                                                  target           = task,
@@ -88,7 +95,7 @@ def main():
                                                  batch_size       = trainer_cfg["batch_size"],
                                                  loss_type        = cfg["training_mode"]["loss_function"],
                                                  focal_gamma      = cfg["training_mode"]["focal_gamma"],
-                                                 focal_alpha      = (2.954 / (2.954 + 1.1514)),
+                                                 focal_alpha      = cfg["training_mode"]["focal_alpha"],
                                                  device           = device
                                    )
         
@@ -99,6 +106,7 @@ def main():
             cnn_kernel    = model_cfg["cnn_kernel"],
             cnn_stride    = model_cfg["cnn_stride"],
             p_pos_drop    = model_cfg["p_pos_drop"],
+            nb_features   = len(cfg['column_features']),
             
             # ┏━━━━━━━━━━ Transformer Parameters ━━━━━━━━━━┓
             trans_heads   = model_cfg["transformer"]["heads"],
@@ -138,7 +146,8 @@ def main():
             print(f"\n🌀 Fold {fold_idx + 1} / {len(train_folds)}")
 
             # ┏━━━━━━━━━━ 6.a) Instantiate the model (fresh for each fold) ━━━━━━━━━━┓
-            init_seeds(42, force_cuda_deterministic = True)
+            #init_seeds(1493583942, force_cuda_deterministic = True)
+            seed_everything(1493583942)
             model = CTTSModel(**model_kwargs).to(device)
 
             # ┏━━━━━━━━━━ 6.b) Optimizer ━━━━━━━━━━┓
@@ -176,6 +185,7 @@ def main():
             writer = SummaryWriter(tb_dir_fold)
             
             # ┏━━━━━━━━━━ Best Metrics (temporary) ━━━━━━━━━━┓
+            #best_state = copy.deepcopy(model.state_dict()) 
             best_loss  = float('inf')
             best_acc   = 0.0
             best_prec  = 0.0
@@ -210,6 +220,7 @@ def main():
                                                                     amp       = True, 
                                                                     clip_grad = 0.0,
                                                                     beta      = trainer_cfg["fbeta"])
+                
                             
                 # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
                 if writer is not None:
@@ -247,6 +258,13 @@ def main():
 
             # ┏━━━━━━━━━━ Store Best Precision in Test ━━━━━━━━━━┓
             if fold_idx == n_folds - 1:
+                # ┏━━━━━━━━━━ Reload the best state into model ━━━━━━━━━━┓
+                # if best_state is None:
+                #     print("[WARN] No valid checkpoint found – using last‑epoch weights")
+                # else:
+                #     model.load_state_dict(best_state)
+
+                
                 
                 # ┏━━━━━━━━━━ Reload the best state into model ━━━━━━━━━━┓
                 model.load_state_dict(best_state)
@@ -288,7 +306,7 @@ def main():
                 plot_cm_with_metrics(tpreds, 
                                     ttargets,
                                     labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
-                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test',
+                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test M1+M2',
                                     out_dir = checkpoint_dir,
                                     cmap    = "Blues"
                                 )
@@ -296,8 +314,6 @@ def main():
             
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
             torch.cuda.empty_cache()
-
-
 
 if __name__ == "__main__":
     main()
