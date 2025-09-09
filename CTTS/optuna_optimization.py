@@ -23,9 +23,9 @@ from torch.utils.tensorboard import SummaryWriter
 # ┃ 2. SPECIFIC CLASSES & FUNCTIONS IMPORTS                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 from model import CTTSModel, EarlyStopping
-from train_utils import epoch_loop, init_seeds
+from train_utils import epoch_loop, seed_everything
 from optim_utils import make_scheduler, step_scheduler, get_optimizer
-from data_preprocessing import prepare_dataset, build_loaders
+from data_preprocessing import prepare_dataset, build_loaders, merge_meta_targets
 from paths import dataset_path
 from test_utils import get_preds_and_targets, plot_cm_with_metrics
 
@@ -40,17 +40,18 @@ cfg  = yaml.safe_load(open(base / "config.yaml", "r"))
 train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
 
 # ┏━━━━━━━━━━ 3.c) Fixed Constants ━━━━━━━━━━┓
-seq_len    = cfg["sequence_length"]
-train_frac = cfg["splits"]["train"]
-val_frac   = cfg["splits"]["val"]
-test_frac  = cfg["splits"]["test"]
+seq_len         = cfg["sequence_length"]
+column_features = cfg["column_features"]
+train_frac      = cfg["splits"]["train"]
+val_frac        = cfg["splits"]["val"]
+test_frac       = cfg["splits"]["test"]
 
 # ┏━━━━━━━━━━ 3.d) Cross-Validation ━━━━━━━━━━┓
 cross_validation = cfg["training_mode"]["cross_validation"] # Set it to true
-cross_val_props = cfg["training_mode"]["cross_val_props"]
-optuna_task = cfg["training_mode"]["optuna_task"]
-num_classes = cfg["training_mode"]["num_classes"]
-padding = cfg["training_mode"]["padding"]
+cross_val_props  = cfg["training_mode"]["cross_val_props"]
+optuna_task      = cfg["training_mode"]["optuna_task"]
+num_classes      = cfg["training_mode"]["num_classes"]
+padding          = cfg["training_mode"]["padding"]
 
 # ┏━━━━━━━━━━ 3.e) Client ━━━━━━━━━━┓
 cli = argparse.ArgumentParser()
@@ -71,7 +72,7 @@ print(f"Running on {DEVICE}")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-init_seeds(42, force_cuda_deterministic = True)
+seed_everything(1493583942)
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -79,7 +80,7 @@ init_seeds(42, force_cuda_deterministic = True)
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, float]:
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
-    init_seeds(42, force_cuda_deterministic = True)
+    seed_everything(1493583942)
     folds, test_loader = build_loaders(ds,
                                        cross_validation = True,                    # Must be True
                                        target           = optuna_task,             # "DN" otherwise
@@ -121,13 +122,14 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
             writer = SummaryWriter(tb_trial_dir / f"Trial_{trial_number}")
 
         # ┏━━━━━━━━━━ Model Instantiation per fold ━━━━━━━━━━┓
-        init_seeds(42, force_cuda_deterministic = True)
+        seed_everything(1493583942)
         model = CTTSModel(
                         # ┏━━━━━━━━━━ 1. CNN Architecture ━━━━━━━━━━┓
                         cnn_embed_dim = params["cnn_embed_dim"],
                         cnn_kernel    = params["cnn_kernel"],
                         cnn_stride    = params["cnn_stride"],
                         p_pos_drop    = params["p_pos_drop"],
+                        nb_features  = len(column_features),
                         
                         # ┏━━━━━━━━━━ 2. Transformer Architecture ━━━━━━━━━━┓
                         trans_heads   = params["heads"],
@@ -395,15 +397,15 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     params["betas"] = (beta1, beta2)
 
     # ┏━━━━━━━━━━ CV_Folds Call ━━━━━━━━━━┓
-    init_seeds(42, force_cuda_deterministic = True)
+    seed_everything(1493583942)
     metrics = cv_folds(dataset, params, props, optuna_task, trial.number)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
-    # mean_val_loss = metrics["mean_val_loss"]
-    # test_prec = metrics["test_prec"]
-    # test_rec = metrics["test_rec"]
-    # if mean_val_loss > 0.7 or test_prec < 0.4:
-    #     raise optuna.TrialPruned()
+    mean_val_loss = metrics["mean_val_loss"]
+    test_prec = metrics["test_prec"]
+    test_rec = metrics["test_rec"]
+    if mean_val_loss > 0.7 or test_prec < 0.4 or test_rec < 0.3:
+        raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
     trial.set_user_attr("mean_val_loss",       metrics["mean_val_loss"])
@@ -426,24 +428,33 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     trial.set_user_attr("test_f1",        metrics["test_f1"])
     trial.set_user_attr("test_fbeta",     metrics["test_fbeta"])
               
-    return metrics["mean_val_loss"], metrics["best_prec"]
+    return metrics["mean_val_loss"], metrics["test_fbeta"]
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 7. MAIN FUNCTION                                                      ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 if __name__ == "__main__":
-    # ┏━━━━━━━━━━ 7.a) Omit Warnings ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 7.a) Omit Warnings & CSV Paths ━━━━━━━━━━┓
     warnings.filterwarnings("ignore", category=UserWarning)
+    csv_path = dataset_path(cfg["dataset"]["source"],
+                            cfg["dataset"]["type"].capitalize(),
+                            cfg["dataset"]["symbol"],
+                            "up")
 
     # ┏━━━━━━━━━━ 7.b) Reading CSV ━━━━━━━━━━┓
-    df_spy = pd.read_csv(dataset_path(cfg["dataset"]["source"], 
-                                      cfg["dataset"]["type"].capitalize(), 
-                                      cfg["dataset"]["symbol"], 
-                                      "merge"), parse_dates=["date"])
+    df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
+                                  asset           = cfg["dataset"]["symbol"],
+                                  data_dir        = str(Path(csv_path).parent),
+                                  output_dir      = str(Path(csv_path).parent),
+                                  column_features = cfg['column_features']
+                                )
 
     # ┏━━━━━━━━━━ 7.c) Preparing Data ━━━━━━━━━━┓        
-    dataset = prepare_dataset(df_spy, seq_len=seq_len)
+    dataset = prepare_dataset(df_asset, 
+                              seq_len          = cfg["sequence_length"],
+                              column_features  = cfg['column_features'],
+                              context_features = cfg['context_features'])
     
     # ┏━━━━━━━━━━ 7.d) Prepare Optuna Storage ━━━━━━━━━━┓
     base = Path(__file__).parent
