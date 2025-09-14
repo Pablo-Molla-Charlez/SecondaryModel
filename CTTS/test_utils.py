@@ -65,7 +65,7 @@ def plot_cm_with_metrics(preds, targets, labels, title, out_dir, cmap="Oranges")
     prec  = precision_score(targets, preds, zero_division = 0)
     rec   = recall_score(targets, preds)
     f1    = f1_score(targets, preds)
-    fbeta = fbeta_score(targets, preds, beta = 1.5, zero_division = 0)
+    fbeta = fbeta_score(targets, preds, beta = 0.9, zero_division = 0)
 
     # ┏━━━━━━━━━━  2) Plot ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(4, 4))

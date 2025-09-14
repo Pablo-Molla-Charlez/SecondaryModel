@@ -5,6 +5,7 @@ import random
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, fbeta_score
 from torch.amp import GradScaler, autocast
 from optim_utils import step_scheduler
+import os
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ INITIALIZATION OF SEEDS                                               ┃

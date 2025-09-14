@@ -3,6 +3,7 @@ import datetime
 import yaml
 import torch
 import copy
+import pandas
 
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
@@ -310,6 +311,49 @@ def main():
                                     out_dir = checkpoint_dir,
                                     cmap    = "Blues"
                                 )
+
+                # ┏━━━━━━━━━━ Export test timeline dates + CTTS predictions ━━━━━━━━━━┓
+                try:
+                    # Recompute split sizes to recover test indices
+                    N_windows   = len(dataset_tensor)
+                    n_train_win = int(cfg["splits"]["train"] * N_windows)
+                    n_val_win   = int(cfg["splits"]["val"]   * N_windows)
+                    # idx_test are dataset indices [n_train+n_val, ..., N_windows-1]
+                    idx_test_ds = list(range(n_train_win + n_val_win, N_windows))
+
+                    # Map each dataset index k to its corresponding end-of-window date: df.index[k + seq_len - 1]
+                    seq_len = cfg["sequence_length"]
+                    # df_asset index was set to 'date' in merge_meta_targets
+                    all_dates = df_asset.index
+                    mapped_dates = [all_dates[k + seq_len - 1] for k in idx_test_ds]
+
+                    # Ensure date format as YYYY-MM-DD
+                    date_strs = [d.strftime("%Y-%m-%d") for d in mapped_dates]
+
+                    # Sanity: align lengths
+                    if len(date_strs) != len(tpreds):
+                        print(f"[WARN] Date/predictions length mismatch: dates={len(date_strs)} preds={len(tpreds)}")
+
+                    # Build output DataFrame and write CSV
+                    col_name = f"M2_Pred_{cfg['training_mode']['optuna_task']}"
+                    out_df = pd.DataFrame({
+                        "date": date_strs[:len(tpreds)],
+                        col_name: list(map(int, tpreds.tolist()))
+                    }) if pd is not None else None
+
+                    # Fallback to manual CSV write if pandas unavailable
+                    out_path = checkpoint_dir / f"{cfg['dataset']['symbol']}_{cfg['training_mode']['optuna_task']}_ctts_predictions.csv"
+                    if out_df is not None:
+                        out_df.to_csv(out_path, index=False)
+                    else:
+                        with open(out_path, "w") as f:
+                            f.write(f"date,{col_name}\n")
+                            for d, p in zip(date_strs, tpreds.tolist()):
+                                f.write(f"{d},{int(p)}\n")
+
+                    print(f"Saved CTTS test predictions to {out_path}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to export CTTS predictions CSV: {e}")
 
             
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
