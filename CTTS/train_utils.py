@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,7 +6,6 @@ import random
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, fbeta_score
 from torch.amp import GradScaler, autocast
 from optim_utils import step_scheduler
-import os
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ INITIALIZATION OF SEEDS                                               ┃
@@ -19,6 +19,7 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ EPOCH LOOPS: TRAINING & TESTING                                       ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -31,7 +32,7 @@ def epoch_loop(model,
                bce_thr,
                amp = True,
                clip_grad = 1.0,
-               beta = 0.9
+               beta = 1.15
                ):
     """
     One epoch over 'loader' considering:
@@ -62,9 +63,9 @@ def epoch_loop(model,
     losses, preds_cpu, targets_cpu = [], [], []
 
     with torch.set_grad_enabled(is_train):
-        # ┏━━━━━━━━━━ Main Loop ━━━━━━━━━━┓
+        # Main Loop
         for xb, y_up, y_dn in loader:
-            # ┏━━━━━━━━━━ For faster transfer ━━━━━━━━━━┓
+            # For faster transfer
             xb = xb.to(device, non_blocking=True)
             targ = (y_up if task_name == "UP" else y_dn).to(device, non_blocking=True)
             
@@ -78,10 +79,13 @@ def epoch_loop(model,
                     logits = model(xb)
                     loss   = criterion(logits, targ.long())
                     pred   = logits.argmax(dim=1)
+            
+
+
 
             # ┏━━━━━━━━━━ Back-prop ━━━━━━━━━━┓
             if is_train:
-                # ┏━━━━━━━━━━ Cheaper ━━━━━━━━━━┓
+                # Cheaper
                 optimizer.zero_grad(set_to_none=True)
                 
                 if amp:
@@ -150,7 +154,7 @@ def model_train(model,
     val_losses   = []
 
     # ┏━━━━━━━━━━ Header ━━━━━━━━━━┓
-    header = f"▶▶▶ Starting {task_name} training for {MAX_EPOCHS} epochs ◀◀◀"
+    header = f"▶️▶️▶️ Starting {task_name} training for {MAX_EPOCHS} epochs ◀️◀️◀️"
     print("\n" + "="*len(header))
     print(header)
     print("="*len(header) + "\n")
@@ -158,29 +162,29 @@ def model_train(model,
     for epoch in range(1, MAX_EPOCHS+1):
         # ┏━━━━━━━━━━ Training ━━━━━━━━━━┓
         tr_loss, tr_acc, tr_prec, tr_rec, tr_f1, tr_fbeta = epoch_loop(model, 
-                                                                       train_loader, 
-                                                                       criterion, 
-                                                                       device, 
-                                                                       optimizer, 
-                                                                       task_name,
-                                                                       bce_thr,
-                                                                       amp = True,
-                                                                       clip_grad = 1.0,
-                                                                       beta = beta
-                                                            )
+                                                             train_loader, 
+                                                             criterion, 
+                                                             device, 
+                                                             optimizer, 
+                                                             task_name,
+                                                             bce_thr,
+                                                             amp = True,
+                                                             clip_grad = 1.0,
+                                                             beta = beta
+                                                  )
 
         # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
         val_loss, val_acc, val_prec, val_rec, val_f1, val_fbeta = epoch_loop(model, 
-                                                                             val_loader, 
-                                                                             criterion, 
-                                                                             device, 
-                                                                             None, 
-                                                                             task_name,
-                                                                             bce_thr,
-                                                                             amp = True,
-                                                                             clip_grad = 0.0,
-                                                                             beta = beta
-                                                                   )
+                                                                  val_loader, 
+                                                                  criterion, 
+                                                                  device, 
+                                                                  None, 
+                                                                  task_name,
+                                                                  bce_thr,
+                                                                  amp = True,
+                                                                  clip_grad = 0.0,
+                                                                  beta = beta
+                                                       )
         
         # ┏━━━━━━━━━━ Record losses ━━━━━━━━━━┓
         train_losses.append(tr_loss)
@@ -211,11 +215,11 @@ def model_train(model,
     # ┏━━━━━━━━━━ Compute and print averages ━━━━━━━━━━┓
     avg_train = sum(train_losses) / len(train_losses)
     avg_val   = sum(val_losses)   / len(val_losses)
-    print(f"   ▶︎ Average Train Loss: {avg_train:.8f}")
-    print(f"   ▶︎ Average Val   Loss: {avg_val:.8f}\n")
+    print(f"   ▶︎ Average Train Loss: {avg_train:.4f}")
+    print(f"   ▶︎ Average Val   Loss: {avg_val:.4f}\n")
 
     # ┏━━━━━━━━━━ Footer ━━━━━━━━━━┓
-    footer = f"▶▶▶ Finished {task_name} training for {MAX_EPOCHS} epochs ◀◀◀"
+    footer = f"▶️▶️▶️ Finished {task_name} training for {MAX_EPOCHS} epochs ◀️◀️◀️"
     print("="*len(footer))
     print(footer)
     print("="*len(footer) + "\n")
@@ -240,23 +244,23 @@ def model_test(model,
     Run one pass over 'test_loader', print metrics, and log test-loss at given 'step'.
     """ 
     # ┏━━━━━━━━━━ Header ━━━━━━━━━━┓
-    header = f"▶▶▶ Starting {task_name} Testing ◀◀◀"
+    header = f"▶️▶️▶️ Starting {task_name} Testing ◀️◀️◀️"
     print("\n" + "="*len(header))
     print(header)
     print("="*len(header) + "\n")
     
     # ┏━━━━━━━━━━ Testing ━━━━━━━━━━┓
     loss, acc, prec, rec, f1, fbeta = epoch_loop(model, 
-                                                 test_loader, 
-                                                 criterion, 
-                                                 device, 
-                                                 None, 
-                                                 task_name,
-                                                 bce_thr,
-                                                 amp = True,
-                                                 clip_grad = 1.0,
-                                                 beta = beta   
-                                      )
+                                          test_loader, 
+                                          criterion, 
+                                          device, 
+                                          None, 
+                                          task_name,
+                                          bce_thr,
+                                          amp = True,
+                                          clip_grad = 1.0,
+                                          beta = beta
+                                          )
 
     #  ━━━━━━━━━━┓ Pretty test banner ━━━━━━━━━━┓
     print("#"*23)
@@ -269,9 +273,9 @@ def model_test(model,
     print(f"{'Recall':<10}{rec:>10.4f}")
     print(f"{'F1':<10}{f1:>10.4f}")
     print("#"*23 + "\n")
-
+    
     # ┏━━━━━━━━━━ Footer ━━━━━━━━━━┓
-    footer = f"▶▶▶ Finished {task_name} Testing ◀◀◀"
+    footer = f"▶️▶️▶️ Finished {task_name} Testing ◀️◀️◀️"
     print("="*len(footer))
     print(footer)
     print("="*len(footer) + "\n")
