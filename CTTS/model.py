@@ -544,3 +544,4 @@ class CTTSModel(nn.Module):
         tokens  = self.cnn(x)                # same shape
         encoded = self.trans(tokens)         # (batch, num_classes)
         return self.head(encoded)
+        
