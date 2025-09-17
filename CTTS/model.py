@@ -155,8 +155,6 @@ class LearnablePosEnc(nn.Module):
 
     def forward(self, x):
         L = x.size(1)
-        assert L <= self._max_len, f"sequence length {L} exceeds positional table ({int(self._max_len)})"
-
         idx = torch.arange(x.size(1), device=x.device)
         pos_vec = self.pe(idx)
         pos_vec = F.dropout(pos_vec, p=self.p, training=self.training)
