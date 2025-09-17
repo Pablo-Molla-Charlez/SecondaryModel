@@ -3,7 +3,7 @@ import datetime
 import yaml
 import torch
 import copy
-import pandas
+import pandas as pd
 
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
@@ -11,11 +11,15 @@ from paths import dataset_path
 
 from data_preprocessing import merge_meta_targets, build_loaders, prepare_dataset
 from model import CTTSModel, EarlyStopping
-
-from train_utils import epoch_loop, seed_everything
-from test_utils import get_preds_and_targets, plot_cm_with_metrics
 from optim_utils import get_optimizer,  make_scheduler, step_scheduler
-
+from train_utils import epoch_loop, seed_everything
+from test_utils import (
+    get_preds_and_targets,
+    plot_cm_with_metrics,
+    export_predictions,
+    get_preds_probs,
+    plot_meta_labeling_consensus,
+)
 
 def main():
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -79,9 +83,9 @@ def main():
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
         # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
         dataset_tensor = prepare_dataset(df_asset, 
-                                  seq_len          = cfg["sequence_length"],
-                                  column_features  = cfg["column_features"],
-                                  context_features = cfg["context_features"])
+                                         seq_len          = cfg["sequence_length"],
+                                         column_features  = cfg["column_features"],
+                                         context_features = cfg["context_features"])
         
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
         #init_seeds(1493583942, force_cuda_deterministic = True)
@@ -302,59 +306,36 @@ def main():
                 test_f1        = t_f1
                 test_fbeta     = t_fbeta
 
-                # ┏━━━━━━━━━━ Test Confusion Matrix  ━━━━━━━━━━┓
-                tpreds, ttargets = get_preds_and_targets(model, test_loader, device, cfg["training_mode"]["optuna_task"], cfg["training_mode"]["loss_function"])
-                plot_cm_with_metrics(tpreds, 
-                                    ttargets,
-                                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
-                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test M1+M2',
-                                    out_dir = checkpoint_dir,
-                                    cmap    = "Blues"
-                                )
+                # ┏━━━━━━━━━━ Test Confusion Matrix + Probabilities ━━━━━━━━━━┓
+                tpreds, tprobs, ttargets = get_preds_probs(
+                    model, test_loader, device,
+                    cfg["training_mode"]["optuna_task"],
+                    cfg["training_mode"]["loss_function"]
+                )
+                plot_cm_with_metrics(
+                    tpreds,
+                    ttargets,
+                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
+                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test',
+                    out_dir = checkpoint_dir,
+                    cmap    = "Blues"
+                )
 
-                # ┏━━━━━━━━━━ Export test timeline dates + CTTS predictions ━━━━━━━━━━┓
-                try:
-                    # Recompute split sizes to recover test indices
-                    N_windows   = len(dataset_tensor)
-                    n_train_win = int(cfg["splits"]["train"] * N_windows)
-                    n_val_win   = int(cfg["splits"]["val"]   * N_windows)
-                    # idx_test are dataset indices [n_train+n_val, ..., N_windows-1]
-                    idx_test_ds = list(range(n_train_win + n_val_win, N_windows))
+                # ┏━━━━━━━━━━ Export into CSV Test Predictions ━━━━━━━━━━┓
+                export_predictions(
+                    df_asset        = df_asset,
+                    dataset_tensor  = dataset_tensor,
+                    tpreds          = tpreds,
+                    cfg             = cfg,
+                    checkpoint_dir  = checkpoint_dir,
+                    tprobs          = tprobs,
+                )
 
-                    # Map each dataset index k to its corresponding end-of-window date: df.index[k + seq_len - 1]
-                    seq_len = cfg["sequence_length"]
-                    # df_asset index was set to 'date' in merge_meta_targets
-                    all_dates = df_asset.index
-                    mapped_dates = [all_dates[k + seq_len - 1] for k in idx_test_ds]
-
-                    # Ensure date format as YYYY-MM-DD
-                    date_strs = [d.strftime("%Y-%m-%d") for d in mapped_dates]
-
-                    # Sanity: align lengths
-                    if len(date_strs) != len(tpreds):
-                        print(f"[WARN] Date/predictions length mismatch: dates={len(date_strs)} preds={len(tpreds)}")
-
-                    # Build output DataFrame and write CSV
-                    col_name = f"M2_Pred_{cfg['training_mode']['optuna_task']}"
-                    out_df = pd.DataFrame({
-                        "date": date_strs[:len(tpreds)],
-                        col_name: list(map(int, tpreds.tolist()))
-                    }) if pd is not None else None
-
-                    # Fallback to manual CSV write if pandas unavailable
-                    out_path = checkpoint_dir / f"{cfg['dataset']['symbol']}_{cfg['training_mode']['optuna_task']}_ctts_predictions.csv"
-                    if out_df is not None:
-                        out_df.to_csv(out_path, index=False)
-                    else:
-                        with open(out_path, "w") as f:
-                            f.write(f"date,{col_name}\n")
-                            for d, p in zip(date_strs, tpreds.tolist()):
-                                f.write(f"{d},{int(p)}\n")
-
-                    print(f"Saved CTTS test predictions to {out_path}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to export CTTS predictions CSV: {e}")
-
+                # ┏━━━━━━━━━━ Meta-Labeling Consensus ━━━━━━━━━━┓
+                plot_meta_labeling_consensus(
+                    cfg            = cfg,
+                    checkpoint_dir = checkpoint_dir,
+                )
             
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
             torch.cuda.empty_cache()
