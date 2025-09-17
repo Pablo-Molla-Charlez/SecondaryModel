@@ -7,6 +7,7 @@ import json
 import argparse
 import random
 import warnings
+import datetime
 import numpy  as np
 import pandas as pd
 import torch
@@ -71,18 +72,20 @@ print(f"Running on {DEVICE}")
 # device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
+#os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 seed_everything(1493583942)
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 5. CROSS-VALIDATION RUN                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, float]:
+def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[str, float]:
+    task = task.upper()
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
     seed_everything(1493583942)
     folds, test_loader = build_loaders(ds,
                                        cross_validation = True,                    # Must be True
-                                       target           = optuna_task,             # "DN" otherwise
+                                       target           = task,                    # "DN" otherwise
                                        props            = props,                   # Fixed
                                        train_frac       = train_frac,              # Fixed
                                        val_frac         = val_frac,                # Fixed
@@ -104,14 +107,15 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
     fold_fbetas    = []
     
     # ┏━━━━━━━━━━ Prepare directory for this Trial's Confusion Matrices (Val & Test) & TensorBoard ━━━━━━━━━━┓
-    trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / f"Trial_{trial_number}"
+    trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / task / run_id / f"Trial_{trial_number}"
     ckpt_dir  = trial_dir / "checkpoints"
     cm_dir    = trial_dir / "confusion_matrices"
     for d in (ckpt_dir, cm_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ TensorBoard Directory (holding the writer here once we hit the last fold) ━━━━━━━━━━┓
-    tb_trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard"
+    tb_trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard" / task / run_id
+    tb_trial_dir.mkdir(parents=True, exist_ok=True)
     writer = None
 
     # ┏━━━━━━━━━━ 5.c) Model Instantiation, Train & Validation per fold ━━━━━━━━━━┓
@@ -154,11 +158,11 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
         optimizer = get_optimizer(model.parameters(), params)
         
         # ┏━━━━━━━━━━ Learning Rate Scheduler ━━━━━━━━━━┓
-        max_epochs = train_cfg[optuna_task]["max_epochs"]
+        max_epochs = train_cfg[task]["max_epochs"]
         scheduler = make_scheduler(optimizer, params, max_epochs)
         
         # ┏━━━━━━━━━━ Early Stopping Instantiation ━━━━━━━━━━┓
-        stop = EarlyStopping(patience   = train_cfg[optuna_task]["patience"], 
+        stop = EarlyStopping(patience   = train_cfg[task]["patience"], 
                              verbose    = False,
                              delta      = 1e-4,
                              path       = None,    # No model saves
@@ -181,11 +185,11 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
                                                    criterion, 
                                                    DEVICE, 
                                                    optimizer, 
-                                                   task_name    = optuna_task,
+                                                   task_name    = task,
                                                    bce_thr      = 0.5,
                                                    amp          = True,
                                                    clip_grad    = 1.0,
-                                                   beta         = train_cfg[optuna_task]["fbeta"])
+                                                   beta         = train_cfg[task]["fbeta"])
             
             # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
             val_loss, vacc, vprec, vrec, vf1, vfbeta = epoch_loop(model, 
@@ -193,11 +197,11 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
                                                                   criterion, 
                                                                   DEVICE, 
                                                                   optimizer = None,
-                                                                  task_name = optuna_task,
+                                                                  task_name = task,
                                                                   bce_thr   = 0.5, 
                                                                   amp       = True, 
                                                                   clip_grad = 0.0,
-                                                                  beta      = train_cfg[optuna_task]["fbeta"])
+                                                                  beta      = train_cfg[task]["fbeta"])
                         
             # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
             if writer is not None:
@@ -240,15 +244,15 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
             model.load_state_dict(best_state)
 
             # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
-            ckpt_path = ckpt_dir / f"{trial_number}_{optuna_task}_best.pt"
+            ckpt_path = ckpt_dir / f"{trial_number}_{task}_best.pt"
             torch.save(best_state, ckpt_path)
 
             # ┏━━━━━━━━━━ Original split's Model Evaluation on Validation Set & Confusion Matrix ━━━━━━━━━━┓
-            vpreds, vtargets = get_preds_and_targets(model, val_ld, DEVICE, optuna_task, params["loss_function"])
+            vpreds, vtargets = get_preds_and_targets(model, val_ld, DEVICE, task, params["loss_function"])
             plot_cm_with_metrics(vpreds, 
                                  vtargets,
-                                 labels  = (f"No_TP_{optuna_task}", f"TP_{optuna_task}"),
-                                 title   = f"{optuna_task} — Validation",
+                                 labels  = (f"No_TP_{task}", f"TP_{task}"),
+                                 title   = f"{task} — Validation",
                                  out_dir = cm_dir,
                                  cmap    = "Oranges"
                             )
@@ -260,11 +264,11 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
                                                                 criterion, 
                                                                 DEVICE,
                                                                 optimizer = None, 
-                                                                task_name = optuna_task, 
+                                                                task_name = task, 
                                                                 bce_thr   = 0.5, 
                                                                 amp       = True, 
                                                                 clip_grad = 0.0,
-                                                                beta      = train_cfg[optuna_task]["fbeta"])
+                                                                beta      = train_cfg[task]["fbeta"])
             test_accuracy  = t_acc
             test_precision = t_prec
             test_recall    = t_rec
@@ -272,11 +276,11 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
             test_fbeta     = t_fbeta
 
             # ┏━━━━━━━━━━ Test Confusion Matrix  ━━━━━━━━━━┓
-            tpreds, ttargets = get_preds_and_targets(model, test_loader, DEVICE, optuna_task, params["loss_function"])
+            tpreds, ttargets = get_preds_and_targets(model, test_loader, DEVICE, task, params["loss_function"])
             plot_cm_with_metrics(tpreds, 
                                  ttargets,
-                                 labels  = (f"No_TP_{optuna_task}", f"TP_{optuna_task}"),
-                                 title   = f"{optuna_task} — Test",
+                                 labels  = (f"No_TP_{task}", f"TP_{task}"),
+                                 title   = f"{task} — Test",
                                  out_dir = cm_dir,
                                  cmap    = "Blues"
                             )
@@ -309,7 +313,8 @@ def cv_folds(ds, params, props, optuna_task, trial_number: int) -> dict[str, flo
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 6. OPTUNA OBJECTIVE                                                   ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], optuna_task) -> float:
+def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], task: str, run_id: str) -> float:
+    task = task.upper()
     
     # ┏━━━━━━━━━━ Multiple Convolutions for CNN Architecture ━━━━━━━━━━┓
     n_convs = trial.suggest_int("n_convs", 1, 2)                                                                                                # Optimized
@@ -397,7 +402,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
 
     # ┏━━━━━━━━━━ CV_Folds Call ━━━━━━━━━━┓
     seed_everything(1493583942)
-    metrics = cv_folds(dataset, params, props, optuna_task, trial.number)
+    metrics = cv_folds(dataset, params, props, task, trial.number, run_id)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
     mean_val_loss = metrics["mean_val_loss"]
@@ -407,6 +412,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
         raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
+    trial.set_user_attr("task",                task)
     trial.set_user_attr("mean_val_loss",       metrics["mean_val_loss"])
     trial.set_user_attr("mean_val_precision",  metrics["mean_val_precision"])
     trial.set_user_attr("mean_val_accuracy",   metrics["mean_val_accuracy"])
@@ -428,6 +434,82 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     trial.set_user_attr("test_fbeta",     metrics["test_fbeta"])
               
     return metrics["mean_val_loss"], metrics["best_fbeta"]
+
+
+def run_optuna_for_task(dataset: TensorDataset,
+                        props: List[float],
+                        task: str) -> optuna.study.Study:
+    """Launch an Optuna study for the provided task ("UP" | "DN")."""
+    
+    task = task.upper()
+    if task not in train_cfg:
+        raise ValueError(f"Unknown task '{task}'. Expected one of: {list(train_cfg.keys())}")
+
+    # ┏━━━━━━━━━━ 1) Prepare Optuna Storage ━━━━━━━━━━┓
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"run_{timestamp}"
+    run_root = base / cfg["paths"]["output_root"] / "Optuna" / task / run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    db_path = run_root / f"optuna_study_{task}_{timestamp}.db"
+    storage_url = f"sqlite:///{db_path.resolve()}"
+    study_name = f"CTTS_Study_{task}_{timestamp}"
+
+    # ┏━━━━━━━━━━ 2) Instantiation of Optuna & Optimization ━━━━━━━━━━┓
+    print(f"\n▶ Running Optuna study for task {task} with {ARGS.trials} trials (run id: {run_id})")
+    study = optuna.create_study(
+        study_name     = study_name,
+        storage        = storage_url,
+        directions     = ["minimize", "maximize"],
+        pruner         = optuna.pruners.MedianPruner(n_startup_trials=10),
+        load_if_exists = False,
+    )
+
+    # ┏━━━━━━━━━━ 3) Optuna Optimization ━━━━━━━━━━┓
+    study.optimize(lambda trial: objective(trial,
+                            dataset,
+                            props,
+                            task,
+                            run_id),
+                   n_trials = ARGS.trials,
+                   show_progress_bar = True)
+
+    # ┏━━━━━━━━━━ 4) JSON Storage with Pareto-optimal trials ━━━━━━━━━━┓
+    pareto = []
+    for t in study.best_trials:
+        if t.state.is_finished():
+            pareto.append({
+                "number":              t.number,
+                "values":              t.values,
+                
+                "mean_val_loss":       t.user_attrs.get("mean_val_loss"),
+                "mean_val_precision":  t.user_attrs.get("mean_val_precision"),
+                "mean_val_accuracy":   t.user_attrs.get("mean_val_accuracy"),
+                "mean_val_f1":         t.user_attrs.get("mean_val_f1"),
+                "mean_val_fbeta":      t.user_attrs.get("mean_val_fbeta"),
+                
+                "best_val":            t.user_attrs.get("best_val"),
+                "best_acc":            t.user_attrs.get("best_acc"),
+                "best_prec":           t.user_attrs.get("best_prec"),
+                "best_rec":            t.user_attrs.get("best_rec"),
+                "best_f1":             t.user_attrs.get("best_f1"),
+                "best_fbeta":          t.user_attrs.get("best_fbeta"),
+                
+                "test_acc":            t.user_attrs.get("test_acc"),
+                "test_prec":           t.user_attrs.get("test_prec"),
+                "test_rec":            t.user_attrs.get("test_rec"),
+                "test_f1":             t.user_attrs.get("test_f1"),
+                "test_fbeta":          t.user_attrs.get("test_fbeta"),
+                
+                "params":              t.params,
+            })
+
+    out_path = run_root / f"optuna_pareto_{task}_{timestamp}.json"
+    with open(out_path, "w") as f:
+        json.dump(pareto, f, indent=2)
+
+    print(f"Saved {len(pareto)} Pareto-optimal trials to {out_path}.")
+
+    return study
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -454,62 +536,21 @@ if __name__ == "__main__":
                               seq_len          = cfg["sequence_length"],
                               column_features  = cfg['column_features'],
                               context_features = cfg['context_features'])
-    
-    # ┏━━━━━━━━━━ 7.d) Prepare Optuna Storage ━━━━━━━━━━┓
-    base = Path(__file__).parent
-    db_path = base / "optuna_study.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)                                                # Make sure the directory exists
-    storage_url = f"sqlite:///{db_path.resolve()}"                                                   # Must include the file name
+    default_task = optuna_task.upper()
+    tasks = [default_task]
+    opposite_task = "DN" if default_task == "UP" else "UP"
+    if opposite_task not in tasks:
+        tasks.append(opposite_task)
 
-    # ┏━━━━━━━━━━ 7.e) Instantiation of Optuna & Optimization ━━━━━━━━━━┓
-    study = optuna.create_study(study_name     = "CTTS_Study",
-                                storage        = storage_url,
-                                directions     = ["minimize", "maximize"],                           # Minimize or maximize the objective
-                                pruner         = optuna.pruners.MedianPruner(n_startup_trials=10),   # Stops unpromising trials early (
-                                load_if_exists = False)                                              # to save time) by comparing with median 
-                                                                                                     # of 10 completed trials.
-                   
-                                                                                                
-    # ┏━━━━━━━━━━ 7.f) Optuna Optimization ━━━━━━━━━━┓
-    study.optimize(lambda trial: objective(trial,
-                            dataset,
-                            cross_val_props,
-                            optuna_task),
-                   n_trials = ARGS.trials,
-                   show_progress_bar = True)
-    
-    # ┏━━━━━━━━━━ 7.g) JSON Storage with Pareto-optimal trials ━━━━━━━━━━┓
-    pareto = []
-    for t in study.best_trials:
-        if t.state.is_finished():
-            pareto.append({
-                "number":              t.number,
-                "values":              t.values,
+    # ┏━━━━━━━━━━ 7.d) Running BOTH (UP/DOWN) Optuna Studies ━━━━━━━━━━┓
+    studies = {}
+    for task in tasks:
+        studies[task] = run_optuna_for_task(dataset, cross_val_props, task)
 
-                "mean_val_loss":       t.user_attrs.get("mean_val_loss"),
-                "mean_val_precision":  t.user_attrs.get("mean_val_precision"),
-                "mean_val_accuracy":   t.user_attrs.get("mean_val_accuracy"),
-                "mean_val_f1":         t.user_attrs.get("mean_val_f1"),
-                "mean_val_fbeta":      t.user_attrs.get("mean_val_fbeta"),
-
-                "best_val":            t.user_attrs.get("best_val"),
-                "best_acc":            t.user_attrs.get("best_acc"),
-                "best_prec":           t.user_attrs.get("best_prec"),
-                "best_rec":            t.user_attrs.get("best_rec"),
-                "best_f1":             t.user_attrs.get("best_f1"),
-                "best_fbeta":          t.user_attrs.get("best_fbeta"),
-
-                "test_acc":            t.user_attrs.get("test_acc"),
-                "test_prec":           t.user_attrs.get("test_prec"),
-                "test_rec":            t.user_attrs.get("test_rec"),
-                "test_f1":             t.user_attrs.get("test_f1"),
-                "test_fbeta":          t.user_attrs.get("test_fbeta"),
-
-                "params":              t.params,
-            })
-
-    out_path = base / "optuna_pareto.json"
-    with open(out_path, "w") as f:
-        json.dump(pareto, f, indent=2)
-
-    print(f"\nSaved {len(pareto)} Pareto-optimal trials to {out_path}.")
+    print("\n✅ Completed Optuna optimisation for tasks:")
+    for task, study in studies.items():
+        if study.best_trials:
+            best = study.best_trials[0]
+            print(f"  • {task}: objectives={best.values} (study: {study.study_name})")
+        else:
+            print(f"  • {task}: no completed trials")
