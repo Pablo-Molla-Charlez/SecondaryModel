@@ -404,7 +404,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], o
     mean_val_loss = metrics["mean_val_loss"]
     test_prec = metrics["test_prec"]
     test_rec = metrics["test_rec"]
-    if mean_val_loss > 0.7 or test_prec < 0.4 or test_rec < 0.3:
+    if mean_val_loss > 0.7:
         raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
