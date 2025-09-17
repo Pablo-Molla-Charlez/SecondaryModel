@@ -285,4 +285,3 @@ The Optuna script orchestrates large hyper-parameter sweeps:
 - Supports CLI flags (`--trials`, `--seed`, `--device`) for custom runs. Invoke it as `python CTTS/optuna_optimization.py --trials 1000` once the data/config are prepared.
 
 Use this script when you need systematic hyper-parameter exploration; afterwards, copy the suggested values into `config.yaml` before running the main trainer.
-# Meta-Labeling-CTTS
