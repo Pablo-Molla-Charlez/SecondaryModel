@@ -71,7 +71,6 @@ print(f"Running on {DEVICE}")
 # device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 seed_everything(1493583942)
 
 
