@@ -551,6 +551,6 @@ if __name__ == "__main__":
     for task, study in studies.items():
         if study.best_trials:
             best = study.best_trials[0]
-            print(f"  • {task}: objectives={best.values} (study: {study.study_name})")
+            print(f"  • {task}: Objectives={best.values} (study: {study.study_name})")
         else:
-            print(f"  • {task}: no completed trials")
+            print(f"  • {task}: No completed trials")
