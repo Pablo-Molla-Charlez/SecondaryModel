@@ -359,7 +359,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         "dropout":    trial.suggest_float("dropout", 0.0, 0.5),                                    # Transformer dropout probability
         "activation": trial.suggest_categorical("activation", ["gelu", 
                                                                 "relu", 
-                                                                "silu"])
+                                                                "silu"]),
         
         # ┏━━━━━━━━━━ 3. MLP Architecture ━━━━━━━━━━┓
         "mlp_hidden":     trial.suggest_categorical("mlp_hidden", [128, 256, 512]),               # MLP hidden size
