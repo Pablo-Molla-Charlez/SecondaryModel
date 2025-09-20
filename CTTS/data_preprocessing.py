@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from torch.utils.data import TensorDataset, Subset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
-from typing import List, Tuple, Union, Sequence, Optional
+from typing import List, Tuple, Union, Sequence, Optional, Dict
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
     """Return numerator / denominator guarding against division by zero."""
