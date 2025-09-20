@@ -19,6 +19,7 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     except TypeError:
         pass
     return numerator / denominator
+    
 def _distribution_metrics(row: pd.Series) -> Dict[str, float]:
     """Compute Bowley skewness, Moors kurtosis, and tail asymmetry from quantiles."""
     # Quantiles required
