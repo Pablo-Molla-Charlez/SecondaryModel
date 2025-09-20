@@ -503,7 +503,7 @@ def run_optuna_for_task(dataset: TensorDataset,
         study_name     = study_name,
         storage        = storage_url,
         directions     = ["minimize", "maximize"],
-        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 1),
+        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 10),
         load_if_exists = False,
     )
 
