@@ -3,7 +3,6 @@
 # ┃ 1. IMPORTS                                                            ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 import os
-import json
 import argparse
 import random
 import warnings
@@ -15,10 +14,14 @@ import copy
 import yaml
 import subprocess
 import optuna
+from optuna import logging as optuna_logging
+
 from pathlib import Path
 from typing import List
+from optuna_utils import build_candidate_config, export_pareto_configs
 from torch.utils.data import TensorDataset, Subset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
+
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 2. SPECIFIC CLASSES & FUNCTIONS IMPORTS                               ┃
@@ -30,12 +33,14 @@ from data_preprocessing import prepare_dataset, build_loaders, merge_meta_target
 from paths import dataset_path
 from test_utils import get_preds_and_targets, plot_cm_with_metrics
 
+
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 3. CONFIG & CLIENT ARGUMENTS                                          ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 # ┏━━━━━━━━━━ 3.a) Root ━━━━━━━━━━┓
 base = Path(__file__).parent
-cfg  = yaml.safe_load(open(base / "config.yaml", "r"))
+config_path = base / "config.yaml"
+cfg  = yaml.safe_load(open(config_path, "r"))
 
 # ┏━━━━━━━━━━ 3.b) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
 train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
@@ -62,14 +67,16 @@ cli.add_argument("--device",  type=str, default= 'cuda', help="'cuda', 'cpu' or 
 ARGS = cli.parse_args()
 
 
+# ┏━━━━━━━━━━ Optuna logging ━━━━━━━━━━┓
+# optuna_logging.set_verbosity(optuna_logging.WARNING)
+# optuna_logging.disable_default_handler()
+
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 4. REPRODUCIBILITY & DEVICE                                           ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 # ┏━━━━━━━━━━ Select GPU if available, otherwise CPU ━━━━━━━━━━┓
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Running on {DEVICE}")
-# For Personal Mac
-# device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
 #os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -107,14 +114,15 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[st
     fold_fbetas    = []
     
     # ┏━━━━━━━━━━ Prepare directory for this Trial's Confusion Matrices (Val & Test) & TensorBoard ━━━━━━━━━━┓
-    trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / task / run_id / f"Trial_{trial_number}"
+    optuna_task_dir = base / cfg["paths"]["output_root"] / "Optuna" / f"Task_{task}"
+    trial_dir = optuna_task_dir / run_id / f"Trial_{trial_number}"
     ckpt_dir  = trial_dir / "checkpoints"
     cm_dir    = trial_dir / "confusion_matrices"
     for d in (ckpt_dir, cm_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ TensorBoard Directory (holding the writer here once we hit the last fold) ━━━━━━━━━━┓
-    tb_trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard" / task / run_id
+    tb_trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard" / f"Task_{task}" / run_id
     tb_trial_dir.mkdir(parents=True, exist_ok=True)
     writer = None
 
@@ -310,6 +318,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[st
             "test_fbeta":          test_fbeta
             }
 
+
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 6. OPTUNA OBJECTIVE                                                   ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -317,10 +326,22 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     task = task.upper()
     
     # ┏━━━━━━━━━━ Multiple Convolutions for CNN Architecture ━━━━━━━━━━┓
-    n_convs = trial.suggest_int("n_convs", 1, 2)                                                                                                # Optimized
+    model_key = f"model_{task.lower()}"
+    configured_blocks = cfg[model_key].get("cnn_blocks")
+    if isinstance(configured_blocks, int) and configured_blocks >= 1:
+        n_convs = configured_blocks
+    else:
+        max_convs = len(cfg[model_key]["cnn_embed_dim"])
+        n_convs = trial.suggest_int("n_convs", 1, max_convs)
+    
     cnn_embed_dim = [trial.suggest_categorical(f"cnn_embed_dim_{i}", [64, 128, 256]) for i in range(n_convs)]
     cnn_kernel    = [trial.suggest_categorical(f"cnn_kernel_{i}",    [4, 8]) for i in range(n_convs)]
     cnn_stride    = [trial.suggest_categorical(f"cnn_stride_{i}",    [1, 2, 4]) for i in range(n_convs)]
+
+    trial.set_user_attr("n_convs", n_convs)
+    trial.set_user_attr("cnn_embed_dim_list", cnn_embed_dim)
+    trial.set_user_attr("cnn_kernel_list", cnn_kernel)
+    trial.set_user_attr("cnn_stride_list", cnn_stride)
 
     # ┏━━━━━━━━━━ Parameters to Optimize by Optuna ━━━━━━━━━━┓
     params = {
@@ -338,8 +359,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         "dropout":    trial.suggest_float("dropout", 0.0, 0.5),                                    # Transformer dropout probability
         "activation": trial.suggest_categorical("activation", ["gelu", 
                                                                 "relu", 
-                                                                "silu", 
-                                                                "mish"]),
+                                                                "silu"])
         
         # ┏━━━━━━━━━━ 3. MLP Architecture ━━━━━━━━━━┓
         "mlp_hidden":     trial.suggest_categorical("mlp_hidden", [128, 256, 512]),               # MLP hidden size
@@ -347,15 +367,15 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         "mlp_pooling":    trial.suggest_categorical("mlp_pooling", ["attention", "meanmax"]),      # MLP pooling mechanism
         "mlp_activation": trial.suggest_categorical("mlp_activation", ["gelu",                     # MLP activation function
                                                                         "relu", 
-                                                                        "silu", 
+                                                                        #"silu", 
                                                                         "mish"]),              
         
         # ┏━━━━━━━━━━ Optimizer ━━━━━━━━━━┓
         "optimizer":  trial.suggest_categorical("optimizer", ["adagrad",                            # Optimizer Name
                                                               #"rmsprop", 
-                                                              #"adam", 
+                                                              "adam", 
                                                               "adamw", 
-                                                              "adabelief", 
+                                                              #"adabelief", 
                                                               "ranger"]),
         "lr":            trial.suggest_float("lr", 1e-6, 1e-2, log=True),                           # Learning rate
         "weight_decay":  trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),                 # Weight decay
@@ -367,17 +387,17 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         # "rms_momentum":    trial.suggest_float("rms_momentum", 0.0, 0.9),
         "lookahead_k":      6,     # trial.suggest_int("lookahead_k", 1, 10),                       # Default Value
         "lookahead_alpha":  0.5,   # trial.suggest_float("lookahead_alpha", 0.1, 0.9),              # Default Value                                           
-        "weight_decouple":  True,  # trial.suggest_categorical("weight_decouple", [True, False]),   # Default Value
-        "rectify":          False, # trial.suggest_categorical("rectify", [True, False]),           # Default Value
+        #"weight_decouple":  True,  # trial.suggest_categorical("weight_decouple", [True, False]),   # Default Value
+        #"rectify":          False, # trial.suggest_categorical("rectify", [True, False]),           # Default Value
 
         # ┏━━━━━━━━━━ Hyperparameters ━━━━━━━━━━┓
         "batch_size":      2 ** trial.suggest_int("batch_pow", 5, 8),                               # Batch size (2**batch_pow)
         "loss_function":   trial.suggest_categorical("loss_function", ["bce",
-                                                                       "focal", 
+                                                                       #"focal", 
                                                                        "cross_entropy"]),           # Loss type
         # ┏━━━━━━━━━━ Focal Loss ━━━━━━━━━━┓
-        "focal_gamma":     trial.suggest_float("focal_gamma", 0.5, 5.0),
-        "focal_alpha":     (2.954 / (2.954 + 1.1514)),                                              # Default Value
+        #"focal_gamma":     trial.suggest_float("focal_gamma", 0.5, 5.0),
+        #"focal_alpha":     (2.954 / (2.954 + 1.1514)),                                              # Default Value
 
         # ┏━━━━━━━━━━ Scheduler ━━━━━━━━━━┓
         "sch_name":        trial.suggest_categorical("sch_name", [#"none",                          # Scheduler Name
@@ -408,7 +428,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     mean_val_loss = metrics["mean_val_loss"]
     best_prec = metrics["best_prec"]
     best_fbeta = metrics["best_fbeta"]
-    if mean_val_loss > 0.7 and best_fbeta > 0.2:
+    if mean_val_loss > 0.7 and best_fbeta > 0.35:
         raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
@@ -436,6 +456,9 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     return metrics["mean_val_loss"], metrics["best_fbeta"]
 
 
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃ 7. OPTUNA PER TASK                                                    ┃
+# ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 def run_optuna_for_task(dataset: TensorDataset,
                         props: List[float],
                         task: str) -> optuna.study.Study:
@@ -448,7 +471,7 @@ def run_optuna_for_task(dataset: TensorDataset,
     # ┏━━━━━━━━━━ 1) Prepare Optuna Storage ━━━━━━━━━━┓
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = f"run_{timestamp}"
-    run_root = base / cfg["paths"]["output_root"] / "Optuna" / task / run_id
+    run_root = base / cfg["paths"]["output_root"] / "Optuna" / f"Task_{task}" / run_id
     run_root.mkdir(parents=True, exist_ok=True)
     db_path = run_root / f"optuna_study_{task}_{timestamp}.db"
     storage_url = f"sqlite:///{db_path.resolve()}"
@@ -473,47 +496,16 @@ def run_optuna_for_task(dataset: TensorDataset,
                    n_trials = ARGS.trials,
                    show_progress_bar = True)
 
-    # ┏━━━━━━━━━━ 4) JSON Storage with Pareto-optimal trials ━━━━━━━━━━┓
-    pareto = []
-    for t in study.best_trials:
-        if t.state.is_finished():
-            pareto.append({
-                "number":              t.number,
-                "values":              t.values,
-                
-                "mean_val_loss":       t.user_attrs.get("mean_val_loss"),
-                "mean_val_precision":  t.user_attrs.get("mean_val_precision"),
-                "mean_val_accuracy":   t.user_attrs.get("mean_val_accuracy"),
-                "mean_val_f1":         t.user_attrs.get("mean_val_f1"),
-                "mean_val_fbeta":      t.user_attrs.get("mean_val_fbeta"),
-                
-                "best_val":            t.user_attrs.get("best_val"),
-                "best_acc":            t.user_attrs.get("best_acc"),
-                "best_prec":           t.user_attrs.get("best_prec"),
-                "best_rec":            t.user_attrs.get("best_rec"),
-                "best_f1":             t.user_attrs.get("best_f1"),
-                "best_fbeta":          t.user_attrs.get("best_fbeta"),
-                
-                "test_acc":            t.user_attrs.get("test_acc"),
-                "test_prec":           t.user_attrs.get("test_prec"),
-                "test_rec":            t.user_attrs.get("test_rec"),
-                "test_f1":             t.user_attrs.get("test_f1"),
-                "test_fbeta":          t.user_attrs.get("test_fbeta"),
-                
-                "params":              t.params,
-            })
-
-    out_path = run_root / f"optuna_pareto_{task}_{timestamp}.json"
-    with open(out_path, "w") as f:
-        json.dump(pareto, f, indent=2)
-
-    print(f"Saved {len(pareto)} Pareto-optimal trials to {out_path}.")
+    # ┏━━━━━━━━━━ 4) Export Pareto-optimal configs ━━━━━━━━━━┓
+    pareto_trials = [t for t in study.best_trials if t.state.is_finished()]
+    saved = export_pareto_configs(config_path, cfg, pareto_trials, run_root, task)
+    print(f"Saved {saved} Pareto-optimal configs to {run_root / 'Optuna_Pareto_Candidates'}.")
 
     return study
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-# ┃ 7. MAIN FUNCTION                                                      ┃
+# ┃ 8. MAIN FUNCTION                                                      ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 if __name__ == "__main__":
     # ┏━━━━━━━━━━ 7.a) Omit Warnings & CSV Paths ━━━━━━━━━━┓
@@ -547,7 +539,7 @@ if __name__ == "__main__":
     for task in tasks:
         studies[task] = run_optuna_for_task(dataset, cross_val_props, task)
 
-    print("\n✅ Completed Optuna optimisation for tasks:")
+    print("\n Completed Optuna optimisation for tasks:")
     for task, study in studies.items():
         if study.best_trials:
             best = study.best_trials[0]

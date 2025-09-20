@@ -191,6 +191,7 @@ Train/validation/test proportions applied to the sliding windows produced by `pr
 - `future_offset`: Predition horizon used when building meta-labels.
 - `column_features`: Ordered list of feature columns to pull from `${symbol}_down.csv`.
 - `context_features`: Additional columns appended as constant context at the end of each window (e.g. macro indicators).
+  Currently available: `rel_interval_width`, `forecast_slope`, `bowley_skewness`, `moors_kurtosis`, `tail_asymmetry`, `m1_pred_proba_dn`, `m1_pred_proba_up`, `M1_DN`, `M1_UP`, `M1_Prediction`, `isTP_DN`, `isTP_UP`.
 
 ### `training_mode`
 

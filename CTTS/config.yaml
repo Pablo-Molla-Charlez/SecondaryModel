@@ -21,9 +21,15 @@ splits:
   test:  0.15
 
 sequence_length: 90                                    # 90 das (time-steps) as model context
-future_offset:   7                                     # Horizon used when generating labels
-column_features:  ["close"]                            # Column Features such as "close", "open", etc...                                 
-context_features: []                                   # Context Features such as "vix", "vcr", etc...                  
+column_features: ["close"]                             # Column Features such as "close", "open", etc...                                 
+context_features: ["m1_prediction", 
+                   "m1_dn",
+                   "m1_pred_proba_dn",
+                   "rel_interval_width",
+                   "forecast_slope",
+                   "bowley_skewness",
+                   "moors_kurtosis",
+                   "tail_asymmetry"]                 # Context Features such as "vix", "vcr", etc...                  
 
 # ┏━━━━━━━━━━━━━━ Training Mode ━━━━━━━━━━━━━━━┓
 training_mode:
@@ -42,6 +48,7 @@ training_mode:
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
 model_up:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
+  cnn_blocks:    1
   cnn_embed_dim: [256, 128]
   cnn_kernel:    [4, 8]
   cnn_stride:    [4, 2]
@@ -76,9 +83,9 @@ train_up:
   #rms_alpha:        0.9336763960402219                # Only for rmsprop
   #rms_momentum:     0.30881101362483226               # Only for rmsprop
   lookahead_k:      6                                  # Only for ranger (Lookahead)
-  lookahead_alpha:  0.5                 # Only for ranger (Lookahead)
-  weight_decouple:  True                              # Only for adabelief
-  rectify:          False                               # Only for adabelief
+  lookahead_alpha:  0.5                               # Only for ranger (Lookahead)
+  # weight_decouple:  True                              # Only for adabelief
+  # rectify:          False                               # Only for adabelief
 
   # ┏━━━━━━━━━━ Basic ━━━━━━━━┓
   batch_size:    32
@@ -101,6 +108,7 @@ train_up:
 # ┏━━━━━━━━━━━━━━ Model – DN task ━━━━━━━━━━━━━━━┓
 model_dn:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
+  cnn_blocks:    2
   cnn_embed_dim: [256, 128]
   cnn_kernel:    [4, 8]
   cnn_stride:    [4, 2]

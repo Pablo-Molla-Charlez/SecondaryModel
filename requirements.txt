@@ -17,3 +17,5 @@ tensorboard>=2.10.0
 optuna>=4.4.0
 adabelief-pytorch>=0.2.0
 pytorch-ranger>=0.1.1
+ruamel.yaml>=0.18.15
+ruamel.yaml.clib>=0.2.8

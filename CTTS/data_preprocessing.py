@@ -9,6 +9,55 @@ from torch.utils.data import TensorDataset, Subset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
 from typing import List, Tuple, Union, Sequence, Optional
 
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    """Return numerator / denominator guarding against division by zero."""
+    if denominator is None or denominator == 0:
+        return np.nan
+    try:
+        if np.isnan(denominator):
+            return np.nan
+    except TypeError:
+        pass
+    return numerator / denominator
+def _distribution_metrics(row: pd.Series) -> Dict[str, float]:
+    """Compute Bowley skewness, Moors kurtosis, and tail asymmetry from quantiles."""
+    # Quantiles required
+    q10 = row.get("q10")
+    q50 = row.get("q50")
+    q90 = row.get("q90")
+
+    oct2 = row.get("oct2")  # 0.25
+    oct4 = row.get("oct4")  # 0.50
+    oct6 = row.get("oct6")  # 0.75
+    oct1 = row.get("oct1")  # 0.125
+    oct3 = row.get("oct3")  # 0.375
+    oct5 = row.get("oct5")  # 0.625
+    oct7 = row.get("oct7")  # 0.875
+    
+    # Bowley skewness: (Q3 + Q1 - 2*Q2)/(Q3 - Q1)
+    bowley_num = (oct6 if oct6 is not None else np.nan) + (oct2 if oct2 is not None else np.nan) - 2 * (oct4 if oct4 is not None else np.nan)
+    bowley_den = (oct6 if oct6 is not None else np.nan) - (oct2 if oct2 is not None else np.nan)
+    bowley_skewness = _safe_ratio(bowley_num, bowley_den)   
+    
+    # Moors kurtosis using octiles: ((O7 - O5) + (O3 - O1)) / (O6 - O2)
+    moors_num = (oct7 if oct7 is not None else np.nan) - (oct5 if oct5 is not None else np.nan)
+    moors_num += (oct3 if oct3 is not None else np.nan) - (oct1 if oct1 is not None else np.nan)
+    moors_den = (oct6 if oct6 is not None else np.nan) - (oct2 if oct2 is not None else np.nan)
+    moors_kurtosis = _safe_ratio(moors_num, moors_den)
+   
+    # Tail asymmetry using 10th/90th percentiles (or octiles if missing)
+    upper = q90 if q90 is not None else oct7
+    lower = q10 if q10 is not None else oct1
+    median = med
+    tail_num = (upper if upper is not None else np.nan) + (lower if lower is not None else np.nan) - 2 * (median if median is not None else np.nan)
+    tail_den = (upper if upper is not None else np.nan) - (lower if lower is not None else np.nan)
+    tail_asymmetry = _safe_ratio(tail_num, tail_den)
+    return {
+        "bowley_skewness": bowley_skewness,
+        "moors_kurtosis": moors_kurtosis,
+        "tail_asymmetry": tail_asymmetry,
+    }
+
 def merge_meta_targets(asset_type: str,
                        asset: str,
                        data_dir: str,
@@ -60,18 +109,38 @@ def merge_meta_targets(asset_type: str,
 
 
     # Desired set of features
-    cols_dn = ["date"] + present_feats + ["meta_label", "pred", "prediction"]
+    extra_feats = [c for c in ["pred_proba", "rel_interval_width", "forecast_slope"] if c in df_dn_full.columns]
+    quantile_cols = [
+        "q10", "q25", "q50", "q75", "q90",
+        "oct1", "oct2", "oct3", "oct4", "oct5", "oct6", "oct7",
+    ]
+    for col in quantile_cols:
+        if col in df_dn_full.columns:
+            df_dn_full[col] = pd.to_numeric(df_dn_full[col], errors="coerce")
+
+    cols_dn = ["date"] + present_feats + extra_feats + quantile_cols + ["meta_label", "pred", "prediction"]
     df_dn = (
         df_dn_full
         .loc[:, [c for c in cols_dn if c in df_dn_full.columns]]
-        .rename(columns={"meta_label": "isTP_DN", "pred": "M1_DN", "prediction": "M1_Prediction"})
+        .rename(columns={
+            "meta_label": "isTP_DN",
+            "pred": "m1_dn",
+            "prediction": "m1_prediction",
+            "pred_proba": "m1_pred_proba_dn",
+        })
     )
 
     # 2) Up side: meta target only
+    df_up_full = pd.read_csv(up_path, parse_dates=["date"])
+    cols_up = [c for c in ["date", "meta_label", "pred", "pred_proba"] if c in df_up_full.columns]
     df_up = (
-        pd.read_csv(up_path, parse_dates=["date"])
-          .loc[:, ["date", "meta_label", "pred"]]
-          .rename(columns={"meta_label": "isTP_UP", "pred": "M1_UP", "prediction": "M1_Prediction"})
+        df_up_full
+          .loc[:, cols_up]
+          .rename(columns={
+              "meta_label": "isTP_UP",
+              "pred": "m1_up",
+              "pred_proba": "m1_pred_proba_up",
+          })
     )
 
 
@@ -82,8 +151,28 @@ def merge_meta_targets(asset_type: str,
           .reset_index(drop=True)
     )
     
+    # 3.a) Distribution metrics (requires quantiles/octiles)
+    distro_metrics = df.apply(_distribution_metrics, axis=1)
+    df = pd.concat([df, distro_metrics.apply(pd.Series)], axis=1)
+    df = df.drop(columns=[c for c in quantile_cols if c in df.columns])
+
     # 3.b) Reorder columns
-    ordered_cols = ["date"] + present_feats + ["M1_DN", "M1_UP", "M1_Prediction", "isTP_DN", "isTP_UP"]
+    ordered_cols = [
+        "date",
+        *present_feats,
+        "rel_interval_width",
+        "forecast_slope",
+        "bowley_skewness",
+        "moors_kurtosis",
+        "tail_asymmetry",
+        "m1_pred_proba_dn",
+        "m1_pred_proba_up",
+        "m1_dn",
+        "m1_up",
+        "m1_prediction",
+        "isTP_DN",
+        "isTP_UP",
+    ]
     df = df[[c for c in ordered_cols if c in df.columns]]
 
     # 4) Optional index
