@@ -47,10 +47,10 @@ def _distribution_metrics(row: pd.Series) -> Dict[str, float]:
     moors_kurtosis = _safe_ratio(moors_num, moors_den)
    
     # Tail asymmetry using 10th/90th percentiles (or octiles if missing)
+    med = q50 if q50 is not None else oct4
     upper = q90 if q90 is not None else oct7
     lower = q10 if q10 is not None else oct1
-    median = med
-    tail_num = (upper if upper is not None else np.nan) + (lower if lower is not None else np.nan) - 2 * (median if median is not None else np.nan)
+    tail_num = (upper if upper is not None else np.nan) + (lower if lower is not None else np.nan) - 2 * (med if med is not None else np.nan)
     tail_den = (upper if upper is not None else np.nan) - (lower if lower is not None else np.nan)
     tail_asymmetry = _safe_ratio(tail_num, tail_den)
     return {

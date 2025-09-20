@@ -31,6 +31,7 @@ def main():
     # Architectural and Hyper & Paramenters Config
     # ┏━━━━━━━━━━ 1.a) For the model architecture parameters i.e. CNN, Transformer, MLP ━━━━━━━━━━┓
     architecture_cfg = {"UP": cfg["model_up"], "DN": cfg["model_dn"]}
+    context_features = cfg["context_features"]
 
     # ┏━━━━━━━━━━ 1.b) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
     train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
@@ -130,7 +131,7 @@ def main():
             # ┏━━━━━━━━━━ Training Mode Parameters ━━━━━━━━━━┓
             num_classes   = 1 if cfg["training_mode"]["loss_function"] == "bce" else 2,
             padding       = cfg["training_mode"]["padding"],
-            context_len   = cfg["sequence_length"]
+            context_len   = cfg["sequence_length"] + len(context_features)
         )
         
         # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓

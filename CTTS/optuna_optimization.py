@@ -17,7 +17,7 @@ import optuna
 from optuna import logging as optuna_logging
 
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from optuna_utils import build_candidate_config, export_pareto_configs
 from torch.utils.data import TensorDataset, Subset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -46,11 +46,12 @@ cfg  = yaml.safe_load(open(config_path, "r"))
 train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
 
 # ┏━━━━━━━━━━ 3.c) Fixed Constants ━━━━━━━━━━┓
-seq_len         = cfg["sequence_length"]
-column_features = cfg["column_features"]
-train_frac      = cfg["splits"]["train"]
-val_frac        = cfg["splits"]["val"]
-test_frac       = cfg["splits"]["test"]
+seq_len          = cfg["sequence_length"]
+column_features  = cfg["column_features"]
+context_features = cfg["context_features"]
+train_frac       = cfg["splits"]["train"]
+val_frac         = cfg["splits"]["val"]
+test_frac        = cfg["splits"]["test"]
 
 # ┏━━━━━━━━━━ 3.d) Cross-Validation ━━━━━━━━━━┓
 cross_validation = cfg["training_mode"]["cross_validation"] # Set it to true
@@ -86,7 +87,7 @@ seed_everything(1493583942)
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 5. CROSS-VALIDATION RUN                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[str, float]:
+def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Optional[optuna.Trial] = None) -> dict[str, float]:
     task = task.upper()
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
     seed_everything(1493583942)
@@ -135,32 +136,31 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[st
         # ┏━━━━━━━━━━ Model Instantiation per fold ━━━━━━━━━━┓
         seed_everything(1493583942)
         model = CTTSModel(
-                        # ┏━━━━━━━━━━ 1. CNN Architecture ━━━━━━━━━━┓
-                        cnn_embed_dim = params["cnn_embed_dim"],
-                        cnn_kernel    = params["cnn_kernel"],
-                        cnn_stride    = params["cnn_stride"],
-                        p_pos_drop    = params["p_pos_drop"],
-                        nb_features  = len(column_features),
-                        
-                        # ┏━━━━━━━━━━ 2. Transformer Architecture ━━━━━━━━━━┓
-                        trans_heads   = params["heads"],
-                        trans_layers  = params["layers"],
-                        trans_ff      = params['ffn_dim'] * params['cnn_embed_dim'][-1],
-                        trans_dropout = params["dropout"],
-                        trans_activ   = params["activation"],
-                        
-                        # ┏━━━━━━━━━━ 3. MLP Architecture ━━━━━━━━━━┓
-                        mlp_hidden    = params["mlp_hidden"],
-                        mlp_dropout   = params["mlp_dropout"],
-                        mlp_activ     = params["mlp_activation"],
-                        mlp_pooling   = params["mlp_pooling"],
-                        
-                        # ┏━━━━━━━━━━ 4. Other Parameters ━━━━━━━━━━┓
-                        context_len   = seq_len,                                              # Fixed
-                        padding       = padding,                                              # Fixed
-                        num_classes   = 1 if params["loss_function"] == "bce" else 2          # bce | cross_entropy | focal
+            # ┏━━━━━━━━━━ 1. CNN Architecture ━━━━━━━━━━┓
+            cnn_embed_dim = params["cnn_embed_dim"],
+            cnn_kernel    = params["cnn_kernel"],
+            cnn_stride    = params["cnn_stride"],
+            p_pos_drop    = params["p_pos_drop"],
+            nb_features   = len(column_features),
 
-                        ).to(DEVICE)
+            # ┏━━━━━━━━━━ 2. Transformer Architecture ━━━━━━━━━━┓
+            trans_heads   = params["heads"],
+            trans_layers  = params["layers"],
+            trans_ff      = params["ffn_dim"] * params["cnn_embed_dim"][-1],
+            trans_dropout = params["dropout"],
+            trans_activ   = params["activation"],
+
+            # ┏━━━━━━━━━━ 3. MLP Architecture ━━━━━━━━━━┓
+            mlp_hidden    = params["mlp_hidden"],
+            mlp_dropout   = params["mlp_dropout"],
+            mlp_activ     = params["mlp_activation"],
+            mlp_pooling   = params["mlp_pooling"],
+
+            # ┏━━━━━━━━━━ 4. Other Parameters ━━━━━━━━━━┓
+            context_len   = seq_len + len(context_features),  # sequence length plus appended context tokens
+            padding       = padding,
+            num_classes   = 1 if params["loss_function"] == "bce" else 2,
+        ).to(DEVICE)
 
         # ┏━━━━━━━━━━ Optimizer ━━━━━━━━━━┓
         optimizer = get_optimizer(model.parameters(), params)
@@ -186,51 +186,71 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str) -> dict[st
         best_state = None            # ← store best weights in memory
 
         # ┏━━━━━━━━━━ Train & Validation ━━━━━━━━━━┓
-        for epoch in range(max_epochs):
-            # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
-            train_loss, _, _, _, _, _ = epoch_loop(model, 
-                                                   train_ld, 
-                                                   criterion, 
-                                                   DEVICE, 
-                                                   optimizer, 
-                                                   task_name    = task,
-                                                   bce_thr      = 0.5,
-                                                   amp          = True,
-                                                   clip_grad    = 1.0,
-                                                   beta         = train_cfg[task]["fbeta"])
-            
-            # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
-            val_loss, vacc, vprec, vrec, vf1, vfbeta = epoch_loop(model, 
-                                                                  val_ld,   
-                                                                  criterion, 
-                                                                  DEVICE, 
-                                                                  optimizer = None,
-                                                                  task_name = task,
-                                                                  bce_thr   = 0.5, 
-                                                                  amp       = True, 
-                                                                  clip_grad = 0.0,
-                                                                  beta      = train_cfg[task]["fbeta"])
-                        
-            # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
-            if writer is not None:
-                writer.add_scalar("Loss/train",      train_loss, epoch)
-                writer.add_scalar("Loss/validation", val_loss  , epoch)
+        try:
+            for epoch in range(max_epochs):
+                # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
+                train_loss, _, _, _, _, _ = epoch_loop(model, 
+                                                       train_ld, 
+                                                       criterion, 
+                                                       DEVICE, 
+                                                       optimizer, 
+                                                       task_name    = task,
+                                                       bce_thr      = 0.5,
+                                                       amp          = True,
+                                                       clip_grad    = 1.0,
+                                                       beta         = train_cfg[task]["fbeta"])
+                
+                # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
+                val_loss, vacc, vprec, vrec, vf1, vfbeta = epoch_loop(model, 
+                                                                      val_ld,   
+                                                                      criterion, 
+                                                                      DEVICE, 
+                                                                      optimizer = None,
+                                                                      task_name = task,
+                                                                      bce_thr   = 0.5, 
+                                                                      amp       = True, 
+                                                                      clip_grad = 0.0,
+                                                                      beta      = train_cfg[task]["fbeta"])
+                            
+                # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
+                if writer is not None:
+                    writer.add_scalar("Loss/train",      train_loss, epoch)
+                    writer.add_scalar("Loss/validation", val_loss  , epoch)
 
-            # ┏━━━━━━━━━━ Early Stopping ━━━━━━━━━━┓
-            stop(val_loss, model)
-            step_scheduler(scheduler, epoch, val_loss)
-            if stop.early_stop:
-                break
-            
-            # ┏━━━━━━━━━━ If this epoch is the best so far, record its metrics ━━━━━━━━━━┓
-            if val_loss < best_loss:
-                best_loss = val_loss
-                best_acc  = vacc
-                best_prec = vprec
-                best_f1   = vf1
-                best_rec  = vrec
-                best_fbeta  = vfbeta
-                best_state = copy.deepcopy(model.state_dict())
+                # ┏━━━━━━━━━━ Early Stopping ━━━━━━━━━━┓
+                stop(val_loss, model)
+                step_scheduler(scheduler, epoch, val_loss)
+                if stop.early_stop:
+                    break
+                
+                # ┏━━━━━━━━━━ If this epoch is the best so far, record its metrics ━━━━━━━━━━┓
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    best_acc  = vacc
+                    best_prec = vprec
+                    best_f1   = vf1
+                    best_rec  = vrec
+                    best_fbeta  = vfbeta
+                    best_state = copy.deepcopy(model.state_dict())
+        except RuntimeError as err:
+            if writer is not None:
+                writer.close()
+                writer = None
+            err_lower = str(err).lower()
+            if (
+                "cuda" in err_lower
+                or "cublas" in err_lower
+                or "invalid target index" in err_lower
+            ):
+                torch.cuda.empty_cache()
+                if trial is not None:
+                    reason = (
+                        "invalid target index"
+                        if "invalid target index" in err_lower
+                        else "CUDA failure"
+                    )
+                    raise optuna.TrialPruned(f"Pruned due to {reason}: {err}")
+            raise
         
         # ┏━━━━━━━━━━ Close writer after last fold training ━━━━━━━━━━┓
         if writer is not None:
@@ -396,8 +416,8 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
                                                                        #"focal", 
                                                                        "cross_entropy"]),           # Loss type
         # ┏━━━━━━━━━━ Focal Loss ━━━━━━━━━━┓
-        #"focal_gamma":     trial.suggest_float("focal_gamma", 0.5, 5.0),
-        #"focal_alpha":     (2.954 / (2.954 + 1.1514)),                                              # Default Value
+        "focal_gamma":     3.3771842197375523,
+        "focal_alpha":    (2.954 / (2.954 + 1.1514)),                                              # Default Value
 
         # ┏━━━━━━━━━━ Scheduler ━━━━━━━━━━┓
         "sch_name":        trial.suggest_categorical("sch_name", [#"none",                          # Scheduler Name
@@ -422,13 +442,13 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
 
     # ┏━━━━━━━━━━ CV_Folds Call ━━━━━━━━━━┓
     seed_everything(1493583942)
-    metrics = cv_folds(dataset, params, props, task, trial.number, run_id)
+    metrics = cv_folds(dataset, params, props, task, trial.number, run_id, trial = trial)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
     mean_val_loss = metrics["mean_val_loss"]
     best_prec = metrics["best_prec"]
     best_fbeta = metrics["best_fbeta"]
-    if mean_val_loss > 0.7 and best_fbeta > 0.35:
+    if mean_val_loss > 0.7 or best_fbeta < 0.35:
         raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
@@ -483,7 +503,7 @@ def run_optuna_for_task(dataset: TensorDataset,
         study_name     = study_name,
         storage        = storage_url,
         directions     = ["minimize", "maximize"],
-        pruner         = optuna.pruners.MedianPruner(n_startup_trials=10),
+        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 1),
         load_if_exists = False,
     )
 
@@ -539,7 +559,7 @@ if __name__ == "__main__":
     for task in tasks:
         studies[task] = run_optuna_for_task(dataset, cross_val_props, task)
 
-    print("\n Completed Optuna optimisation for tasks:")
+    print("\n Completed Optuna optimization for tasks:")
     for task, study in studies.items():
         if study.best_trials:
             best = study.best_trials[0]

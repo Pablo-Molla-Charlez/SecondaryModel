@@ -48,7 +48,7 @@ training_mode:
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
 model_up:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
-  cnn_blocks:    1
+  cnn_blocks:    2
   cnn_embed_dim: [256, 128]
   cnn_kernel:    [4, 8]
   cnn_stride:    [4, 2]

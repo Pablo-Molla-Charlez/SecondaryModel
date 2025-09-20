@@ -187,13 +187,14 @@ class CNNEncoder(nn.Module):
         # ┏━━━━━━━━━━ Build a Conv block for each (embed, kernel, stride) and in_channels is the number of features ━━━━━━━━━━┓
         convs: list[nn.Module] = []
         in_ch   = in_channels
+        current_len = context_len
 
         for out_ch, kernel_size, stride in zip(embed_dim, kernel_size, stride):
             if self.use_padding:
                 # ┏━━━━━━━━━━ Compute number of output tokens: ceil(context_len / stride) ━━━━━━━━━━┓
-                out_tokens = math.ceil(context_len / stride)
+                out_tokens = math.ceil(current_len / stride)
                 # ┏━━━━━━━━━━ Compute total padding needed to produce that many tokens ━━━━━━━━━━┓
-                pad_needed = max(0, (out_tokens - 1) * stride + kernel_size - context_len)
+                pad_needed = max(0, (out_tokens - 1) * stride + kernel_size - current_len)
                 pad_left = pad_needed // 2
                 pad_right = pad_needed - pad_left
                 convs.append(nn.Sequential(
@@ -212,9 +213,10 @@ class CNNEncoder(nn.Module):
                                        kernel_size = kernel_size, 
                                        stride = stride, 
                                        padding = 0))
-                n_tokens = (context_len - kernel_size) // stride + 1
+                n_tokens = (current_len - kernel_size) // stride + 1
 
             in_ch = out_ch  # next layer’s in_channels
+            current_len = n_tokens
 
         # ┏━━━━━━━━━━ Multiple Conv1d always internal-padding=0; we pad manually if requested ━━━━━━━━━━┓
         self.convs   = nn.ModuleList(convs)
@@ -271,18 +273,18 @@ class TransformerEncoder(nn.Module):
             raise ValueError(f"Unknown activation: {activation}")
 
         # ┏━━━━━━━━━━ Encoder Layer ━━━━━━━━━━┓
-        encoder_layer = nn.TransformerEncoderLayer(d_model         = embed_dim,
-                                                   nhead           = num_heads,
-                                                   dim_feedforward = dim_ff,
-                                                   dropout         = dropout,
-                                                   activation      = act_spec,
-                                                   batch_first     = True,  # tells PyTorch "my tensors are shaped (B, T, C)", 
-                                                                            # which unlocks the optimized nested-tensor 
-                                                                            # implementation inside MultiheadAttention.
-                                                   norm_first      = True)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model         = embed_dim,
+            nhead           = num_heads,
+            dim_feedforward = dim_ff,
+            dropout         = dropout,
+            activation      = act_spec,
+            batch_first     = False,
+            norm_first      = True,
+        )
 
         # ┏━━━━━━━━━━ Stack the specified number of layers  ━━━━━━━━━━┓
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers = num_layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -295,7 +297,13 @@ class TransformerEncoder(nn.Module):
         x = x.permute(1,0,2)       # (seq_len, batch, embed_dim)
         
         # ┏━━━━━━━━━━ Apply transformer encoder  ━━━━━━━━━━┓
-        out = self.transformer(x)
+        try:
+            out = self.transformer(x)
+        except RuntimeError as err:
+            raise RuntimeError(
+                f"TransformerEncoder failed for input shape {tuple(x.shape)} "
+                f"(seq_len, batch, embed_dim) with error: {err}"
+            ) from err
         
         # ┏━━━━━━━━━━ Permute back to (batch_size, seq_len, embed_dim)  ━━━━━━━━━━┓
         return out.permute(1,0,2)   # (batch, seq_len, embed_dim)

@@ -85,7 +85,10 @@ def build_candidate_config(base_cfg: Dict[str, Any], task: str, trial: optuna.tr
     betas = train_section.get("betas", [0.9, 0.999])
     train_section["betas"] = [params.get("beta1", betas[0]), params.get("beta2", betas[1])]
     train_section["loss_function"] = params["loss_function"]
-    train_section["focal_gamma"] = params["focal_gamma"]
+
+    focal_gamma = params.get("focal_gamma", train_section.get("focal_gamma"))
+    if focal_gamma is not None:
+        train_section["focal_gamma"] = focal_gamma
     train_section["focal_alpha"] = train_section.get("focal_alpha", 2.954 / (2.954 + 1.1514))
 
     scheduler_section = copy.deepcopy(train_section.get("scheduler", {}))
@@ -99,7 +102,9 @@ def build_candidate_config(base_cfg: Dict[str, Any], task: str, trial: optuna.tr
     training_mode = copy.deepcopy(candidate_cfg.get("training_mode", {}))
     training_mode["optuna_task"] = task.upper()
     training_mode["loss_function"] = params["loss_function"]
-    training_mode["focal_gamma"] = params["focal_gamma"]
+
+    if focal_gamma is not None:
+        training_mode["focal_gamma"] = focal_gamma
     training_mode["focal_alpha"] = train_section.get("focal_alpha", training_mode.get("focal_alpha"))
     training_mode["num_classes"] = 1 if params["loss_function"] == "bce" else 2
     candidate_cfg["training_mode"] = training_mode
