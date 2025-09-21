@@ -1,4 +1,17 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+*/__pycache__/
 *.py[cod]
-Data/
+
+# Data directory: ignore everything except Chronos/Crypto/BTC
+CTTS/Data/*
+!CTTS/Data/Chronos/
+CTTS/Data/Chronos/*
+!CTTS/Data/Chronos/Crypto/
+CTTS/Data/Chronos/Crypto/*
+!CTTS/Data/Chronos/Crypto/BTC/
+!CTTS/Data/Chronos/Crypto/BTC/**
+
+# Output contents are ignored; keep folder via .gitkeep
+CTTS/Output/*
+!CTTS/Output/.gitkeep
