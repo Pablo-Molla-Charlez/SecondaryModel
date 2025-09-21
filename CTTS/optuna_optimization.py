@@ -444,8 +444,8 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     mean_val_loss = metrics["mean_val_loss"]
     best_prec = metrics["best_prec"]
     best_fbeta = metrics["best_fbeta"]
-    #if mean_val_loss > 0.7 or best_fbeta < 0.35:
-    #    raise optuna.TrialPruned()
+    if mean_val_loss > 0.7 or best_fbeta < 0.35:
+       raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
     trial.set_user_attr("task",                task)
@@ -499,7 +499,7 @@ def run_optuna_for_task(dataset: TensorDataset,
         study_name     = study_name,
         storage        = storage_url,
         directions     = ["minimize", "maximize"],
-        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 10),
+        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 20),
         load_if_exists = False,
     )
 

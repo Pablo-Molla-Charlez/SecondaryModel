@@ -47,7 +47,7 @@ context_features_dn: ["m1_prediction",
 # ┏━━━━━━━━━━━━━━ Training Mode ━━━━━━━━━━━━━━━┓
 training_mode:
   # ┏━━━━━━━━━━━━━━ Optuna ━━━━━━━━━━━━━━━┓
-  cross_validation: false                              # Training with (true) or without (false) Cross-Validation (including Optuna)
+  cross_validation: false                               # Training with (true) or without (false) Cross-Validation (including Optuna)
   cross_val_props:  0.40                               # Proportion for the Cross-Validation within the Training Split
   optuna_task:      "DN"                               # Primary task for Optuna optimization
   optuna_both:      true                               # If true, run Optuna for both tasks
