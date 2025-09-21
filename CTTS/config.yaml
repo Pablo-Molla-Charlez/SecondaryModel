@@ -19,32 +19,52 @@ splits:
   train: 0.70                                          # Adds up to 1: train + val + test
   val:   0.15
   test:  0.15
-
 sequence_length: 90                                    # 90 das (time-steps) as model context
-column_features: ["close"]                             # Column Features such as "close", "open", etc...                                 
-context_features: ["m1_prediction", 
-                   "m1_dn",
-                   "m1_pred_proba_dn",
-                   "rel_interval_width",
-                   "forecast_slope",
-                   "bowley_skewness",
-                   "moors_kurtosis",
-                   "tail_asymmetry"]                 # Context Features such as "vix", "vcr", etc...                  
+
+# ┏━━━━━━━━ Column & Context Features ━━━━━━━━━┓
+# ┏━━━━━━━━ UP Features ━━━━━━━━━┓
+column_features_up: ["close"]                          # Column Features for UP task
+context_features_up: ["m1_prediction",
+                     "m1_up",
+                     "m1_pred_proba_up",
+                     "rel_interval_width",
+                     "forecast_slope",
+                     "bowley_skewness",
+                     "moors_kurtosis",
+                     "tail_asymmetry"]                # Context Features (UP)
+
+# ┏━━━━━━━━ DN Features ━━━━━━━━━┓
+column_features_dn: ["close"]                          # Column Features for DN task
+context_features_dn: ["m1_prediction",
+                     "m1_dn",
+                     "m1_pred_proba_dn",
+                     "rel_interval_width",
+                     "forecast_slope",
+                     "bowley_skewness",
+                     "moors_kurtosis",
+                     "tail_asymmetry"]                # Context Features (DN)
 
 # ┏━━━━━━━━━━━━━━ Training Mode ━━━━━━━━━━━━━━━┓
 training_mode:
   # ┏━━━━━━━━━━━━━━ Optuna ━━━━━━━━━━━━━━━┓
   cross_validation: false                              # Training with (true) or without (false) Cross-Validation (including Optuna)
   cross_val_props:  0.40                               # Proportion for the Cross-Validation within the Training Split
-  optuna_task:      "DN"                               # Only for Optuna Optimization
-
+  optuna_task:      "DN"                               # Primary task for Optuna optimization
+  optuna_both:      true                               # If true, run Optuna for both tasks
+  
+  # ┏━━━━━━━━━━━━━━ Usual ━━━━━━━━━━━━━━━┓
+  normal_task:      "UP"                               # Task to use for standard training workflows
   loss_function:    "bce"                              # bce | cross_entropy | focal
   focal_gamma:      3.3771842197375523
   focal_alpha:      0.18850587399901642
   num_classes:      1                                  # 1 (bce) | 2 (cross_entropy, focal)
   padding:          true                               # For 1D-CNN
 
-  
+  # ┏━━━━━━━━━━━━━━ Ablation ━━━━━━━━━━━━━━━┓
+  ablation_task:    "UP"                               # Task used by train_ablation.py
+
+
+
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
 model_up:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓

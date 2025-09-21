@@ -1,10 +1,9 @@
 import os
+import argparse
 import datetime
 import yaml
 import torch
 import copy
-import pandas as pd
-
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 from paths import dataset_path
@@ -12,7 +11,7 @@ from paths import dataset_path
 from data_preprocessing import merge_meta_targets, build_loaders, prepare_dataset
 from model import CTTSModel, EarlyStopping
 from optim_utils import get_optimizer,  make_scheduler, step_scheduler
-from train_utils import epoch_loop, seed_everything
+from train_utils import epoch_loop, seed_everything, task_features
 from test_utils import (
     get_preds_and_targets,
     plot_cm_with_metrics,
@@ -20,18 +19,14 @@ from test_utils import (
     get_preds_probs,
     plot_meta_labeling_consensus,
 )
-
-def main():
+def run_training(cfg: dict) -> None:
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 1) CONFIG & ASSET SELECTION                                           ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    base = Path(__file__).parent
-    cfg  = yaml.safe_load(open(base / "config.yaml", "r"))
 
     # Architectural and Hyper & Paramenters Config
     # ┏━━━━━━━━━━ 1.a) For the model architecture parameters i.e. CNN, Transformer, MLP ━━━━━━━━━━┓
     architecture_cfg = {"UP": cfg["model_up"], "DN": cfg["model_dn"]}
-    context_features = cfg["context_features"]
 
     # ┏━━━━━━━━━━ 1.b) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
     train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
@@ -56,40 +51,44 @@ def main():
     # device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
     # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
-    #os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    #os.environ['PYTHONHASHSEED'] = str(1493583942)
-    #init_seeds(1493583942, force_cuda_deterministic = True)
     seed_everything(1493583942)   
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
-                                  asset           = cfg["dataset"]["symbol"],
-                                  data_dir        = str(Path(csv_path).parent),
-                                  output_dir      = str(Path(csv_path).parent),
-                                  column_features = cfg['column_features']
-                                )
+    cfg.setdefault("training_mode", {})
+    normal_task = cfg["training_mode"].get("normal_task", cfg["training_mode"].get("optuna_task", "UP"))
+    normal_task = normal_task.upper()
+    cfg["training_mode"]["normal_task"] = normal_task
 
-    
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 5) DATALOADERS & CRITERION                                            ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    for task in [(cfg["training_mode"]["optuna_task"])]: # Replace by [("UP", "DN")] for both
+    for task in [normal_task]:
         print(f"\n────────── {task} model ──────────")
         model_cfg = architecture_cfg[task]
         trainer_cfg = train_cfg[task]
+
+        # ┏━━━━━━━━━━ Extracting Column & Context Features ━━━━━━━━━━┓
+        column_features = task_features(cfg, "column_features", task)
+        context_features = task_features(cfg, "context_features", task)
+
+        df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
+                                      asset           = cfg["dataset"]["symbol"],
+                                      data_dir        = str(Path(csv_path).parent),
+                                      output_dir      = str(Path(csv_path).parent),
+                                      column_features = column_features
+                                    )
 
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
         # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
         dataset_tensor = prepare_dataset(df_asset, 
                                          seq_len          = cfg["sequence_length"],
-                                         column_features  = cfg["column_features"],
-                                         context_features = cfg["context_features"])
+                                         column_features  = column_features,
+                                         context_features = context_features)
         
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
-        #init_seeds(1493583942, force_cuda_deterministic = True)
         seed_everything(1493583942)  # Re-seed for reproducibility
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
                                                  cross_validation = False,
@@ -112,7 +111,7 @@ def main():
             cnn_kernel    = model_cfg["cnn_kernel"],
             cnn_stride    = model_cfg["cnn_stride"],
             p_pos_drop    = model_cfg["p_pos_drop"],
-            nb_features   = len(cfg['column_features']),
+            nb_features   = len(column_features),
             
             # ┏━━━━━━━━━━ Transformer Parameters ━━━━━━━━━━┓
             trans_heads   = model_cfg["transformer"]["heads"],
@@ -209,7 +208,7 @@ def main():
                                                     crit, 
                                                     device, 
                                                     optimizer, 
-                                                    task_name    = cfg["training_mode"]["optuna_task"],
+                                                    task_name    = task,
                                                     bce_thr      = 0.5,
                                                     amp          = True,
                                                     clip_grad    = 1.0,
@@ -221,7 +220,7 @@ def main():
                                                                     crit, 
                                                                     device, 
                                                                     optimizer = None,
-                                                                    task_name = cfg["training_mode"]["optuna_task"],
+                                                                    task_name = task,
                                                                     bce_thr   = 0.5, 
                                                                     amp       = True, 
                                                                     clip_grad = 0.0,
@@ -276,15 +275,15 @@ def main():
                 model.load_state_dict(best_state)
 
                 # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
-                ckpt_path = checkpoint_dir / f'{cfg["training_mode"]["optuna_task"]}_best.pt'
+                ckpt_path = checkpoint_dir / f'{task}_best.pt'
                 torch.save(best_state, ckpt_path)
 
                 # ┏━━━━━━━━━━ Original split's Model Evaluation on Validation Set & Confusion Matrix ━━━━━━━━━━┓
-                vpreds, vtargets = get_preds_and_targets(model, val_loader, device, cfg["training_mode"]["optuna_task"], cfg["training_mode"]["loss_function"])
+                vpreds, vtargets = get_preds_and_targets(model, val_loader, device, task, cfg["training_mode"]["loss_function"])
                 plot_cm_with_metrics(vpreds, 
                                     vtargets,
-                                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
-                                    title   = f'{cfg["training_mode"]["optuna_task"]} — Validation',
+                                    labels  = (f'No_TP_{task}', f'TP_{task}'),
+                                    title   = f'M2_{task} — Validation',
                                     out_dir = checkpoint_dir,
                                     cmap    = "Oranges"
                                 )
@@ -296,7 +295,7 @@ def main():
                                                                     crit, 
                                                                     device,
                                                                     optimizer = None, 
-                                                                    task_name = cfg["training_mode"]["optuna_task"], 
+                                                                    task_name = task, 
                                                                     bce_thr   = 0.5, 
                                                                     amp       = True, 
                                                                     clip_grad = 0.0,
@@ -310,14 +309,14 @@ def main():
                 # ┏━━━━━━━━━━ Test Confusion Matrix + Probabilities ━━━━━━━━━━┓
                 tpreds, tprobs, ttargets = get_preds_probs(
                     model, test_loader, device,
-                    cfg["training_mode"]["optuna_task"],
+                    task,
                     cfg["training_mode"]["loss_function"]
                 )
                 plot_cm_with_metrics(
                     tpreds,
                     ttargets,
-                    labels  = (f'No_TP_{cfg["training_mode"]["optuna_task"]}', f'TP_{cfg["training_mode"]["optuna_task"]}'),
-                    title   = f'{cfg["training_mode"]["optuna_task"]} — Test',
+                    labels  = (f'No_TP_{task}', f'TP_{task}'),
+                    title   = f'M2_{task} — Test',
                     out_dir = checkpoint_dir,
                     cmap    = "Blues"
                 )
@@ -340,6 +339,30 @@ def main():
             
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
             torch.cuda.empty_cache()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train CTTS model")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config_431.yaml",
+        help="Path to the YAML configuration file",
+    )
+    args = parser.parse_args()
+
+    cfg_path = Path(args.config)
+    if not cfg_path.is_absolute():
+        cfg_path = Path(__file__).parent / cfg_path
+
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Could not find config file at {cfg_path}")
+
+    with cfg_path.open("r") as fh:
+        cfg = yaml.safe_load(fh)
+
+    run_training(cfg)
+
 
 if __name__ == "__main__":
     main()

@@ -18,7 +18,7 @@ from optuna import logging as optuna_logging
 
 from pathlib import Path
 from typing import List, Optional
-from optuna_utils import build_candidate_config, export_pareto_configs
+from optuna_utils import build_candidate_config, export_pareto_configs, feature_map
 from torch.utils.data import TensorDataset, Subset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -46,9 +46,9 @@ cfg  = yaml.safe_load(open(config_path, "r"))
 train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
 
 # ┏━━━━━━━━━━ 3.c) Fixed Constants ━━━━━━━━━━┓
-seq_len          = cfg["sequence_length"]
-column_features  = cfg["column_features"]
-context_features = cfg["context_features"]
+seq_len = cfg["sequence_length"]
+COLUMN_FEATURES = feature_map(cfg, "column_features")
+CONTEXT_FEATURES = feature_map(cfg, "context_features")
 train_frac       = cfg["splits"]["train"]
 val_frac         = cfg["splits"]["val"]
 test_frac        = cfg["splits"]["test"]
@@ -67,11 +67,6 @@ cli.add_argument("--seed",    type=int, default=42,  help="Global random seed")
 cli.add_argument("--device",  type=str, default= 'cuda', help="'cuda', 'cpu' or 'mps'.  If omitted → auto-detect")
 ARGS = cli.parse_args()
 
-
-# ┏━━━━━━━━━━ Optuna logging ━━━━━━━━━━┓
-# optuna_logging.set_verbosity(optuna_logging.WARNING)
-# optuna_logging.disable_default_handler()
-
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 4. REPRODUCIBILITY & DEVICE                                           ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -80,7 +75,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Running on {DEVICE}")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
-#os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 seed_everything(1493583942)
 
 
@@ -89,6 +83,8 @@ seed_everything(1493583942)
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Optional[optuna.Trial] = None) -> dict[str, float]:
     task = task.upper()
+    task_columns = COLUMN_FEATURES[task]
+    task_context = CONTEXT_FEATURES[task]
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
     seed_everything(1493583942)
     folds, test_loader = build_loaders(ds,
@@ -141,7 +137,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
             cnn_kernel    = params["cnn_kernel"],
             cnn_stride    = params["cnn_stride"],
             p_pos_drop    = params["p_pos_drop"],
-            nb_features   = len(column_features),
+            nb_features   = len(task_columns),
 
             # ┏━━━━━━━━━━ 2. Transformer Architecture ━━━━━━━━━━┓
             trans_heads   = params["heads"],
@@ -157,7 +153,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
             mlp_pooling   = params["mlp_pooling"],
 
             # ┏━━━━━━━━━━ 4. Other Parameters ━━━━━━━━━━┓
-            context_len   = seq_len + len(context_features),  # sequence length plus appended context tokens
+            context_len   = seq_len + len(task_context),  # sequence length plus appended context tokens
             padding       = padding,
             num_classes   = 1 if params["loss_function"] == "bce" else 2,
         ).to(DEVICE)
@@ -448,8 +444,8 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     mean_val_loss = metrics["mean_val_loss"]
     best_prec = metrics["best_prec"]
     best_fbeta = metrics["best_fbeta"]
-    if mean_val_loss > 0.7 or best_fbeta < 0.35:
-        raise optuna.TrialPruned()
+    #if mean_val_loss > 0.7 or best_fbeta < 0.35:
+    #    raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
     trial.set_user_attr("task",                task)
@@ -535,29 +531,38 @@ if __name__ == "__main__":
                             cfg["dataset"]["symbol"],
                             "up")
 
-    # ┏━━━━━━━━━━ 7.b) Reading CSV ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 7.b) Extracting Column Features ━━━━━━━━━━┓
+    all_columns = []
+    for feat_list in COLUMN_FEATURES.values():
+        for feat in feat_list:
+            if feat not in all_columns:
+                all_columns.append(feat)
+
+    # ┏━━━━━━━━━━ 7.c) Reading CSV ━━━━━━━━━━┓
     df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
                                   asset           = cfg["dataset"]["symbol"],
                                   data_dir        = str(Path(csv_path).parent),
                                   output_dir      = str(Path(csv_path).parent),
-                                  column_features = cfg['column_features']
-                                )
+                                  column_features = all_columns)
 
-    # ┏━━━━━━━━━━ 7.c) Preparing Data ━━━━━━━━━━┓        
-    dataset = prepare_dataset(df_asset, 
-                              seq_len          = cfg["sequence_length"],
-                              column_features  = cfg['column_features'],
-                              context_features = cfg['context_features'])
+    # ┏━━━━━━━━━━ 7.d) Preparing Data ━━━━━━━━━━┓        
     default_task = optuna_task.upper()
     tasks = [default_task]
-    opposite_task = "DN" if default_task == "UP" else "UP"
-    if opposite_task not in tasks:
-        tasks.append(opposite_task)
+    if cfg["training_mode"].get("optuna_both", True):
+        opposite_task = "DN" if default_task == "UP" else "UP"
+        if opposite_task not in tasks:
+            tasks.append(opposite_task)
 
-    # ┏━━━━━━━━━━ 7.d) Running BOTH (UP/DOWN) Optuna Studies ━━━━━━━━━━┓
+    datasets = {task: prepare_dataset(
+                      df_asset,
+                      seq_len = cfg["sequence_length"],
+                      column_features = COLUMN_FEATURES[task],
+                      context_features = CONTEXT_FEATURES[task]) for task in tasks}
+
+    # ┏━━━━━━━━━━ 7.e) Running BOTH (UP/DOWN) Optuna Studies ━━━━━━━━━━┓
     studies = {}
     for task in tasks:
-        studies[task] = run_optuna_for_task(dataset, cross_val_props, task)
+        studies[task] = run_optuna_for_task(datasets[task], cross_val_props, task)
 
     print("\n Completed Optuna optimization for tasks:")
     for task, study in studies.items():

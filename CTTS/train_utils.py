@@ -7,6 +7,18 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from torch.amp import GradScaler, autocast
 from optim_utils import step_scheduler
 
+
+def task_features(cfg: dict, prefix: str, task: str) -> list:
+    """Return the feature list for the given task, falling back to shared entries."""
+    key = f"{prefix}_{task.lower()}"
+    if key in cfg:
+        values = cfg[key]
+    else:
+        raise KeyError(f"Missing '{key}' in configuration for task '{task}'.")
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"Configuration key '{key}' must be a non-empty list.")
+    return values
+
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ INITIALIZATION OF SEEDS                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛

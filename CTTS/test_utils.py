@@ -54,7 +54,12 @@ def get_preds_and_targets(model: torch.nn.Module,
     return np.array(all_preds), np.array(all_targets)
 
 
-def plot_cm_with_metrics(preds, targets, labels, title, out_dir, cmap="Oranges"):
+def plot_cm_with_metrics(preds,
+                         targets,
+                         labels,
+                         title,
+                         out_dir,
+                         cmap="Oranges"):
     """
     preds, targets : array-like of shape (n_samples,)
     labels         : tuple of display labels, e.g. ("No_TP","TP")
@@ -62,7 +67,6 @@ def plot_cm_with_metrics(preds, targets, labels, title, out_dir, cmap="Oranges")
     out_dir        : pathlib.Path or str where to save the PNG
     cmap           : Matplotlib colormap name
     """
-    # ┏━━━━━━━━━━ 1) Compute metrics ━━━━━━━━━━┓
     cm    = confusion_matrix(targets, preds)
     acc   = accuracy_score(targets, preds)
     prec  = precision_score(targets, preds, zero_division = 0)
@@ -70,13 +74,11 @@ def plot_cm_with_metrics(preds, targets, labels, title, out_dir, cmap="Oranges")
     f1    = f1_score(targets, preds)
     fbeta = fbeta_score(targets, preds, beta = 0.9, zero_division = 0)
 
-    # ┏━━━━━━━━━━  2) Plot ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(4, 4))
     disp = ConfusionMatrixDisplay(cm, display_labels=labels)
     disp.plot(cmap=cmap, ax=ax, colorbar=False)
     ax.set_title(title)
 
-    # ┏━━━━━━━━━━  3) Annotate metrics ━━━━━━━━━━┓
     textstr = (
         f"Accuracy : {acc:.2f}\n"
         f"Precision: {prec:.2f}\n"
@@ -91,13 +93,10 @@ def plot_cm_with_metrics(preds, targets, labels, title, out_dir, cmap="Oranges")
         verticalalignment='top',
         bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray')
     )
-    plt.tight_layout()
 
-    # ┏━━━━━━━━━━  4) Save to disk ━━━━━━━━━━┓
+    fig.tight_layout()
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    
-    # ┏━━━━━━━━━━ 5) Sanitize filename ━━━━━━━━━━┓
     fname = title.replace(" — ", "_") + ".png"
     fig.savefig(out_path / fname, dpi=150)
     plt.close(fig)
@@ -186,7 +185,8 @@ def export_predictions(df_asset,
 
     # ┏━━━━━━━━━━ Coalesce 'prediction' and 'ground_truth' ━━━━━━━━━━┓
     # ┏━━━━━━━━━━ Task-specific columns ━━━━━━━━━━┓
-    task = cfg["training_mode"]["optuna_task"].upper()
+    training_mode = cfg.get("training_mode", {})
+    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper() # If fais the normal_task, falling back to optuna_task
     task_lower = task.lower()
 
     pred_series_up = merged.get("numerical_prediction_up")
@@ -317,8 +317,12 @@ def plot_meta_labeling_consensus(cfg: dict,
     Build a consensus confusion matrix using the exported predictions CSV and save
     it alongside the CSV as 'meta_labeling_results.png'. Consensus equals 1 only
     when the M1 prediction and CTTS prediction agree on 1 for the active task.
+
+    Additionally, plot M1 vs lab confusion matrices for the UP and DOWN predictions
+    (if the exported CSV provides those columns).
     """
-    task = cfg["training_mode"]["optuna_task"].upper()
+    training_mode = cfg.get("training_mode", {})
+    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper()
     symbol = cfg["dataset"]["symbol"]
     csv_path = Path(checkpoint_dir) / f"{symbol}_{task}_predictions.csv"
     if not csv_path.exists():
@@ -346,7 +350,7 @@ def plot_meta_labeling_consensus(cfg: dict,
     fig, ax = plt.subplots(figsize=(4, 4))
     disp = ConfusionMatrixDisplay(cm, display_labels=labels)
     disp.plot(cmap="Purples", ax=ax, colorbar=False)
-    ax.set_title(f"{task} — Meta-Label Consensus")
+    ax.set_title(f"M1+M2_{task} — Test")
     ax.set_xlabel("Predicted Consensus")
     ax.set_ylabel("True Label")
 
@@ -367,10 +371,32 @@ def plot_meta_labeling_consensus(cfg: dict,
         verticalalignment='top',
         bbox=dict(boxstyle='round', facecolor='white', edgecolor='gray')
     )
-    fig.tight_layout()
 
-    out_path = csv_path.parent / "Meta_Labeling_Results.png"
+    fig.tight_layout()
+    out_path = csv_path.parent / f"M1+M2_{task}_Results.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved meta-labeling consensus confusion matrix to {out_path}")
+
+    if "lab" in df.columns:
+        lab = df["lab"].fillna(0).astype(int)
+        cmap = "Blues"  # match UP_Test.png styling
+        plot_specs = {
+            "m1_pred_up": "M1_UP — Test",
+            "m1_pred_down": "M1_DN — Test",
+        }
+
+        for col_name, title in plot_specs.items():
+            if col_name not in df.columns:
+                continue
+            preds = df[col_name].fillna(0).astype(int)
+            plot_cm_with_metrics(
+                preds=preds,
+                targets=lab,
+                labels=labels,
+                title=title,
+                out_dir=checkpoint_dir,
+                cmap=cmap,
+            )
+
     return out_path

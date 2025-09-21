@@ -22,6 +22,15 @@ def to_builtin(obj: Any):
     return obj
 
 
+def feature_map(cfg: Dict[str, Any], prefix: str) -> Dict[str, list]:
+    """Return per-task feature lists, falling back to shared definitions."""
+    up_key = f"{prefix}_up"
+    dn_key = f"{prefix}_dn"
+    if up_key in cfg and dn_key in cfg:
+        return {"UP": cfg[up_key], "DN": cfg[dn_key]}
+    raise KeyError(f"Configuration must define '{prefix}_up'/'{prefix}_dn' or shared '{prefix}'.")
+
+
 def build_candidate_config(base_cfg: Dict[str, Any], task: str, trial: optuna.trial.FrozenTrial) -> Dict[str, Any]:
     """Create a config dictionary containing the trial-specific values."""
     task_lower = task.lower()
@@ -180,4 +189,4 @@ def export_pareto_configs(
     return saved
 
 
-__all__ = ["to_builtin", "build_candidate_config", "export_pareto_configs"]
+__all__ = ["to_builtin", "feature_map", "build_candidate_config", "export_pareto_configs"]
