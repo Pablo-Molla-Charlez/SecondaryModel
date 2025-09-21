@@ -186,7 +186,7 @@ def export_predictions(df_asset,
     # ┏━━━━━━━━━━ Coalesce 'prediction' and 'ground_truth' ━━━━━━━━━━┓
     # ┏━━━━━━━━━━ Task-specific columns ━━━━━━━━━━┓
     training_mode = cfg.get("training_mode", {})
-    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper() # If fais the normal_task, falling back to optuna_task
+    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper() # If fails the normal_task, falling back to optuna_task
     task_lower = task.lower()
 
     pred_series_up = merged.get("numerical_prediction_up")
@@ -220,10 +220,8 @@ def export_predictions(df_asset,
 
     if task == "UP":
         merged["meta_label"] = merged.get("meta_label_up")
-        merged["lab"]        = merged.get("lab_up")
     else:
         merged["meta_label"] = merged.get("meta_label_dn")
-        merged["lab"]        = merged.get("lab_dn")
 
     # ┏━━━━━━━━━━ Include CTTS (M2) discrete predictions ━━━━━━━━━━┓
     pred_col = f"m2_pred_{task_lower}"
@@ -243,7 +241,8 @@ def export_predictions(df_asset,
         "m1_pred_proba_dn",
         "meta_label",
         "ground_truth",
-        "lab",
+        "lab_up",
+        "lab_dn",
         pred_col,
     ]
     # Include probability column for this task only if present
@@ -333,15 +332,16 @@ def plot_meta_labeling_consensus(cfg: dict,
     m1_suffix = "down" if task == "DN" else "up"
     m1_col = f"m1_pred_{m1_suffix}"
     m2_col = f"m2_pred_{task_lower}"
+    target_col = "lab_dn" if task == "DN" else "lab_up"
 
-    required_cols = {m1_col, m2_col, "lab"}
+    required_cols = {m1_col, m2_col, target_col}
     missing = required_cols - set(df.columns)
     if missing:
         raise KeyError(f"Missing required columns in predictions CSV: {sorted(missing)}")
 
     m1_preds = df[m1_col].fillna(0).astype(int)
     m2_preds = df[m2_col].fillna(0).astype(int)
-    targets  = df["lab"].fillna(0).astype(int)
+    targets  = df[target_col].fillna(0).astype(int)
 
     consensus_preds = ((m1_preds == 1) & (m2_preds == 1)).astype(int)
 
@@ -378,25 +378,22 @@ def plot_meta_labeling_consensus(cfg: dict,
     plt.close(fig)
     print(f"Saved meta-labeling consensus confusion matrix to {out_path}")
 
-    if "lab" in df.columns:
-        lab = df["lab"].fillna(0).astype(int)
-        cmap = "Blues"  # match UP_Test.png styling
-        plot_specs = {
-            "m1_pred_up": "M1_UP — Test",
-            "m1_pred_down": "M1_DN — Test",
-        }
+    cmap = "Blues"  # match UP_Test.png styling
+    plot_specs = [
+        ("m1_pred_up", "lab_up", ("No_TP_UP", "TP_UP"), "M1_UP — Test"),
+        ("m1_pred_down", "lab_dn", ("No_TP_DN", "TP_DN"), "M1_DN — Test"),
+    ]
 
-        for col_name, title in plot_specs.items():
-            if col_name not in df.columns:
-                continue
-            preds = df[col_name].fillna(0).astype(int)
-            plot_cm_with_metrics(
-                preds=preds,
-                targets=lab,
-                labels=labels,
-                title=title,
-                out_dir=checkpoint_dir,
-                cmap=cmap,
-            )
+    for pred_col, lab_col, display_labels, title in plot_specs:
+        preds = df[pred_col].fillna(0).astype(int)
+        lab_targets = df[lab_col].fillna(0).astype(int)
+        plot_cm_with_metrics(
+            preds=preds,
+            targets=lab_targets,
+            labels=display_labels,
+            title=title,
+            out_dir=checkpoint_dir,
+            cmap=cmap,
+        )
 
     return out_path

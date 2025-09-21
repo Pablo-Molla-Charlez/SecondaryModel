@@ -14,4 +14,3 @@ CTTS/Data/Chronos/Crypto/*
 
 # Output contents are ignored; keep folder via .gitkeep
 CTTS/Output/*
-!CTTS/Output/.gitkeep
