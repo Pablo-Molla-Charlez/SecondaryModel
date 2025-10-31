@@ -165,7 +165,7 @@ def count_meta_targets(df: pd.DataFrame,
                        columns: Sequence[str] = ("isTP_UP", "isTP_DN"),
                        task: Optional[str] = None) -> Dict[str, Dict[str, int]]:
     """
-    Summarise class counts for the directional meta targets (and matching M1 predictions).
+    Summarise class counts for the directional meta targets alongside lab labels.
 
     Parameters
     ----------
@@ -174,8 +174,8 @@ def count_meta_targets(df: pd.DataFrame,
     columns : Sequence[str]
         Which meta-target columns to tally.
     task : Optional[str]
-        Active task name ('UP' or 'DN'); when provided the respective `m1_*` column
-        is counted as well.
+        Active task name ('UP' or 'DN'); when provided, the corresponding lab columns
+        are prioritised (but both `lab_up` and `lab_dn` are tallied when available).
 
     Returns
     -------
@@ -183,42 +183,42 @@ def count_meta_targets(df: pd.DataFrame,
         Nested dictionary mapping column → {class_value: count}.
     """
     
-    # ┏━━━━━━━━━━ Empty Dict ━━━━━━━━━━┓
+    def _serialise_counts(series: pd.Series) -> Dict[str, int]:
+        vc = series.value_counts(dropna = False)
+        col_counts: Dict[str, int] = {}
+        for value, freq in vc.items():
+            if pd.isna(value):
+                key = "nan"
+            elif isinstance(value, (int, np.integer)):
+                key = str(int(value))
+            elif isinstance(value, float) and value.is_integer():
+                key = str(int(value))
+            else:
+                key = str(value)
+            col_counts[key] = int(freq)
+        return col_counts
+
+    # ┏━━━━━━━━━━ Meta-label counts ━━━━━━━━━━┓
     counts: Dict[str, Dict[str, int]] = {}
     for col in columns:
         if col not in df.columns:
             counts[col] = {}
             continue
+        counts[col] = _serialise_counts(df[col])
 
-        vc = df[col].value_counts(dropna = False)
-        col_counts: Dict[str, int] = {}
-        for value, freq in vc.items():
-            if pd.isna(value):
-                col_counts["nan"] = int(freq)
-            else:
-                col_counts[str(int(value))] = int(freq)
-        counts[col] = col_counts
-
-    # ┏━━━━━━━━━━ Ground Truth (lab_up & lab_dn) ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Lab counts ━━━━━━━━━━┓
     task_upper = (task or "").upper()
-    m1_column = None
-    if task_upper == "DN" and "m1_dn" in df.columns:
-        m1_column = "m1_dn"
-    elif task_upper == "UP" and "m1_up" in df.columns:
-        m1_column = "m1_up"
+    if task_upper == "DN":
+        label_candidates = ("lab_dn", "lab_up")
+    elif task_upper == "UP":
+        label_candidates = ("lab_up", "lab_dn")
+    else:
+        label_candidates = ("lab_up", "lab_dn")
 
-    if m1_column:
-        vc = df[m1_column].value_counts(dropna = False)
-        col_counts: Dict[str, int] = {}
-        for value, freq in vc.items():
-            if pd.isna(value):
-                col_counts["nan"] = int(freq)
-            else:
-                try:
-                    col_counts[str(int(value))] = int(freq)
-                except (TypeError, ValueError):
-                    col_counts[str(value)] = int(freq)
-        counts[m1_column] = col_counts
+    for label_col in label_candidates:
+        if label_col not in df.columns:
+            continue
+        counts[label_col] = _serialise_counts(df[label_col])
 
     return counts
 
