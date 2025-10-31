@@ -15,24 +15,50 @@ import yaml
 import subprocess
 import optuna
 from optuna import logging as optuna_logging
+from tqdm.auto import tqdm
 
 from pathlib import Path
-from typing import List, Optional
-from optuna_utils import build_candidate_config, export_pareto_configs, feature_map
-from torch.utils.data import TensorDataset, Subset, DataLoader
+from typing import List, Optional, Dict, Any
+from torch.utils.data import TensorDataset
 from torch.utils.tensorboard import SummaryWriter
-
+from paths import dataset_path
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 2. SPECIFIC CLASSES & FUNCTIONS IMPORTS                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-from model import CTTSModel, EarlyStopping
-from train_utils import epoch_loop, seed_everything
-from optim_utils import make_scheduler, step_scheduler, get_optimizer
-from data_preprocessing import prepare_dataset, build_loaders, merge_meta_targets
-from paths import dataset_path
-from test_utils import get_preds_and_targets, plot_cm_with_metrics
 
+# ┏━━━━━━━━━━ Training utils ━━━━━━━━━━┓
+from model import CTTSModel, EarlyStopping
+from Utils.train_utils import (epoch_loop, 
+                              seed_everything, 
+                              select_threshold_fbeta, 
+                              evaluate_threshold,
+                              build_scores)
+
+# ┏━━━━━━━━━━ Optimization utils ━━━━━━━━━━┓
+from Utils.optim_utils import (make_scheduler, 
+                               step_scheduler, 
+                               get_optimizer)
+
+# ┏━━━━━━━━━━ Data Preprocessing utils ━━━━━━━━━━┓
+from data_preprocessing import (prepare_dataset, 
+                                build_loaders, 
+                                merge_meta_targets)
+
+# ┏━━━━━━━━━━ Evaluation utils ━━━━━━━━━━┓
+from Utils.test_utils import plot_cm_with_metrics
+
+# ┏━━━━━━━━━━ Optuna utils ━━━━━━━━━━┓
+from Utils.optuna_utils import (feature_map,
+                                export_pareto_configs,
+                                parse_optuna_objectives)
+
+# ┏━━━━━━━━━━ Selective Classification ━━━━━━━━━━┓
+from selective_classification import (collect_risk_coverage_curve,
+                                      area_under_risk_coverage,
+                                      plot_coverage_risk_curve,
+                                      save_metrics,
+                                      coverage_at_risk)
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 3. CONFIG & CLIENT ARGUMENTS                                          ┃
@@ -42,29 +68,48 @@ base = Path(__file__).parent
 config_path = base / "config.yaml"
 cfg  = yaml.safe_load(open(config_path, "r"))
 
-# ┏━━━━━━━━━━ 3.b) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
-train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
+# ┏━━━━━━━━━━ 3.b) Optuna Objectives ━━━━━━━━━━┓
+optuna_objectives = parse_optuna_objectives(cfg["training_mode"]["optuna_objectives"])
+optuna_directions = [direction for direction, _ in optuna_objectives]
+optuna_metrics    = [metric for _, metric in optuna_objectives]
 
-# ┏━━━━━━━━━━ 3.c) Fixed Constants ━━━━━━━━━━┓
-seq_len = cfg["sequence_length"]
-COLUMN_FEATURES = feature_map(cfg, "column_features")
+# ┏━━━━━━━━━━ 3.c) For the training hyper-parameters, i.e. learning rate, batch size, etc. ━━━━━━━━━━┓
+train_cfg = {"UP": cfg["train_up"], "DN": cfg["train_dn"]}
+provider = cfg["dataset"]["source"].capitalize()
+symbol = cfg["dataset"]["symbol"].upper()
+
+# ┏━━━━━━━━━━ 3.d) Fixed Constants ━━━━━━━━━━┓
+seq_len          = cfg["sequence_length"]
+COLUMN_FEATURES  = feature_map(cfg, "column_features")
 CONTEXT_FEATURES = feature_map(cfg, "context_features")
 train_frac       = cfg["splits"]["train"]
 val_frac         = cfg["splits"]["val"]
 test_frac        = cfg["splits"]["test"]
 
-# ┏━━━━━━━━━━ 3.d) Cross-Validation ━━━━━━━━━━┓
-cross_validation = cfg["training_mode"]["cross_validation"] # Set it to true
-cross_val_props  = cfg["training_mode"]["cross_val_props"]
-optuna_task      = cfg["training_mode"]["optuna_task"]
-num_classes      = cfg["training_mode"]["num_classes"]
-padding          = cfg["training_mode"]["padding"]
+# ┏━━━━━━━━━━ 3.e) Cross-Validation ━━━━━━━━━━┓
+cv_opt             = cfg["training_mode"]["cv_optuna"]
+cross_val_props    = cfg["training_mode"]["cross_val_props"]
+optuna_task        = cfg["training_mode"]["optuna_task"]
+num_classes        = cfg["training_mode"]["num_classes"]
+padding            = cfg["training_mode"]["padding"]
+granularity_optuna = cfg["training_mode"]["granularity_optuna"]
+granularity_slug   = granularity_optuna.replace(" ", "").replace("-", "").lower()
 
-# ┏━━━━━━━━━━ 3.e) Client ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ 3.f) Coverage Configuration ━━━━━━━━━━┓
+threshold_cfg      = cfg["training_mode"].get("threshold", {})
+policy             = threshold_cfg["policy"].lower()
+alpha_cfg          = float(threshold_cfg["alpha"])
+fbeta_cfg          = float(threshold_cfg["fbeta"])
+gating_mode        = threshold_cfg["gating"].lower()
+min_coverage_cfg   = float(threshold_cfg["min_coverage"])
+min_selected_cfg   = float(threshold_cfg["min_selected_count"])
+floor_policy       = float(threshold_cfg["floor_policy"])
+
+# ┏━━━━━━━━━━ 3.g) Client ━━━━━━━━━━┓
 cli = argparse.ArgumentParser()
-cli.add_argument("--trials",  type=int, default=500, help="Optuna trials")    # 500 different parameter combinations
-cli.add_argument("--seed",    type=int, default=42,  help="Global random seed")
-cli.add_argument("--device",  type=str, default= 'cuda', help="'cuda', 'cpu' or 'mps'.  If omitted → auto-detect")
+cli.add_argument("--trials",  type = int, default = 500,    help = "Optuna trials")    # 500 different parameter combinations
+cli.add_argument("--seed",    type = int, default = 42,     help = "Global random seed")
+cli.add_argument("--device",  type = str, default = 'cuda', help = "'cuda', 'cpu' or 'mps'.  If omitted → auto-detect")
 ARGS = cli.parse_args()
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -72,11 +117,10 @@ ARGS = cli.parse_args()
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 # ┏━━━━━━━━━━ Select GPU if available, otherwise CPU ━━━━━━━━━━┓
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Running on {DEVICE}")
+print(f"\nDevice: {DEVICE}")
 
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
 seed_everything(1493583942)
-
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 5. CROSS-VALIDATION RUN                                               ┃
@@ -85,10 +129,11 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
     task = task.upper()
     task_columns = COLUMN_FEATURES[task]
     task_context = CONTEXT_FEATURES[task]
+
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
     seed_everything(1493583942)
     folds, test_loader = build_loaders(ds,
-                                       cross_validation = True,                    # Must be True
+                                       cross_validation = cv_opt,                  # Must be True
                                        target           = task,                    # "DN" otherwise
                                        props            = props,                   # Fixed
                                        train_frac       = train_frac,              # Fixed
@@ -101,26 +146,34 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                        device           = DEVICE)
     
     # ┏━━━━━━━━━━ 5.b) Storage of Validation Losses and Metrics (each fold) ━━━━━━━━━━┓
-    n_folds        = len(folds)
-    test_precision = None
-    fold_losses    = []
-    fold_accs      = []
-    fold_precs     = []
-    fold_f1s       = []
-    fold_recs      = []
-    fold_fbetas    = []
+    n_folds            = len(folds)
+    fold_losses        = []
+    fold_accs          = []
+    fold_precs         = []
+    fold_f1s           = []
+    fold_recs          = []
+    fold_fbetas        = []
+    # val_thresholds     = []
+    # val_metrics        = []
+    # val_aurcs          = []
+    # last_val_curve     = None
+    # last_val_preds     = None
+    # last_val_targets   = None
+    # last_val_metrics   = None
+    # last_tau           = None
+    # last_val_aurc      = None
+    # last_fold_metric   = None
     
     # ┏━━━━━━━━━━ Prepare directory for this Trial's Confusion Matrices (Val & Test) & TensorBoard ━━━━━━━━━━┓
-    optuna_task_dir = base / cfg["paths"]["output_root"] / "Optuna" / f"Task_{task}"
+    optuna_task_dir = base / cfg["paths"]["output_root"] / "Optuna" / provider / symbol / task / granularity_slug
     trial_dir = optuna_task_dir / run_id / f"Trial_{trial_number}"
     ckpt_dir  = trial_dir / "checkpoints"
     cm_dir    = trial_dir / "confusion_matrices"
-    for d in (ckpt_dir, cm_dir):
-        d.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ TensorBoard Directory (holding the writer here once we hit the last fold) ━━━━━━━━━━┓
-    tb_trial_dir = base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard" / f"Task_{task}" / run_id
-    tb_trial_dir.mkdir(parents=True, exist_ok=True)
+    tb_trial_dir = (base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard"
+                    / provider / symbol / task / granularity_slug / run_id)
+    tb_trial_dir.mkdir(parents = True, exist_ok = True)
     writer = None
 
     # ┏━━━━━━━━━━ 5.c) Model Instantiation, Train & Validation per fold ━━━━━━━━━━┓
@@ -153,7 +206,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
             mlp_pooling   = params["mlp_pooling"],
 
             # ┏━━━━━━━━━━ 4. Other Parameters ━━━━━━━━━━┓
-            context_len   = seq_len + len(task_context),  # sequence length plus appended context tokens
+            context_len   = seq_len + len(task_context),  # Sequence length plus appended context tokens
             padding       = padding,
             num_classes   = 1 if params["loss_function"] == "bce" else 2,
         ).to(DEVICE)
@@ -182,72 +235,79 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
         best_state = None            # ← store best weights in memory
 
         # ┏━━━━━━━━━━ Train & Validation ━━━━━━━━━━┓
-        try:
-            for epoch in range(max_epochs):
-                # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
-                train_loss, _, _, _, _, _ = epoch_loop(model, 
-                                                       train_ld, 
-                                                       criterion, 
-                                                       DEVICE, 
-                                                       optimizer, 
-                                                       task_name    = task,
-                                                       bce_thr      = 0.5,
-                                                       amp          = True,
-                                                       clip_grad    = 1.0,
-                                                       beta         = train_cfg[task]["fbeta"])
-                
-                # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
-                val_loss, vacc, vprec, vrec, vf1, vfbeta = epoch_loop(model, 
-                                                                      val_ld,   
-                                                                      criterion, 
-                                                                      DEVICE, 
-                                                                      optimizer = None,
-                                                                      task_name = task,
-                                                                      bce_thr   = 0.5, 
-                                                                      amp       = True, 
-                                                                      clip_grad = 0.0,
-                                                                      beta      = train_cfg[task]["fbeta"])
-                            
-                # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
-                if writer is not None:
-                    writer.add_scalar("Loss/train",      train_loss, epoch)
-                    writer.add_scalar("Loss/validation", val_loss  , epoch)
+        epoch_iter = tqdm(range(max_epochs),
+                          desc          = f"Trial Nb {trial_number}, Task: {task}, Fold {fold_idx + 1}/{n_folds}",
+                          position      = 1,
+                          leave         = False,
+                          dynamic_ncols = True)
 
-                # ┏━━━━━━━━━━ Early Stopping ━━━━━━━━━━┓
-                stop(val_loss, model)
-                step_scheduler(scheduler, epoch, val_loss)
-                if stop.early_stop:
-                    break
-                
-                # ┏━━━━━━━━━━ If this epoch is the best so far, record its metrics ━━━━━━━━━━┓
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                    best_acc  = vacc
-                    best_prec = vprec
-                    best_f1   = vf1
-                    best_rec  = vrec
-                    best_fbeta  = vfbeta
-                    best_state = copy.deepcopy(model.state_dict())
-        except RuntimeError as err:
+        for epoch in epoch_iter:
+            # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
+            train_result = epoch_loop(model,
+                                      train_ld,
+                                      criterion,
+                                      DEVICE,
+                                      mode = "train",
+                                      task_name = task,
+                                      optimizer = optimizer,
+                                      bce_thr = 0.5,
+                                      amp = True,
+                                      clip_grad = 1.0,
+                                      beta = train_cfg[task]["fbeta"],
+                                      return_raw = False)
+            
+            # ┏━━━━━━━━━━ Train Loss ━━━━━━━━━━┓
+            train_loss = train_result["loss"]
+            
+            # ┏━━━━━━━━━━ Validation ━━━━━━━━━━┓
+            val_result = epoch_loop(model,
+                                    val_ld,
+                                    criterion,
+                                    DEVICE,
+                                    mode = "val",
+                                    task_name = task,
+                                    optimizer = None,
+                                    bce_thr = 0.5,
+                                    amp = True,
+                                    clip_grad = 0.0,
+                                    beta = train_cfg[task]["fbeta"],
+                                    return_raw = True)
+            
+            # ┏━━━━━━━━━━ Validation Loss & Metrics ━━━━━━━━━━┓
+            val_loss = val_result["loss"]
+            vacc     = val_result["acc"]
+            vprec    = val_result["prec"]
+            vrec     = val_result["rec"]
+            vf1      = val_result["f1"]
+            vfbeta   = val_result["fbeta"]
+            vtargets = val_result["targets"]
+            vprobs   = val_result["probs"]
+                        
+            # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
             if writer is not None:
-                writer.close()
-                writer = None
-            err_lower = str(err).lower()
-            if (
-                "cuda" in err_lower
-                or "cublas" in err_lower
-                or "invalid target index" in err_lower
-            ):
-                torch.cuda.empty_cache()
-                if trial is not None:
-                    reason = (
-                        "invalid target index"
-                        if "invalid target index" in err_lower
-                        else "CUDA failure"
-                    )
-                    raise optuna.TrialPruned(f"Pruned due to {reason}: {err}")
-            raise
+                writer.add_scalar("Loss/train",      train_loss, epoch)
+                writer.add_scalar("Loss/validation", val_loss  , epoch)
+            
+            epoch_iter.set_postfix(train=f"{train_loss:.4f}", val=f"{val_loss:.4f}")
+
+            # ┏━━━━━━━━━━ Early Stopping ━━━━━━━━━━┓
+            stop(val_loss, model)
+            step_scheduler(scheduler, epoch, val_loss)
+            if stop.early_stop:
+                break
+            
+            # ┏━━━━━━━━━━ If this epoch is the best so far, record its metrics ━━━━━━━━━━┓
+            if val_loss < best_loss:
+                best_loss = val_loss
+                best_acc  = vacc
+                best_prec = vprec
+                best_f1   = vf1
+                best_rec  = vrec
+                best_fbeta  = vfbeta
+                best_state = copy.deepcopy(model.state_dict())
         
+        epoch_iter.close()
+
         # ┏━━━━━━━━━━ Close writer after last fold training ━━━━━━━━━━┓
         if writer is not None:
             writer.close()
@@ -263,76 +323,250 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
 
         # ┏━━━━━━━━━━ Store Best Precision in Test ━━━━━━━━━━┓
         if fold_idx == n_folds - 1:
-            
             # ┏━━━━━━━━━━ Reload the best state into model ━━━━━━━━━━┓
+            assert best_state is not None, "No Model saved during Training"
             model.load_state_dict(best_state)
 
-            # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
-            ckpt_path = ckpt_dir / f"{trial_number}_{task}_best.pt"
-            torch.save(best_state, ckpt_path)
-
             # ┏━━━━━━━━━━ Original split's Model Evaluation on Validation Set & Confusion Matrix ━━━━━━━━━━┓
-            vpreds, vtargets = get_preds_and_targets(model, val_ld, DEVICE, task, params["loss_function"])
-            plot_cm_with_metrics(vpreds, 
-                                 vtargets,
-                                 labels  = (f"No_TP_{task}", f"TP_{task}"),
-                                 title   = f"{task} — Validation",
-                                 out_dir = cm_dir,
-                                 cmap    = "Oranges"
-                            )
+            val_eval = epoch_loop(model,
+                                  val_ld,
+                                  criterion,
+                                  DEVICE,
+                                  mode = "val",
+                                  task_name = task,
+                                  optimizer = None,
+                                  bce_thr = 0.5,
+                                  amp = True,
+                                  clip_grad = 0.0,
+                                  beta = train_cfg[task]["fbeta"],
+                                  return_raw = True)
             
-            # ┏━━━━━━━━━━ Original split's Model Evaluation on Test Set & Confusion Matrix ━━━━━━━━━━┓
-            with torch.no_grad():
-                t_loss, t_acc, t_prec, t_rec, t_f1, t_fbeta = epoch_loop(model, 
-                                                                test_loader, 
-                                                                criterion, 
-                                                                DEVICE,
-                                                                optimizer = None, 
-                                                                task_name = task, 
-                                                                bce_thr   = 0.5, 
-                                                                amp       = True, 
-                                                                clip_grad = 0.0,
-                                                                beta      = train_cfg[task]["fbeta"])
-            test_accuracy  = t_acc
-            test_precision = t_prec
-            test_recall    = t_rec
-            test_f1        = t_f1
-            test_fbeta     = t_fbeta
+            # ┏━━━━━━━━━━ Extraction of raw predictions & probabilities ━━━━━━━━━━┓
+            vpreds_raw = val_eval["preds"]
+            vtargets   = val_eval["targets"]
+            vprobs     = val_eval.get("probs")
+            if vprobs is None:
+                raise ValueError("Validation probabilities were not produced; ensure the criterion supports probability extraction.")
 
-            # ┏━━━━━━━━━━ Test Confusion Matrix  ━━━━━━━━━━┓
-            tpreds, ttargets = get_preds_and_targets(model, test_loader, DEVICE, task, params["loss_function"])
-            plot_cm_with_metrics(tpreds, 
-                                 ttargets,
-                                 labels  = (f"No_TP_{task}", f"TP_{task}"),
-                                 title   = f"{task} — Test",
-                                 out_dir = cm_dir,
-                                 cmap    = "Blues"
-                            )
+            # ┏━━━━━━━━━━ Adapt raw probabilities to Gating Policy & Threshold Uniqueness with endpoints ━━━━━━━━━━┓ 
+            val_scores        = build_scores(vprobs, gating_mode)
+            finite_scores     = val_scores[np.isfinite(val_scores)]
+            thresholds_unique = np.unique(finite_scores)
+            thresholds_unique = np.unique(np.concatenate([thresholds_unique, np.array([0.0, 1.0])]))
+                
+            # ┏━━━━━━━━━━ Risk/Coverage Curve Creation with Sweeping Thresholds ━━━━━━━━━━┓ 
+            val_curve = collect_risk_coverage_curve(y_true = vtargets,
+                                                    y_score = val_scores, 
+                                                    thresholds = thresholds_unique, 
+                                                    include_error_counts = True)
+
+            # ┏━━━━━━━━━━ Area under the validation risk–coverage curve ━━━━━━━━━━┓ 
+            val_aurc = area_under_risk_coverage(curve = val_curve)
+        
+            # ┏━━━━━━━━━━ Threshold Policy Selection ━━━━━━━━━━┓ 
+            risk_constraints_flag = True
+            if policy == "risk_budget":
+                # ┏━━━━━━━━━━ Coverage associated to user-defined Risk ━━━━━━━━━━┓ 
+                selection = coverage_at_risk(curve        = val_curve,
+                                             max_risk     = alpha_cfg,
+                                             min_coverage = min_coverage_cfg,
+                                             min_selected = min_selected_cfg)
+                    
+                # ┏━━━━━━━━━━ Best Threshold (according to Policy) ━━━━━━━━━━┓ 
+                selected_tau = float(selection["threshold"])
+                best_metric = float(selection["coverage"])
+                
+                # ┏━━━━━━━━━━ Risk & Coverage corresponding metrics to Selected Threshold ━━━━━━━━━━┓ 
+                selection_metric = {"best_risk": selection["risk"],
+                                    "best_coverage": selection["coverage"],
+                                    "risk_constraint_satisfied": bool(selection["constraint_satisfied"])}
+                risk_constraints_flag = bool(selection["constraint_satisfied"])
+
+                # ┏━━━━━━━━━━ Pruning Filter ━━━━━━━━━━┓ 
+                if not risk_constraints_flag:
+                    print("\nRisk Constraints: ", risk_constraints_flag)
+                    return {"Policy":              policy,
+                            "mean_val_loss":       float(np.mean(fold_losses)),
+                            "best_metric":         best_metric,
+                            "Risk_Constraints":    selection["constraint_satisfied"]}
+            
+                
+            elif policy == "f_beta":
+                # ┏━━━━━━━━━━ Optimized Threshold with its FBeta Metric ━━━━━━━━━━┓ 
+                selected_tau, best_metric = select_threshold_fbeta(vtargets,
+                                                                   val_scores,
+                                                                   thresholds_unique,
+                                                                   fbeta_cfg)
+
+            else:
+                raise ValueError(f"Unknown threshold policy: {policy}")
+
+            # ┏━━━━━━━━━━ Optimized/Best Threshold for Validation Predictions [Last Fold] ━━━━━━━━━━┓ 
+            eval_val = evaluate_threshold(vtargets, val_scores, selected_tau)
+            val_preds_tau = eval_val.pop("predictions")
+
+            # ┏━━━━━━━━━━ Pruning of Trial [Validation Conditions] ━━━━━━━━━━┓
+            mean_val_loss = float(np.mean(fold_losses))
+            print("\nMean Val Loss: ", mean_val_loss <= 0.7, "Cov > Floor: ", best_metric >= floor_policy)
+            if mean_val_loss <= 0.7 and best_metric >= floor_policy:
+                
+                # ┏━━━━━━━━━━ Folders Creation ━━━━━━━━━━┓
+                for d in (ckpt_dir, cm_dir):
+                    d.mkdir(parents = True, exist_ok = True)
+                
+                # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
+                ckpt_path = ckpt_dir / f"{trial_number}_{task}_best.pt"
+                torch.save(best_state, ckpt_path)
+
+                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
+                plot_cm_with_metrics(vpreds_raw,
+                                     vtargets,
+                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     title          = f'M2_{task} — Val',
+                                     out_dir        = cm_dir,
+                                     best_threshold = None,
+                                     cmap           = "Oranges")
+
+                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
+                plot_cm_with_metrics(val_preds_tau, 
+                                     vtargets,
+                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     title          = f'M2_{task} — Val',
+                                     out_dir        = cm_dir,
+                                     best_threshold = selected_tau,
+                                     cmap           = "Greens")
+
+                # ┏━━━━━━━━━━ Plotting Risk & Coverage Curve ━━━━━━━━━━┓
+                val_rc_png = cm_dir / f"M2_{task}_Val_RiskCoverage.png"
+                plot_coverage_risk_curve(curve = val_curve, 
+                                         label = f"Gating: {gating_mode}", 
+                                         save_path = str(val_rc_png), 
+                                         show = False)
+                
+                # ┏━━━━━━━━━━ Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
+                curve_rows = [{"Threshold": float(t),
+                               "Coverage": float(c),
+                               "Risk": float(r),
+                               "Selected_Count": int(s),
+                               "Error_Count": int(e) if "error_count" in val_curve else None} for t, c, r, s, e in zip(val_curve["thresholds"],
+                                                                                                                       val_curve["coverage"],
+                                                                                                                       val_curve["risk"],
+                                                                                                                       val_curve["selected_count"],
+                                                                                                                       val_curve.get("error_count", [0] * len(val_curve["thresholds"])))
+                              ]
+
+                payload = {"Dataset":            "Validation",
+                           "Task":               task,
+                           "Policy":             policy,
+                           "Gating":             gating_mode,
+                           "Val_AURC":           val_aurc,
+                           "Val_Tau":            selected_tau,
+                           "Val_Coverage@Tau":   eval_val["coverage"],
+                           "Val_Risk@Tau":       eval_val["risk"],
+                           "Selected_Count@Tau": eval_val["selected_count"]}
+            
+                # ┏━━━━━━━━━━ Adding Data to Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
+                if policy == "risk_budget":
+                    payload["Alpha"] = alpha_cfg
+                    payload.update(selection_metric)
+                    payload["Min_Coverage"] = min_coverage_cfg
+                    payload["Min_Selected_Count"] = min_selected_cfg
+                    payload["Risk_Constraints"] = risk_constraints_flag
+                
+                # ┏━━━━━━━━━━ Adding Data to Summary of FBeta Analysis ━━━━━━━━━━┓
+                elif policy == "f_beta":
+                    payload["FBeta"]     = fbeta_cfg
+                    payload["FBeta@Tau"] = best_metric
+
+                # ┏━━━━━━━━━━ Original split's Model Evaluation on Test Set & Confusion Matrix ━━━━━━━━━━┓
+                test_eval = epoch_loop(model,
+                                      test_loader,
+                                      criterion,
+                                      DEVICE,
+                                      mode = "test",
+                                      task_name = task,
+                                      optimizer = None,
+                                      bce_thr = 0.5,
+                                      amp = True,
+                                      clip_grad = 0.0,
+                                      beta = train_cfg[task]["fbeta"],
+                                      return_raw = True)
+
+                # ┏━━━━━━━━━━ Test Predictions & Probabilities [Not Optimized Threshold] ━━━━━━━━━━┓
+                tpreds   = test_eval["preds"]
+                ttargets = test_eval["targets"]
+                tprobs   = test_eval.get("probs")
+                if tprobs is None:
+                    raise ValueError("Test probabilities were not produced; ensure the criterion supports probability extraction.")
+
+                # ┏━━━━━━━━━━ Risk & Coverage Scores [Optimized Threshold] ━━━━━━━━━━┓
+                test_scores = build_scores(tprobs, gating_mode)
+                eval_test_tau = evaluate_threshold(ttargets, test_scores, selected_tau)
+                test_preds_tau = eval_test_tau.pop("predictions")
+
+                # ┏━━━━━━━━━━ Test Metrics ━━━━━━━━━━┓
+                payload["Test_Coverage@Tau"]       = eval_test_tau["coverage"]
+                payload["Test_Risk@Tau"]           = eval_test_tau["risk"]
+                payload["Test_Selected_Count@Tau"] = eval_test_tau["selected_count"]
+                
+                # ┏━━━━━━━━━━ Validation Risk & Coverage Curves ━━━━━━━━━━┓
+                payload["Val_Curves"] = curve_rows
+
+                # ┏━━━━━━━━━━ Path & Save Summary ━━━━━━━━━━┓
+                payload_json = cm_dir / f"M2_{task}_R&C_Analysis.json"
+                save_metrics(payload, str(payload_json))
+
+                # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
+                plot_cm_with_metrics(tpreds,
+                                     ttargets,
+                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     title          = f'M2_{task} — Test',
+                                     out_dir        = cm_dir,
+                                     best_threshold = None,
+                                     cmap           = "Blues")
+                
+                # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
+                plot_cm_with_metrics(test_preds_tau,
+                                     ttargets,
+                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     title          = f'M2_{task} — Test',
+                                     out_dir        = cm_dir,
+                                     best_threshold = selected_tau,
+                                     cmap           = "Purples")
+
+                # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
+                torch.cuda.empty_cache()
+
+                if policy == "f_beta":
+                    return {"Policy":           policy,
+                            "mean_val_loss":    float(np.mean(fold_losses)),
+                            "best_metric":      best_metric}
+                else:
+                    return {"Policy":           policy,
+                            "mean_val_loss":    float(np.mean(fold_losses)),
+                            "best_metric":      best_metric,
+                            "Risk_Constraints": risk_constraints_flag}   
+            
+            # ┏━━━━━━━━━━ Non-Evaluated Trial ━━━━━━━━━━┓
+            else:
+                # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
+                torch.cuda.empty_cache()
+                
+                if policy == "f_beta":
+                    return {"Policy":           policy,
+                            "mean_val_loss":    float(np.mean(fold_losses)),
+                            "best_metric":      best_metric}
+                else:
+                    return {"Policy":           policy,
+                            "mean_val_loss":    float(np.mean(fold_losses)),
+                            "best_metric":      best_metric,
+                            "Risk_Constraints": risk_constraints_flag}   
+            
 
         
-        # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
-        torch.cuda.empty_cache()
+        
 
-    return {"mean_val_loss":       float(np.mean(fold_losses)),
-            "mean_val_accuracy":   float(np.mean(fold_accs)),
-            "mean_val_precision":  float(np.mean(fold_precs)),
-            "mean_val_rec":        float(np.mean(fold_recs)),
-            "mean_val_f1":         float(np.mean(fold_f1s)),
-            "mean_val_fbeta":      float(np.mean(fold_fbetas)),
-            
-            "best_val":            best_loss,
-            "best_acc":            best_acc,
-            "best_prec":           best_prec,
-            "best_rec":            best_rec,
-            "best_f1":             best_f1,
-            "best_fbeta":          best_fbeta,
-
-            "test_acc":            test_accuracy,
-            "test_prec":           test_precision,
-            "test_rec":            test_recall,
-            "test_f1":             test_f1,
-            "test_fbeta":          test_fbeta
-            }
+   
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -367,7 +601,6 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         "cnn_stride":     cnn_stride,                                                             # CNN stride
         "p_pos_drop":     trial.suggest_float("p_pos_drop", 0.0, 0.5),                            # Positional-encoding dropout probability
 
-
         # ┏━━━━━━━━━━ 2. Transformer Architecture ━━━━━━━━━━┓
         "heads":      trial.suggest_categorical("heads", [2, 4]),                                  # Attention heads
         "layers":     trial.suggest_int("layers", 2, 4),                                           # Number of transformer layers        
@@ -382,9 +615,9 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         "mlp_dropout":    trial.suggest_float("mlp_dropout", 0.0, 0.5),                            # MLP dropout probability
         "mlp_pooling":    trial.suggest_categorical("mlp_pooling", ["attention", "meanmax"]),      # MLP pooling mechanism
         "mlp_activation": trial.suggest_categorical("mlp_activation", ["gelu",                     # MLP activation function
-                                                                        "relu", 
-                                                                        #"silu", 
-                                                                        "mish"]),              
+                                                                       "relu", 
+                                                                       #"silu", 
+                                                                       "mish"]),              
         
         # ┏━━━━━━━━━━ Optimizer ━━━━━━━━━━┓
         "optimizer":  trial.suggest_categorical("optimizer", ["adagrad",                            # Optimizer Name
@@ -413,7 +646,7 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
                                                                        "cross_entropy"]),           # Loss type
         # ┏━━━━━━━━━━ Focal Loss ━━━━━━━━━━┓
         "focal_gamma":     3.3771842197375523,
-        "focal_alpha":    (2.954 / (2.954 + 1.1514)),                                              # Default Value
+        "focal_alpha":     (2.954 / (2.954 + 1.1514)),                                              # Default Value
 
         # ┏━━━━━━━━━━ Scheduler ━━━━━━━━━━┓
         "sch_name":        trial.suggest_categorical("sch_name", [#"none",                          # Scheduler Name
@@ -432,8 +665,8 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     }
 
     # ┏━━━━━━━━━━ Betas (Optimizer) & Packing ━━━━━━━━━━┓
-    beta1     = trial.suggest_float("beta1", 0.9, 0.95, step=0.05)
-    beta2     = trial.suggest_float("beta2", 0.98, 0.999, step=0.019)
+    beta1 = trial.suggest_float("beta1", 0.9, 0.95, step = 0.05)
+    beta2 = trial.suggest_float("beta2", 0.98, 0.999, step = 0.019)
     params["betas"] = (beta1, beta2)
 
     # ┏━━━━━━━━━━ CV_Folds Call ━━━━━━━━━━┓
@@ -441,35 +674,30 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
     metrics = cv_folds(dataset, params, props, task, trial.number, run_id, trial = trial)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
-    mean_val_loss = metrics["mean_val_loss"]
-    best_prec = metrics["best_prec"]
-    best_fbeta = metrics["best_fbeta"]
-    if mean_val_loss > 0.7 or best_fbeta < 0.35:
-       raise optuna.TrialPruned()
+    if metrics["Policy"] == "risk_budget" and not metrics["Risk_Constraints"]:
+        raise optuna.TrialPruned()
+    
+    elif metrics["mean_val_loss"] > 0.7 or metrics["best_metric"] < floor_policy:
+        raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
-    trial.set_user_attr("task",                task)
-    trial.set_user_attr("mean_val_loss",       metrics["mean_val_loss"])
-    trial.set_user_attr("mean_val_precision",  metrics["mean_val_precision"])
-    trial.set_user_attr("mean_val_accuracy",   metrics["mean_val_accuracy"])
-    trial.set_user_attr("mean_val_rec",        metrics["mean_val_rec"])
-    trial.set_user_attr("mean_val_f1",         metrics["mean_val_f1"])
-    trial.set_user_attr("mean_val_fbeta",      metrics["mean_val_fbeta"])
-
-    trial.set_user_attr("best_val",       metrics["best_val"])
-    trial.set_user_attr("best_acc",       metrics["best_acc"])
-    trial.set_user_attr("best_prec",      metrics["best_prec"])
-    trial.set_user_attr("best_rec",       metrics["best_rec"])
-    trial.set_user_attr("best_f1",        metrics["best_f1"])
-    trial.set_user_attr("best_fbeta",     metrics["best_fbeta"])
-
-    trial.set_user_attr("test_acc",       metrics["test_acc"])
-    trial.set_user_attr("test_prec",      metrics["test_prec"])
-    trial.set_user_attr("test_rec",       metrics["test_rec"])
-    trial.set_user_attr("test_f1",        metrics["test_f1"])
-    trial.set_user_attr("test_fbeta",     metrics["test_fbeta"])
+    trial.set_user_attr("task",                 task)
+    trial.set_user_attr("mean_val_loss",        metrics["mean_val_loss"])
+    trial.set_user_attr("best_metric",          metrics["best_metric"])
               
-    return metrics["mean_val_loss"], metrics["best_fbeta"]
+    # ┏━━━━━━━━━━ Extract Metric(s) to Optimize ━━━━━━━━━━┓
+    objective_values: List[float] = []
+    for metric_name in optuna_metrics:
+        if metric_name not in metrics:
+            raise KeyError(f"Metric '{metric_name}' requested in optuna_objectives is not available from the trial metrics.")
+        objective_values.append(metrics[metric_name])
+    
+    # ┏━━━━━━━━━━ Optuna Single Objective (First) ━━━━━━━━━━┓
+    if len(objective_values) == 1:
+        return objective_values[0]
+
+    # ┏━━━━━━━━━━ Optuna Double Objective ━━━━━━━━━━┓
+    return tuple(objective_values)
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -487,21 +715,28 @@ def run_optuna_for_task(dataset: TensorDataset,
     # ┏━━━━━━━━━━ 1) Prepare Optuna Storage ━━━━━━━━━━┓
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = f"run_{timestamp}"
-    run_root = base / cfg["paths"]["output_root"] / "Optuna" / f"Task_{task}" / run_id
+    run_root = base / cfg["paths"]["output_root"] / "Optuna" / provider / symbol / task / granularity_slug / run_id
     run_root.mkdir(parents=True, exist_ok=True)
     db_path = run_root / f"optuna_study_{task}_{timestamp}.db"
     storage_url = f"sqlite:///{db_path.resolve()}"
     study_name = f"CTTS_Study_{task}_{timestamp}"
 
-    # ┏━━━━━━━━━━ 2) Instantiation of Optuna & Optimization ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 2) Instantiation of Optuna Parameters ━━━━━━━━━━┓
     print(f"\n▶ Running Optuna study for task {task} with {ARGS.trials} trials (run id: {run_id})")
-    study = optuna.create_study(
-        study_name     = study_name,
-        storage        = storage_url,
-        directions     = ["minimize", "maximize"],
-        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 20),
-        load_if_exists = False,
-    )
+    study_kwargs = dict(study_name     = study_name,
+                        storage        = storage_url,
+                        pruner         = optuna.pruners.MedianPruner(n_startup_trials = 20),
+                        load_if_exists = False)
+    
+    # ┏━━━━━━━━━━ Optuna Directions [Single and Dual] ━━━━━━━━━━┓
+    if len(optuna_directions) == 1:
+        # ┏━━━━━━━━━━ SingleOptimization ━━━━━━━━━━┓
+        study = optuna.create_study(direction = optuna_directions[0], 
+                                    **study_kwargs)
+    else:
+        # ┏━━━━━━━━━━ Dual Optimization ━━━━━━━━━━┓
+        study = optuna.create_study(directions = optuna_directions, 
+                                    **study_kwargs)
 
     # ┏━━━━━━━━━━ 3) Optuna Optimization ━━━━━━━━━━┓
     study.optimize(lambda trial: objective(trial,
@@ -529,21 +764,31 @@ if __name__ == "__main__":
     csv_path = dataset_path(cfg["dataset"]["source"],
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
-                            "up")
+                            "up",
+                            granularity = granularity_optuna)
 
-    # ┏━━━━━━━━━━ 7.b) Extracting Column Features ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 7.b) Extracting Column and Context Features ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 7.b.1) Extracting Column ━━━━━━━━━━┓
     all_columns = []
     for feat_list in COLUMN_FEATURES.values():
         for feat in feat_list:
             if feat not in all_columns:
                 all_columns.append(feat)
+    
+    # ┏━━━━━━━━━━ 7.b.2) Extracting Column ━━━━━━━━━━┓
+    all_context = []
+    for feat_list in CONTEXT_FEATURES.values():
+        for feat in feat_list:
+            if feat not in all_context:
+                all_context.append(feat)
 
     # ┏━━━━━━━━━━ 7.c) Reading CSV ━━━━━━━━━━┓
-    df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
-                                  asset           = cfg["dataset"]["symbol"],
-                                  data_dir        = str(Path(csv_path).parent),
-                                  output_dir      = str(Path(csv_path).parent),
-                                  column_features = all_columns)
+    df_asset = merge_meta_targets(asset_type       = cfg["dataset"]["type"],
+                                  asset            = cfg["dataset"]["symbol"],
+                                  data_dir         = str(Path(csv_path).parent),
+                                  output_dir       = str(Path(csv_path).parent),
+                                  column_features  = all_columns,
+                                  context_features = all_context)
 
     # ┏━━━━━━━━━━ 7.d) Preparing Data ━━━━━━━━━━┓        
     default_task = optuna_task.upper()

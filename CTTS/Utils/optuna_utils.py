@@ -3,12 +3,68 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import optuna
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+DEFAULT_OPTUNA_OBJECTIVES: List[Tuple[str, str]] = [
+    ("minimize", "mean_val_loss"),
+    ("maximize", "best_fbeta"),
+]
+
+
+def parse_optuna_objectives(
+    raw: Optional[Any],
+    fallback: Optional[Sequence[Any]] = None,
+) -> List[Tuple[str, str]]:
+    """Normalize configurable Optuna objectives from YAML or CLI sources."""
+    if raw:
+        objectives_source = raw
+    else:
+        objectives_source = fallback or DEFAULT_OPTUNA_OBJECTIVES
+
+    normalized: List[Tuple[str, str]] = []
+    for idx, entry in enumerate(objectives_source):
+        direction_raw = None
+        metric = None
+
+        if isinstance(entry, dict):
+            direction_raw = (
+                entry.get("direction")
+                or entry.get("dir")
+                or entry.get("objective")
+            )
+            metric = entry.get("metric") or entry.get("name") or entry.get("key")
+        elif isinstance(entry, (list, tuple)):
+            if len(entry) == 1:
+                metric = entry[0]
+            elif len(entry) >= 2:
+                direction_raw, metric = entry[0], entry[1]
+        elif isinstance(entry, str):
+            metric = entry
+        else:
+            raise ValueError(f"Unsupported optuna_objectives entry type: {type(entry)!r}")
+
+        if metric is None:
+            raise ValueError("Each optuna objective must specify a metric name.")
+
+        direction = direction_raw or ("minimize" if idx == 0 else "maximize")
+        direction_str = str(direction).lower()
+        if direction_str in {"min", "minimize"}:
+            direction_norm = "minimize"
+        elif direction_str in {"max", "maximize"}:
+            direction_norm = "maximize"
+        else:
+            raise ValueError(
+                f"Unknown Optuna objective direction '{direction}'. Use 'minimize' or 'maximize'."
+            )
+
+        normalized.append((direction_norm, str(metric)))
+
+    return normalized
 
 
 def to_builtin(obj: Any):
@@ -189,4 +245,10 @@ def export_pareto_configs(
     return saved
 
 
-__all__ = ["to_builtin", "feature_map", "build_candidate_config", "export_pareto_configs"]
+__all__ = [
+    "to_builtin",
+    "feature_map",
+    "parse_optuna_objectives",
+    "build_candidate_config",
+    "export_pareto_configs",
+]

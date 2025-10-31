@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
@@ -23,14 +24,14 @@ def _safe_ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
     
 
-    
 def _distribution_metrics(row: pd.Series) -> Dict[str, float]:
     """Compute Bowley skewness, Moors kurtosis, and tail asymmetry from quantiles."""
-    # Quantiles required
+    # ┏━━━━━━━━━━ Quantiles required ━━━━━━━━━━┓
     q10 = row.get("q10")
     q50 = row.get("q50")
     q90 = row.get("q90")
 
+    # ┏━━━━━━━━━━ Octiles required ━━━━━━━━━━┓
     oct2 = row.get("oct2")  # 0.25
     oct4 = row.get("oct4")  # 0.50
     oct6 = row.get("oct6")  # 0.75
@@ -39,172 +40,212 @@ def _distribution_metrics(row: pd.Series) -> Dict[str, float]:
     oct5 = row.get("oct5")  # 0.625
     oct7 = row.get("oct7")  # 0.875
     
-    # Bowley skewness: (Q3 + Q1 - 2*Q2)/(Q3 - Q1)
+    # ┏━━━━━━━━━━ Bowley skewness: (Q3 + Q1 - 2*Q2)/(Q3 - Q1) ━━━━━━━━━━┓
     bowley_num = (oct6 if oct6 is not None else np.nan) + (oct2 if oct2 is not None else np.nan) - 2 * (oct4 if oct4 is not None else np.nan)
     bowley_den = (oct6 if oct6 is not None else np.nan) - (oct2 if oct2 is not None else np.nan)
     bowley_skewness = _safe_ratio(bowley_num, bowley_den)   
     
-    # Moors kurtosis using octiles: ((O7 - O5) + (O3 - O1)) / (O6 - O2)
+    # ┏━━━━━━━━━━ Moors kurtosis using octiles: ((O7 - O5) + (O3 - O1)) / (O6 - O2) ━━━━━━━━━━┓
     moors_num = (oct7 if oct7 is not None else np.nan) - (oct5 if oct5 is not None else np.nan)
     moors_num += (oct3 if oct3 is not None else np.nan) - (oct1 if oct1 is not None else np.nan)
     moors_den = (oct6 if oct6 is not None else np.nan) - (oct2 if oct2 is not None else np.nan)
     moors_kurtosis = _safe_ratio(moors_num, moors_den)
    
-    # Tail asymmetry using 10th/90th percentiles (or octiles if missing)
+    # ┏━━━━━━━━━━ Tail asymmetry using 10th/90th percentiles (or octiles if missing) ━━━━━━━━━━┓
     med = q50 if q50 is not None else oct4
     upper = q90 if q90 is not None else oct7
     lower = q10 if q10 is not None else oct1
     tail_num = (upper if upper is not None else np.nan) + (lower if lower is not None else np.nan) - 2 * (med if med is not None else np.nan)
     tail_den = (upper if upper is not None else np.nan) - (lower if lower is not None else np.nan)
     tail_asymmetry = _safe_ratio(tail_num, tail_den)
-    return {
-        "bowley_skewness": bowley_skewness,
-        "moors_kurtosis": moors_kurtosis,
-        "tail_asymmetry": tail_asymmetry,
-    }
+    
+    return {"bowley_skewness": bowley_skewness,
+            "moors_kurtosis": moors_kurtosis,
+            "tail_asymmetry": tail_asymmetry}
+
 
 def merge_meta_targets(asset_type: str,
                        asset: str,
                        data_dir: str,
                        output_dir: str = None,
                        set_index: bool = True,
-                       column_features: Optional[Sequence[str]] = None
-                       ) -> pd.DataFrame:
+                       column_features: Optional[Sequence[str]] = None,
+                       context_features: Optional[Sequence[str]] = None) -> pd.DataFrame:
+
+    """Merge DOWN/UP meta-target files keeping only requested features."""
+    
+    # ┏━━━━━━━━━━ Requested Column and Context Features ━━━━━━━━━━┓
+    column_features = list(column_features or ['close'])
+    context_features = list(context_features or [])
+    requested = list(dict.fromkeys(column_features + context_features))
+
+    # ┏━━━━━━━━━━ Asset & Paths ━━━━━━━━━━┓
+    sym = asset.upper()
+    down_path = Path(data_dir) / f"{sym}_down.csv"
+    up_path = Path(data_dir) / f"{sym}_up.csv"
+
+    # ┏━━━━━━━━━━ Reading M1 Predictions ━━━━━━━━━━┓
+    df_down = pd.read_csv(down_path, parse_dates=['date']).set_index('date')
+    df_up = pd.read_csv(up_path, parse_dates=['date']).set_index('date')
+
+    # ┏━━━━━━━━━━ Rename Columns ━━━━━━━━━━┓
+    df_down = df_down.rename(columns={'meta_label': 'isTP_DN',
+                                      'meta_target': 'isTP_DN',
+                                      'pred': 'm1_dn',
+                                      'prediction': 'm1_prediction',
+                                      'pred_proba': 'm1_pred_proba_dn',
+                                      'lab': 'lab_dn'})
+
+    df_up = df_up.rename(columns={'meta_label': 'isTP_UP',
+                                  'meta_target': 'isTP_UP',
+                                  'pred': 'm1_up',
+                                  'pred_proba': 'm1_pred_proba_up',
+                                  'lab': 'lab_up'})
+
+    # ┏━━━━━━━━━━ Additional Columns ━━━━━━━━━━┓
+    for extra_col in ("lab_dn", "lab_up"):
+        if extra_col not in requested:
+            requested.append(extra_col)
+
+    # ┏━━━━━━━━━━ Statistical Features coming from Chronos & Possible Features to compute from them ━━━━━━━━━━┓
+    quantile_cols = ["q10", "q50", "q90", "oct1", "oct2", "oct3", "oct4", "oct5", "oct6", "oct7"]
+    metrics_targets = ["bowley_skewness", "moors_kurtosis", "tail_asymmetry"]
+    metrics_requested = [metric for metric in metrics_targets if metric in requested]
+
+    if metrics_requested:
+        missing_quantiles = [q for q in quantile_cols if q not in df_down.columns]
+        if missing_quantiles:
+            print(f"[merge_meta_targets] WARNING: missing quantiles {missing_quantiles} for metrics computation")
+        else:
+            metrics_df = df_down[quantile_cols].apply(_distribution_metrics, axis=1).apply(pd.Series)
+            df_down = pd.concat([df_down, metrics_df[metrics_requested]], axis=1)
+
+    # ┏━━━━━━━━━━ Drop quantiles unless explicitly requested ━━━━━━━━━━┓
+    keep_quantiles = set(quantile_cols) & set(requested)
+    drop_quantiles = [q for q in quantile_cols if q in df_down.columns and q not in keep_quantiles]
+    if drop_quantiles:
+        df_down = df_down.drop(columns=drop_quantiles)
+
+    # ┏━━━━━━━━━━ Creation of Empty DataFrame ━━━━━━━━━━┓
+    idx = df_down.index.union(df_up.index).sort_values()
+    merged = pd.DataFrame(index = idx)
+
+    def pull(column: str) -> pd.Series:
+        if column in df_down.columns:
+            return df_down[column]
+        if column in df_up.columns:
+            return df_up[column]
+        return pd.Series(pd.NA, index = idx)
+
+    # ┏━━━━━━━━━━ Merging both CSVs ━━━━━━━━━━┓
+    for column in requested:
+        merged[column] = pull(column).reindex(idx)
+
+    # ┏━━━━━━━━━━ Adding Meta-Labels in Merged file & Resetting index━━━━━━━━━━┓
+    merged['isTP_DN'] = pd.to_numeric(pull('isTP_DN').reindex(idx), errors='coerce').astype('float')
+    merged['isTP_UP'] = pd.to_numeric(pull('isTP_UP').reindex(idx), errors='coerce').astype('float')
+
+    # ┏━━━━━━━━━━ Drop quantiles unless explicitly requested ━━━━━━━━━━┓
+    merged = merged.reset_index().rename(columns={'index': 'date'})
+    final_order = ['date'] + column_features + context_features + ['lab_dn', 'lab_up', 'isTP_DN', 'isTP_UP']
+    merged = merged.loc[:, [col for col in final_order if col in merged.columns]]
+    
+    if set_index:
+        merged = merged.set_index('date')
+    
+    # ┏━━━━━━━━━━ Saving Merged CSV ━━━━━━━━━━┓
+    if output_dir:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        merged.to_csv(Path(output_dir) / f"{sym}_merge.csv")
+
+    return merged
+
+
+def count_meta_targets(df: pd.DataFrame,
+                       columns: Sequence[str] = ("isTP_UP", "isTP_DN"),
+                       task: Optional[str] = None) -> Dict[str, Dict[str, int]]:
     """
-    Load and merge 'down' and 'up' meta_target CSVs for a given asset type and asset.
+    Summarise class counts for the directional meta targets (and matching M1 predictions).
 
     Parameters
     ----------
-    asset_type : str
-        Either 'crypto' or 'equities'.
-    asset : str
-        Asset symbol, e.g. 'BTC' or 'SPY'.
-    data_dir : str
-        Directory containing CSVs named like '{ASSET}_down.csv' and '{ASSET}_up.csv'.
-    output_dir : str, optional
-        If given, merged CSV is saved here under '{ASSET}_merge.csv'.
-    set_index : bool, default True
-        Whether to set the 'date' column as index on the returned DataFrame.
-    column_features : sequence of str, optional
-        Ordered list of features to include in the final merge (e.g. ["close","open","high","low"]).
-        If None → defaults to ["close"].
+    df : pd.DataFrame
+        Merged dataset produced by `merge_meta_targets`.
+    columns : Sequence[str]
+        Which meta-target columns to tally.
+    task : Optional[str]
+        Active task name ('UP' or 'DN'); when provided the respective `m1_*` column
+        is counted as well.
 
     Returns
     -------
-    pd.DataFrame
-        The merged DataFrame, with columns [<features...>, 'isTP_DN', 'isTP_UP'].
+    Dict[str, Dict[str, int]]
+        Nested dictionary mapping column → {class_value: count}.
     """
-    atype = asset_type.upper()
-    sym   = asset.upper()
-    dn_path = os.path.join(data_dir, f"{sym}_down.csv")
-    up_path = os.path.join(data_dir, f"{sym}_up.csv")
-
-    # 0) Default feature set
-    if column_features is None or len(column_features) == 0:
-        column_features = ["close"]
-
-    # 1) Down side: Feature columns live here
-    df_dn_full = pd.read_csv(dn_path, parse_dates=["date"])
-    # Keep only requested features that actually exist
-    present_feats = [c for c in column_features if c in df_dn_full.columns]
-    missing_feats = [c for c in column_features if c not in df_dn_full.columns]
-    if len(missing_feats) > 0:
-        print(f"[merge_meta_label] WARNING: missing features in '{dn_path}': {missing_feats}."
-              f"These columns will be added as NaN in the merged output.")
-
-
-    # Desired set of features
-    extra_feats = [c for c in ["pred_proba", "rel_interval_width", "forecast_slope"] if c in df_dn_full.columns]
-    quantile_cols = [
-        "q10", "q25", "q50", "q75", "q90",
-        "oct1", "oct2", "oct3", "oct4", "oct5", "oct6", "oct7",
-    ]
-    for col in quantile_cols:
-        if col in df_dn_full.columns:
-            df_dn_full[col] = pd.to_numeric(df_dn_full[col], errors="coerce")
-
-    cols_dn = ["date"] + present_feats + extra_feats + quantile_cols + ["meta_label", "pred", "prediction"]
-    df_dn = (
-        df_dn_full
-        .loc[:, [c for c in cols_dn if c in df_dn_full.columns]]
-        .rename(columns={
-            "meta_label": "isTP_DN",
-            "pred": "m1_dn",
-            "prediction": "m1_prediction",
-            "pred_proba": "m1_pred_proba_dn",
-        })
-    )
-
-    # 2) Up side: meta target only
-    df_up_full = pd.read_csv(up_path, parse_dates=["date"])
-    cols_up = [c for c in ["date", "meta_label", "pred", "pred_proba"] if c in df_up_full.columns]
-    df_up = (
-        df_up_full
-          .loc[:, cols_up]
-          .rename(columns={
-              "meta_label": "isTP_UP",
-              "pred": "m1_up",
-              "pred_proba": "m1_pred_proba_up",
-          })
-    )
-
-
-    # 3) Merge outer on date
-    df = (
-        pd.merge(df_dn, df_up, on="date", how="outer")
-          .sort_values("date")
-          .reset_index(drop=True)
-    )
     
-    # 3.a) Distribution metrics (requires quantiles/octiles)
-    distro_metrics = df.apply(_distribution_metrics, axis=1)
-    df = pd.concat([df, distro_metrics.apply(pd.Series)], axis=1)
-    df = df.drop(columns=[c for c in quantile_cols if c in df.columns])
+    # ┏━━━━━━━━━━ Empty Dict ━━━━━━━━━━┓
+    counts: Dict[str, Dict[str, int]] = {}
+    for col in columns:
+        if col not in df.columns:
+            counts[col] = {}
+            continue
 
-    # 3.b) Reorder columns
-    ordered_cols = [
-        "date",
-        *present_feats,
-        "rel_interval_width",
-        "forecast_slope",
-        "bowley_skewness",
-        "moors_kurtosis",
-        "tail_asymmetry",
-        "m1_pred_proba_dn",
-        "m1_pred_proba_up",
-        "m1_dn",
-        "m1_up",
-        "m1_prediction",
-        "isTP_DN",
-        "isTP_UP",
-    ]
-    df = df[[c for c in ordered_cols if c in df.columns]]
+        vc = df[col].value_counts(dropna = False)
+        col_counts: Dict[str, int] = {}
+        for value, freq in vc.items():
+            if pd.isna(value):
+                col_counts["nan"] = int(freq)
+            else:
+                col_counts[str(int(value))] = int(freq)
+        counts[col] = col_counts
 
-    # 4) Optional index
-    if set_index:
-        df = df.set_index("date")
+    # ┏━━━━━━━━━━ Ground Truth (lab_up & lab_dn) ━━━━━━━━━━┓
+    task_upper = (task or "").upper()
+    m1_column = None
+    if task_upper == "DN" and "m1_dn" in df.columns:
+        m1_column = "m1_dn"
+    elif task_upper == "UP" and "m1_up" in df.columns:
+        m1_column = "m1_up"
 
-    # 5) Optional save
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        out_path = os.path.join(output_dir, f"{sym}_merge.csv")
-        df.to_csv(out_path)
-    
-    return df
-    
+    if m1_column:
+        vc = df[m1_column].value_counts(dropna = False)
+        col_counts: Dict[str, int] = {}
+        for value, freq in vc.items():
+            if pd.isna(value):
+                col_counts["nan"] = int(freq)
+            else:
+                try:
+                    col_counts[str(int(value))] = int(freq)
+                except (TypeError, ValueError):
+                    col_counts[str(value)] = int(freq)
+        counts[m1_column] = col_counts
+
+    return counts
+
 
 def prepare_dataset(df: pd.DataFrame,
                     seq_len: int = 90,
                     column_features: Sequence[str] = ("close",),
-                    context_features: Sequence[str] = ()             
-                    ) -> TensorDataset:
-
+                    context_features: Sequence[str] = ()) -> TensorDataset:
     """
-    Convert raw DF → sliding-window TensorDataset with per-window MinMax scaling,
-    and append context_features as additional timesteps (same for all channels).
-    Returns:
-      X: (N, C, seq_len + len(context_features))  with C = len(column_features), L=seq_len
-      Y_up, Y_dn: (N,)
+    Transform the merged dataframe into a TensorDataset of sliding windows plus targets.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Merged dataset produced by `merge_meta_targets`.
+    seq_len : int
+        Number of timesteps per window (before appending context features).
+    column_features : Sequence[str]
+        Feature columns used to build the time series windows.
+    context_features : Sequence[str]
+        Contextual features appended at the end of each window (broadcast per channel).
+
+    Returns
+    -------
+    TensorDataset
+        Dataset of shape ((N, C, seq_len + len(context_features)), (N,), (N,))
+        containing inputs, UP targets, and DN targets respectively.
     """
     df = df.copy()
     n = len(df)
@@ -212,63 +253,64 @@ def prepare_dataset(df: pd.DataFrame,
     C = len(column_features)
     L = seq_len + len(context_features)
 
-    # 0) Sanity checks
+    # ┏━━━━━━━━━━ 0) Sanity checks ━━━━━━━━━━┓
     for col in column_features:
         if col not in df.columns:
             raise KeyError(f"Feature '{col}' not found in DataFrame columns.")
     if n < seq_len:
         raise ValueError(f"Not enough rows ({n}) for seq_len={seq_len}")
 
-    # 1) Targets (unchanged)
+    # ┏━━━━━━━━━━ 1) Targets (unchanged) ━━━━━━━━━━┓
     y_up   = df['isTP_UP'].fillna(0).to_numpy(dtype=np.int64)
     y_dn   = df['isTP_DN'].fillna(0).to_numpy(dtype=np.int64)
 
-    # 2) Raw values matrix for features (no global scaling!)
+    # ┏━━━━━━━━━━ 2) Raw values matrix for features (no global scaling!) ━━━━━━━━━━┓
     feats = df[list(column_features)].to_numpy(dtype=np.float32)  # shape: (n_rows, C)
     context_vals = df[list(context_features)].to_numpy(dtype=np.float32)
     
-    # 3) Allocate outputs
+    # ┏━━━━━━━━━━ 3) Allocate outputs ━━━━━━━━━━┓
     X    = np.zeros((N, C, L), dtype=np.float32)
     Y_up = np.zeros((N,), dtype=np.int64)
     Y_dn = np.zeros((N,), dtype=np.int64)
 
-    # 4) Build sliding windows with MinMax scaling per window and feature
+    # ┏━━━━━━━━━━ 4) Build sliding windows with MinMax scaling per window and feature ━━━━━━━━━━┓
     # For each window [i:i+seq_len), scale each feature using min/max computed only on that window.
     for i in range(N):
         start, end     = i, i + seq_len          # 0,90 -> 1,91 -> ...
         window = feats[start:end, :]             # (seq_len, C)
 
-        # Per-feature min/max within the window
+        # ┏━━━━━━━━━━ Per-feature min/max within the window ━━━━━━━━━━┓
         w_min = window.min(axis=0)               # (C,)
         w_max = window.max(axis=0)               # (C,)
         diff = (w_max - w_min)
         
-        # Avoid div-by-zero: if constant feature inside the window → all zeros after scaling
+        # ┏━━━━━━━━━━ Avoid div-by-zero: if constant feature inside the window → all zeros after scaling ━━━━━━━━━━┓
         # (You can also set to 0.5, but zeros are fine and stable for CNN/RevIN.)
         diff[diff == 0.0] = 1.0
 
-        # MinMax Scaling
-        w_scaled = (window - w_min) / diff  # (seq_len, C)
-        w_scaled = w_scaled.T               # (C, seq_len)
+        # ┏━━━━━━━━━━ MinMax Scaling ━━━━━━━━━━┓
+        w_scaled = (window - w_min) / diff       # (seq_len, C)
+        w_scaled = w_scaled.T                    # (C, seq_len)
 
-        # Get context features at window end (1D vector)
-        context_vector = context_vals[end - 1, :]  # (context_dim,)
-        context_expanded = np.tile(context_vector, (C, 1))  # (C, context_dim)
+        # ┏━━━━━━━━━━ Get context features at window end (1D vector) ━━━━━━━━━━┓
+        context_vector = context_vals[end - 1, :]            # (context_dim,)
+        context_expanded = np.tile(context_vector, (C, 1))   # (C, context_dim)
 
-        # Concatenate along time axis (dim=1)
+        # ┏━━━━━━━━━━ Concatenate along time axis (dim=1) ━━━━━━━━━━┓
         full_input = np.concatenate([w_scaled, context_expanded], axis=1)  # (C, seq_len + ctx)
 
-        # Targets at window end
+        # ┏━━━━━━━━━━ Targets at window end ━━━━━━━━━━┓
         X[i]    = full_input
         Y_up[i] = y_up[end-1]
         Y_dn[i] = y_dn[end-1]
-        
+
     return TensorDataset(torch.from_numpy(X),
                          torch.from_numpy(Y_up),
                          torch.from_numpy(Y_dn))
                          
 
 class FocalLoss(nn.Module):
+    """Numerically stable focal loss supporting binary and multi-class logits."""
     def __init__(self, gamma: float = 2.5, alpha: float = 0.25, reduction: str = "mean"):
         """
         gamma: focusing parameter
@@ -325,12 +367,27 @@ def make_criteria(loss_type: str,
                   w_dn: torch.Tensor,
                   device: torch.device,
                   focal_gamma: float = 2.5,
-                  focal_alpha: float = 0.25,
-                 ) -> Tuple[nn.Module, nn.Module]:
+                  focal_alpha: float = 0.25) -> Tuple[nn.Module, nn.Module]:
     """
-    Build both 'UP' and 'DN' criteria, given:
-    - loss_type ∈ {'bce','cross_entropy','focal'}
-    - w_up, w_dn: positive-class weights (scalar tensors)
+    Instantiate the pair of training criteria for UP and DN heads.
+
+    Parameters
+    ----------
+    loss_type : str
+        One of {'bce', 'cross_entropy', 'focal'} determining the criterion style.
+    w_up, w_dn : torch.Tensor
+        Class-imbalance weights computed from the training data.
+    device : torch.device
+        Target device for the instantiated loss modules.
+    focal_gamma : float
+        Focusing parameter when using the focal loss variant.
+    focal_alpha : float
+        Optional override for the positive-class weight in the focal loss.
+
+    Returns
+    -------
+    Tuple[nn.Module, nn.Module]
+        `(crit_up, crit_dn)` ready to train each directional head.
     """
     # ┏━━━━━━━━━━ BCE ━━━━━━━━━━┓
     if loss_type == 'bce':
@@ -380,16 +437,36 @@ def build_loaders(ds: TensorDataset,
                   loss_type:        str,
                   focal_gamma:      float,
                   focal_alpha:      float,
-                  device:           torch.device
-                  ) -> Tuple[List[Tuple[DataLoader, DataLoader, nn.Module]],
-                             DataLoader, DataLoader]:
+                  device:           torch.device) -> Tuple[List[Tuple[DataLoader, DataLoader, nn.Module]], DataLoader]:
     """
-    Build train/val/test DataLoaders and loss criterion, with or without cross-validation.
+    Construct training/validation/test DataLoaders and the associated criteria.
 
-    Returns:
-      folds:       List of (train_loader, val_loader, criterion)
-      val_loader:  Fixed (outer) validation set
-      test_loader: Fixed test set
+    Parameters
+    ----------
+    ds : TensorDataset
+        Dataset produced by `prepare_dataset`.
+    cross_validation : bool
+        Whether to iterate through rolling validation folds.
+    target : str
+        Active task ('UP' or 'DN') selecting the criterion to return.
+    props : float
+        Proportion controlling validation window position when using CV.
+    train_frac, val_frac, test_frac : float
+        Fractions of the dataset assigned to each split.
+    batch_size : int
+        Batch size for DataLoaders.
+    loss_type : str
+        Loss type forwarded to `make_criteria`.
+    focal_gamma, focal_alpha : float
+        Focal loss hyperparameters.
+    device : torch.device
+        Device where the criteria should be moved.
+
+    Returns
+    -------
+    Tuple[List[Tuple[DataLoader, DataLoader, nn.Module]], DataLoader]
+        Pair containing the folds (each with its own validation loader and criterion)
+        and the held-out test loader.
     """
 
     N = len(ds)

@@ -1,68 +1,77 @@
 # ┏━━━━━━━━━━━━━━━ General paths ━━━━━━━━━━━━━━━━┓
 paths:
-  data_root:        "Data"                            # Where all raw providers live
+  data_root:        "Data"
   chronos_subdir:   "Chronos"
   bolt_subdir:      "Bolt"
   tirex_subdir:     "Tirex"
-  output_root:      "Output"                          # Checkpoints / TensorBoard runs
+  kronos_subdir:    "Kronos"
+  output_root:      "Output"
 
 
 # ┏━━━━━━━━━━ Which dataset to train on ━━━━━━━━━┓
 dataset:
-  source:  "Chronos"                                   # Chronos | Bolt | Tirex
-  type:    "Crypto"                                    # Equities | Crypto
-  symbol:  "BTC"                                       # e.g. SPY or BTC
+  source:  "Kronos"
+  type:    "Crypto"
+  symbol:  "BTC"
 
 
 # ┏━━━━━━━━ Data-split & sequence shape ━━━━━━━━━┓
 splits:
-  train: 0.70                                          # Adds up to 1: train + val + test
+  train: 0.70
   val:   0.15
   test:  0.15
-sequence_length: 90                                    # 90 das (time-steps) as model context
+sequence_length: 90
 
 # ┏━━━━━━━━ Column & Context Features ━━━━━━━━━┓
 # ┏━━━━━━━━ UP Features ━━━━━━━━━┓
-column_features_up: ["close"]                          # Column Features for UP task
+column_features_up: ["open", "high", "low", "close", "volume", "amount"]
 context_features_up: ["m1_prediction",
-                     "m1_up",
-                     "m1_pred_proba_up",
-                     "rel_interval_width",
-                     "forecast_slope",
-                     "bowley_skewness",
-                     "moors_kurtosis",
-                     "tail_asymmetry"]                # Context Features (UP)
+                     "m1_up"] 
 
 # ┏━━━━━━━━ DN Features ━━━━━━━━━┓
-column_features_dn: ["close"]                          # Column Features for DN task
+column_features_dn: ["open", "high", "low", "close", "volume", "amount"]
 context_features_dn: ["m1_prediction",
-                     "m1_dn",
-                     "m1_pred_proba_dn",
-                     "rel_interval_width",
-                     "forecast_slope",
-                     "bowley_skewness",
-                     "moors_kurtosis",
-                     "tail_asymmetry"]                # Context Features (DN)
+                     "m1_dn"] 
 
 # ┏━━━━━━━━━━━━━━ Training Mode ━━━━━━━━━━━━━━━┓
 training_mode:
   # ┏━━━━━━━━━━━━━━ Optuna ━━━━━━━━━━━━━━━┓
-  cross_validation: false                               # Training with (true) or without (false) Cross-Validation (including Optuna)
-  cross_val_props:  0.40                               # Proportion for the Cross-Validation within the Training Split
-  optuna_task:      "DN"                               # Primary task for Optuna optimization
-  optuna_both:      true                               # If true, run Optuna for both tasks
+  cv_optuna:          true                             # Training with (true) or without (false) Cross-Validation (including Optuna)
+  cross_val_props:    0.40                             # Proportion for the Cross-Validation within the Training Split
+  optuna_task:        "DN"                             # Primary task for Optuna optimization
+  optuna_both:        true                             # If true, run Optuna for both tasks
+  optuna_objectives:
+    - [minimize, mean_val_loss]
+    - [maximize, best_metric]
+  granularity_optuna: "1m"                             # Granularity used for Optuna experiments
   
   # ┏━━━━━━━━━━━━━━ Usual ━━━━━━━━━━━━━━━┓
-  normal_task:      "UP"                               # Task to use for standard training workflows
+  cv_usual:         false
+  normal_task:      "DN"                               # Task to use for standard training workflows
   loss_function:    "bce"                              # bce | cross_entropy | focal
   focal_gamma:      3.3771842197375523
   focal_alpha:      0.18850587399901642
   num_classes:      1                                  # 1 (bce) | 2 (cross_entropy, focal)
   padding:          true                               # For 1D-CNN
+  granularity_usual: "1m"                              # Granularity used for standard training
 
   # ┏━━━━━━━━━━━━━━ Ablation ━━━━━━━━━━━━━━━┓
-  ablation_task:    "UP"                               # Task used by train_ablation.py
+  ablation_task:        "UP"                               # Task used by train_ablation.py
+  granularity_ablation: "1m"                             # Granularity for ablation studies
 
+  # ┏━━━━━━━━━━━━━━ Selective Classification ━━━━━━━━━━━━━━━┓
+  threshold:
+    policy: "risk_budget"                                   # risk_budget | f_beta
+    alpha: 0.20                                        # risk budget target (for risk_budget)
+    fbeta: 0.90                                        # beta for F-beta optimization
+    gating: "prob_only"                                # prob_only | positive_only_hard
+    min_coverage: 0.0                                  # minimum coverage required when selecting thresholds
+    min_selected_count: 1                              # minimum number of selected samples required at a threshold
+    floor_policy: 0.05                                 # prune trials if metric_at_tau < this (coverage or Fβ) – fallback defaults apply per policy
+  
+  calibration:
+    enabled: false                                     # apply calibration on validation/test
+    method:  "temperature"                             # temperature | none
 
 
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
@@ -80,7 +89,7 @@ model_up:
     layers:     3
     ffn_dim:    8                                  # Feed-forward inner dim
     dropout:    0.3645140908637284
-    activation: "silu"                               # gelu | relu | silu | mish
+    activation: "silu"                             # gelu | relu | silu | mish
 
   # ┏━━━━━━━━━━━━━━ MLP Classifier ━━━━━━━━━━━━━━━┓
   classifier:
@@ -103,16 +112,16 @@ train_up:
   #rms_alpha:        0.9336763960402219                # Only for rmsprop
   #rms_momentum:     0.30881101362483226               # Only for rmsprop
   lookahead_k:      6                                  # Only for ranger (Lookahead)
-  lookahead_alpha:  0.5                               # Only for ranger (Lookahead)
-  # weight_decouple:  True                              # Only for adabelief
-  # rectify:          False                               # Only for adabelief
+  lookahead_alpha:  0.5                                # Only for ranger (Lookahead)
+  # weight_decouple:  True                             # Only for adabelief
+  # rectify:          False                            # Only for adabelief
 
   # ┏━━━━━━━━━━ Basic ━━━━━━━━┓
   batch_size:    32
   max_epochs:    50
   patience:      35                                   # Early-stopping
   bce_thr:       0.5                                  # BCE threshold
-  fbeta:         0.9                                  # F-Beta Score (<1 + weight for precision, >1 for recall)
+  fbeta:         0.9                                  # F-Beta Score (<1d + weight for precision, >1 for recall)
 
   # ┏━━━━━━━━━━ Learning Rate Scheduler ━━━━━━━━┓
   scheduler:                                          # Omit entire block → "none"

@@ -9,32 +9,30 @@ import yaml
 
 from pathlib import Path
 from train import run_training
-from ablation_utils import (
-    resolve_baseline_features,
-    ensure_clean_dir,
-    reorganize_outputs,
-    slugify,
-    feature_groups,
-    write_metadata,
-)
+from Utils.ablation_utils import (resolve_baseline_features,
+                                  ensure_clean_dir,
+                                  reorganize_outputs,
+                                  slugify,
+                                  feature_groups,
+                                  write_metadata)
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ BASELINE DEFINITIONS                                                  ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 BASELINE_FEATURES_BY_TASK = {
-    "UP": ["m1_prediction", "m1_up", "m1_pred_proba_up"],
-    "DN": ["m1_prediction", "m1_dn", "m1_pred_proba_dn"],
+    "UP": ["m1_prediction"],
+    "DN": ["m1_prediction", "m1_dn"],
 }
 
 GROUP_LABELS = {
-    0: "Baseline",
-    1: "Singles",
-    2: "Pairs",
-    3: "Trios",
-    4: "Quartets",
-    5: "Quintets",
-    6: "Sextets",
+    0: "0_Baseline",
+    1: "1_Singles",
+    2: "2_Pairs",
+    3: "3_Trios",
+    4: "4_Quartets",
+    5: "5_Quintets",
+    6: "6_Sextets",
 }
 
 
@@ -46,7 +44,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="config_431.yaml",
+        default="config.yaml",
         help="Base configuration file to use as template",
     )
     args = parser.parse_args()
@@ -59,13 +57,7 @@ def main() -> None:
 
     base_cfg = yaml.safe_load(cfg_path.open())
     training_mode = base_cfg.get("training_mode", {})
-    task = training_mode.get(
-        "ablation_task",
-        training_mode.get("normal_task", training_mode.get("optuna_task", "")),
-    ).upper()
-    if not task:
-        raise ValueError("ablation_task (or a fallback) must be defined in training_mode")
-
+    task = training_mode["ablation_task"]
     context_key = f"context_features_{task.lower()}"
     context_features = base_cfg.get(context_key) or base_cfg.get("context_features", [])
     baseline_features = resolve_baseline_features(task, context_features, BASELINE_FEATURES_BY_TASK)
@@ -75,10 +67,12 @@ def main() -> None:
     output_root = Path(base_cfg["paths"]["output_root"])
     if not output_root.is_absolute():
         output_root = (Path(__file__).parent / output_root).resolve()
-
-    ablation_root = output_root / "Ablation"
+    
+    provider = base_cfg["dataset"]["source"].capitalize()
+    ablation_root = output_root / "Ablation" / provider / task
     ablation_root.mkdir(parents=True, exist_ok=True)
     symbol = base_cfg["dataset"]["symbol"]
+    
 
     for size, combo in feature_groups(additional_features):
         group_name = GROUP_LABELS.get(size, f"{size}_Combos")
@@ -98,21 +92,22 @@ def main() -> None:
             cfg_variant["context_features"] = combo_features
         cfg_variant.setdefault("training_mode", {})
         cfg_variant["training_mode"]["normal_task"] = task
+        granularity_ablation = cfg_variant["training_mode"]["granularity_ablation"]
+        if granularity_ablation is not None:
+            cfg_variant["training_mode"]["granularity_usual"] = granularity_ablation
         cfg_variant["paths"]["output_root"] = str(run_dir)
 
         run_training(cfg_variant)
-        reorganize_outputs(run_dir, symbol)
+        reorganize_outputs(run_dir, provider, symbol)
 
         column_key = f"column_features_{task.lower()}"
         column_features = cfg_variant.get(column_key) or cfg_variant.get("column_features", [])
-        write_metadata(
-            run_dir / "metadata.json",
-            task=task,
-            column_features=column_features,
-            baseline=baseline_features,
-            extras=combo,
-            context=combo_features,
-        )
+        write_metadata(run_dir / "metadata.json",
+                       task            = task,
+                       column_features = column_features,
+                       baseline        = baseline_features,
+                       extras          = combo,
+                       context         = combo_features)
 
 
 if __name__ == "__main__":

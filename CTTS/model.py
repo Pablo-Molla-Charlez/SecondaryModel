@@ -1,8 +1,12 @@
 import math
+import warnings
 import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
+
+# ┏━━━━━━━━━━ To avoid Warning ━━━━━━━━━━┓
+warnings.filterwarnings("ignore", message="enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True")
 
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -76,6 +80,8 @@ class RevIN(nn.Module):
         super().__init__()
         self.eps = eps
         self.affine = affine
+        
+        # ┏━━━━━━━━━━ Learnable Weight & Bias ━━━━━━━━━━┓
         if affine:
             self.weight = nn.Parameter(torch.ones(num_features))  # (C,)
             self.bias   = nn.Parameter(torch.zeros(num_features))
@@ -85,9 +91,9 @@ class RevIN(nn.Module):
             raise NotImplementedError("RevIN denorm not required for classification.")
         dim2reduce = (-1,)                        
 
+        # ┏━━━━━━━━━━ Instance Normalization ━━━━━━━━━━┓
         mean  = x.mean(dim=dim2reduce, keepdim=True).detach()
-        stdev = torch.sqrt(
-            x.var(dim=dim2reduce, keepdim=True, unbiased=False) + self.eps).detach()
+        stdev = torch.sqrt(x.var(dim=dim2reduce, keepdim=True, unbiased=False) + self.eps).detach()
         x = (x - mean) / stdev
 
         if self.affine:
@@ -112,8 +118,10 @@ class PositionalEncoding(nn.Module):
             torch.arange(0, d_model, 2).float() * 
             -(torch.log(torch.tensor(10000.0)) / d_model)
         )
+        
         # ┏━━━━━━━━━━ Even indices ━━━━━━━━━━┓
         pe[:, 0::2] = torch.sin(position * div_term)
+        
         # ┏━━━━━━━━━━ Odd indices ━━━━━━━━━━┓
         pe[:, 1::2] = torch.cos(position * div_term)   
         
@@ -321,6 +329,7 @@ class AttentionPooling(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # ┏━━━━━━━━━━ Scores: (B, T) and x: (B, T, D) ━━━━━━━━━━┓
         scores = x @ self.query
+
         # ┏━━━━━━━━━━ Alpha: (B, T, 1) ━━━━━━━━━━┓
         alpha = torch.softmax(scores, dim=1).unsqueeze(-1)
         
@@ -422,8 +431,7 @@ class CTTSModel(nn.Module):
 
                  num_classes:   int,
                  padding:       bool,
-                 context_len:   int
-            ):
+                 context_len:   int):
 
         super().__init__()
 
@@ -431,9 +439,7 @@ class CTTSModel(nn.Module):
         for name, val in locals().items():
             if name != "self" and val is None:
                 raise ValueError(f"CTTSModel: parameter '{name}' is None")
-        assert len(cnn_embed_dim) == len(cnn_kernel) == len(cnn_stride), (
-            "Error: cnn_embed_dim, cnn_kernel and cnn_stride must all be the same length"
-        )
+        assert len(cnn_embed_dim) == len(cnn_kernel) == len(cnn_stride), ("Error: cnn_embed_dim, cnn_kernel and cnn_stride must all be the same length")
 
         # ┏━━━━━━━━━━ Number of channels after the final convolution ━━━━━━━━━━┓
         last_embed = cnn_embed_dim[-1]

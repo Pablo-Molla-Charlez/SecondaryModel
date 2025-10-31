@@ -39,30 +39,74 @@ def ensure_clean_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def reorganize_outputs(run_root: Path, symbol: str) -> None:
-    """Flatten training outputs created under the standard Usual/ layout."""
+def reorganize_outputs(run_root: Path, provider: str, symbol: str) -> None:
+    """Reorganize training outputs created under the standard Usual/ layout."""
     usual_root = run_root / "Usual"
-    symbol_run_dir = usual_root / symbol / "Run"
     tensorboard_root = usual_root / "Tensorboard"
+    provider_root = usual_root / provider
 
-    if symbol_run_dir.exists():
-        for item in symbol_run_dir.iterdir():
-            target = run_root / item.name
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-            shutil.move(str(item), target)
-        shutil.rmtree(symbol_run_dir.parent)
+    if provider_root.exists():
+        for symbol_dir in provider_root.iterdir():
+            if not symbol_dir.is_dir():
+                continue
+            for task_dir in symbol_dir.iterdir():
+                if not task_dir.is_dir():
+                    continue
+                for granularity_dir in task_dir.iterdir():
+                    if not granularity_dir.is_dir():
+                        continue
+                    dest_base = run_root / provider / symbol_dir.name / task_dir.name / granularity_dir.name
+                    legacy_dir = granularity_dir / "Run"
+                    run_dirs = []
+                    if legacy_dir.exists():
+                        run_dirs.append(legacy_dir)
+                    run_dirs.extend(
+                        sorted(
+                            (
+                                p
+                                for p in granularity_dir.iterdir()
+                                if p.is_dir() and p.name.startswith("Run_")
+                            ),
+                            key=lambda path: path.name,
+                        )
+                    )
+
+                    for run_dir in run_dirs:
+                        dest_run = dest_base if run_dir.name == "Run" else dest_base / run_dir.name
+                        dest_run.mkdir(parents=True, exist_ok=True)
+                        for item in run_dir.iterdir():
+                            target = dest_run / item.name
+                            if target.exists():
+                                if target.is_dir():
+                                    shutil.rmtree(target)
+                                else:
+                                    target.unlink()
+                            shutil.move(str(item), target)
+                        shutil.rmtree(run_dir)
+
+                    shutil.rmtree(granularity_dir)
+                shutil.rmtree(task_dir)
+            shutil.rmtree(symbol_dir)
+        shutil.rmtree(provider_root)
 
     if tensorboard_root.exists():
-        dest_tb = run_root / "Tensorboard"
-        if dest_tb.exists():
-            shutil.rmtree(dest_tb)
-        shutil.move(str(tensorboard_root), dest_tb)
+        tb_provider_root = tensorboard_root / provider
+        if tb_provider_root.exists():
+            dest_tb = run_root / "Tensorboard" / provider
+            dest_tb.mkdir(parents=True, exist_ok=True)
+            for item in tb_provider_root.iterdir():
+                target = dest_tb / item.name
+                if target.exists():
+                    if target.is_dir():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                shutil.move(str(item), target)
+            shutil.rmtree(tb_provider_root)
+        if tensorboard_root.exists() and not any(tensorboard_root.iterdir()):
+            shutil.rmtree(tensorboard_root)
 
-    if usual_root.exists():
+    if usual_root.exists() and not any(usual_root.iterdir()):
         shutil.rmtree(usual_root)
 
 
