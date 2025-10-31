@@ -21,25 +21,26 @@ Meta-Labeling-CTTS packages the second-stage ("meta") classifier that sits on to
 
 ```
 Meta-Labeling-CTTS/
-├─ README.md                 ← This guide
-├─ requirements.txt          ← Minimal runtime dependencies
+├─ README.md                       ← This guide
+├─ requirements.txt                ← Minimal runtime dependencies
 └─ CTTS/
-   ├─ config.yaml            ← Experiment configuration
-   ├─ Data/                  ← Expected data root (Chronos/Bolt/Tirex providers)
-   ├─ Output/                ← Checkpoints, TensorBoard runs, exported CSVs/plots
-   ├─ data_preprocessing.py  ← Dataset assembly utilities
-   ├─ model.py               ← CTTS neural architecture & helpers
-   ├─ Utils/                 ← Shared helpers used across training scripts
-   │  ├─ __init__.py         ← Marks the directory as a package; re-exports helpers
-   │  ├─ ablation_utils.py   ← Shared helpers for feature ablation runs
-   │  ├─ optim_utils.py      ← Optimizers and LR schedulers
-   │  ├─ optuna_utils.py     ← Optuna config builders & feature mapping tools
-   │  ├─ test_utils.py       ← Evaluation/export helpers
-   │  └─ train_utils.py      ← Training loops & metrics
-   ├─ paths.py               ← Filesystem helpers
-   ├─ train.py               ← Entry point that wires everything together
-   ├─ train_ablation.py      ← CLI to run context-feature ablation studies
-   └─ optuna_optimization.py ← Hyper-parameter fine-tuning (documented later)
+   ├─ config.yaml                  ← Experiment configuration
+   ├─ Data/                        ← Expected data root (Chronos/Bolt/Tirex providers)
+   ├─ Output/                      ← Checkpoints, TensorBoard runs, exported CSVs/plots
+   ├─ data_preprocessing.py        ← Dataset assembly utilities
+   ├─ model.py                     ← CTTS neural architecture & helpers
+   ├─ Utils/                       ← Shared helpers used across training scripts
+   │  ├─ __init__.py               ← Marks the directory as a package; re-exports helpers
+   │  ├─ ablation_utils.py         ← Shared helpers for feature ablation runs
+   │  ├─ optim_utils.py            ← Optimizers and LR schedulers
+   │  ├─ optuna_utils.py           ← Optuna config builders & feature mapping tools
+   │  ├─ test_utils.py             ← Evaluation/export helpers
+   │  └─ train_utils.py            ← Training loops & metrics
+   ├─ selective_classification.py  ← Risk/coverage utilities & threshold policies
+   ├─ paths.py                     ← Filesystem helpers
+   ├─ train.py                     ← Entry point that wires everything together
+   ├─ train_ablation.py            ← CLI to run context-feature ablation studies
+   └─ optuna_optimization.py       ← Hyper-parameter fine-tuning (documented later)
 ```
 
 ---
@@ -56,6 +57,7 @@ Meta-Labeling-CTTS/
    - Train until early stopping, tracking the best validation snapshot and logging to TensorBoard.
    - Evaluate on validation/test sets, exporting confusion matrices, enriched predictions, consensus plots, and checkpoints under `Output/Usual/<SYMBOL>/Run/`.
    - Flush CUDA cache before moving to the next task.
+6. **Selective classification** – The final validation sweep converts probabilities into risk/coverage curves via `selective_classification.py`, applies the configured policy (`risk_budget` or `f_beta`) to pick an operating threshold, and records the associated metrics/curves for later Optuna-driven tuning.
 
 ---
 
@@ -139,6 +141,21 @@ These augmentations are only produced when the upstream CSV contains the require
 - [`make_scheduler`](CTTS/Utils/optim_utils.py#L107): Builds warm-up, cosine, plateau, power, exponential, or composite schedulers.
 - [`step_scheduler`](CTTS/Utils/optim_utils.py#L197): Advances schedulers each epoch, handling warm-up and `ReduceLROnPlateau` cases.
 
+### `CTTS/selective_classification.py`
+- [`collect_risk_coverage_curve`](CTTS/selective_classification.py#L7): Sweeps thresholds to tabulate coverage, risk, and selection counts (optionally error tallies).
+- [`coverage_at_risk`](CTTS/selective_classification.py#L67): Finds the highest-coverage threshold that satisfies the configured risk budget and coverage minima.
+- [`area_under_risk_coverage`](CTTS/selective_classification.py#L147): Computes the AURC summary used as a Pareto objective for Optuna searches.
+- [`plot_coverage_risk_curve`](CTTS/selective_classification.py#L190): Renders/exports coverage–risk curves for TensorBoard or offline inspection.
+- [`save_metrics`](CTTS/selective_classification.py#L268): Serialises all threshold diagnostics to JSON for downstream analysis.
+
+---
+
+## Selective Classification
+
+- **`train.py` integration** – After each fold, the trainer converts validation probabilities into gating scores, builds the risk–coverage curve, and applies the configured policy via `coverage_at_risk` or `select_threshold_fbeta` (`CTTS/train.py#L360`). The chosen threshold drives the two validation/test confusion matrices, the exported coverage–risk plot, and the JSON summary that captures coverage, risk, and selection counts.
+- **`optuna_optimization.py` integration** – Every Optuna trial performs the same sweep using `collect_risk_coverage_curve`, logs the AURC, and stores the policy-specific `best_metric` (`CTTS/optuna_optimization.py#L360`). The `training_mode.optuna_objectives` list lets you treat those metrics as optimisation targets; by default the study minimises `mean_val_loss` while maximising the threshold-aware `best_metric`.
+- **Policy semantics** – When `threshold.policy` is `risk_budget`, `best_metric` corresponds to coverage and the `floor_policy` setting enforces a minimum coverage (e.g. `0.05` forces ≥5 % of samples to be retained). Switching to `f_beta` turns `best_metric` into the Fβ score, so a `floor_policy` of `0.35` demands Fβ ≥35 %. Adjust `alpha`, `fbeta`, `gating`, `min_coverage`, and `min_selected_count` alongside the floor to express the level of conservatism you want from the gate.
+
 ---
 
 ## Outputs
@@ -148,6 +165,8 @@ Training artefacts are written to `CTTS/Output/Usual/<PROVIDER>/<SYMBOL>/<TASK>/
 - `<TASK>_best.pt`: Best-validation checkpoint for the active task.
 - `M2_<TASK> — Validation.png` / `M2_<TASK> — Test.png`: Confusion matrices with metrics.
 - `M1+M2_<TASK>_Results.png`: Consensus confusion matrix combining M1 and CTTS.
+- `M2_<TASK>_Val_RiskCoverage.png`: Coverage–risk curve produced during selective classification thresholding.
+- `M2_<TASK>_R&C_Analysis.json`: JSON summary capturing the selected threshold, coverage, risk, and validation/test diagnostics.
 - `<SYMBOL>_<TASK>_predictions.csv`: Enriched meta-label prediction table (details below).
 - TensorBoard logs stored under `CTTS/Output/Usual/Tensorboard/<PROVIDER>/<SYMBOL>/<TASK>_<TIMESTAMP>/<GRANULARITY>/Run/`.
 
@@ -201,19 +220,49 @@ Train/validation/test proportions applied to the sliding windows produced by `pr
 ### `training_mode`
 
 - **Optuna block**
-  - `cross_validation`, `cross_val_props`: Control rolling CV inside the training split when running hyper-parameter sweeps.
+  - `cv_optuna`, `cross_val_props`: Control rolling CV inside the training split when running hyper-parameter sweeps.
   - `optuna_task`: Default task (`UP`/`DN`) optimised during Optuna runs.
   - `optuna_both`: When `true`, Optuna runs both tasks sequentially; otherwise it only optimises `optuna_task`.
+  - `optuna_objectives`: Ordered list of `[direction, metric]` pairs parsed by `optuna_optimization.py` to build single- or multi-objective studies (defaults to minimising `mean_val_loss` and maximising `best_metric`).
+  - `granularity_optuna`: Data granularity used by the Optuna sweeps (independent from the usual training granularity).
 
 - **Usual training block**
   - `normal_task`: Task that `train.py` trains/evaluates when producing checkpoints and exports (falls back to `optuna_task`).
+  - `cv_usual`: Enables validation folds during standard training runs (mirrors the Optuna setting when you want comparable behaviour).
+  - `granularity_usual`: Primary data granularity consumed by `train.py`.
   - `loss_function`: `bce`, `cross_entropy`, or `focal`.
   - `focal_gamma` / `focal_alpha`: Parameters for focal loss (only relevant when `loss_function == 'focal'`).
   - `num_classes`: Output dimension of the classifier head (1 for BCE, 2 for multi-class losses).
   - `padding`: Whether the CNN tokeniser applies SAME padding to maintain token counts.
 
+- **Selective classification block**
+  - `threshold.policy`: Chooses the selection strategy—`risk_budget` enforces an error-rate ceiling, whereas `f_beta` maximises the Fβ score.
+  - `threshold.alpha` / `threshold.fbeta`: Policy-specific targets (`alpha` sets the maximum tolerated risk, `fbeta` sets the Fβ weighting).
+  - `threshold.gating`: Decides how probabilities are translated into gating scores (e.g. `prob_only`, `positive_only_hard`).
+  - `threshold.min_coverage`, `threshold.min_selected_count`: Guard rails that prevent degenerate low-volume selections.
+  - `threshold.floor_policy`: Minimum acceptable value for the metric associated with `policy`—for `risk_budget` the floor applies to coverage (e.g. `0.05` means ≥5 % coverage), while for `f_beta` it bounds the Fβ score (e.g. `0.35` requires Fβ ≥35 %).
+
 - **Ablation block**
   - `ablation_task`: Task targeted by `train_ablation.py` (falls back to `normal_task` if omitted).
+
+Example fragment:
+
+```yaml
+training_mode:
+  optuna_objectives:
+    - [minimize, mean_val_loss]
+    - [maximize, best_metric]
+  threshold:
+    policy: risk_budget
+    alpha: 0.20
+    fbeta: 0.90
+    gating: prob_only
+    min_coverage: 0.0
+    min_selected_count: 1
+    floor_policy: 0.05
+```
+
+Switching `policy` to `f_beta` makes `best_metric` represent the Fβ score instead of coverage, so raise `floor_policy` accordingly (for instance `0.35` forces an Fβ ≥35 %).
 
 ### `model_up` & `model_dn`
 
@@ -277,6 +326,7 @@ For reproducibility across reruns, the scripts internally call `seed_everything(
 ## Ablation Study
 
 ```bash
+# Activate your environment, then run:
 python CTTS/train_ablation.py
 ```
 
@@ -289,6 +339,7 @@ python CTTS/train_ablation.py
 ## Optuna Study
 
 ```bash
+# Activate your environment, then run:
 python CTTS/optuna_optimization.py --trials 500
 ```
 

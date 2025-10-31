@@ -69,9 +69,6 @@ training_mode:
     min_selected_count: 1                              # minimum number of selected samples required at a threshold
     floor_policy: 0.05                                 # prune trials if metric_at_tau < this (coverage or Fβ) – fallback defaults apply per policy
   
-  calibration:
-    enabled: false                                     # apply calibration on validation/test
-    method:  "temperature"                             # temperature | none
 
 
 # ┏━━━━━━━━━━━━━━ Model – UP task ━━━━━━━━━━━━━━━┓
