@@ -40,7 +40,7 @@ Meta-Labeling-CTTS/
    ├─ paths.py                     ← Filesystem helpers
    ├─ train.py                     ← Entry point that wires everything together
    ├─ train_ablation.py            ← CLI to run context-feature ablation studies
-   └─ optuna_optimization.py       ← Hyper-parameter fine-tuning (documented later)
+   └─ optuna_optimization.py       ← Hyper-parameter fine-tuning
 ```
 
 ---
