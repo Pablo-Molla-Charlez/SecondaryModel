@@ -12,7 +12,8 @@ def dataset_path(provider: str,
                  market: str,
                  symbol: str,
                  split: str = "merge",
-                 granularity: Optional[str] = None) -> Path:
+                 granularity: Optional[str] = None,
+                 meta_label_mode: Optional[str] = None) -> Path:
     """
     Build absolute path to a CSV file.
 
@@ -33,6 +34,10 @@ def dataset_path(provider: str,
     root = DATA_DIR / provider / market / symbol
     if granularity:
         root = root / granularity
+    if meta_label_mode:
+        meta_label_mode = meta_label_mode.lower()
+        suffix = "og" if meta_label_mode == "original" else meta_label_mode
+        root = root.with_name(f"{root.name}_{suffix}")
     path = root / f"{symbol}_{split}.csv"
     if not path.exists():
         raise FileNotFoundError(f"[dataset_path] {path} does not exist")

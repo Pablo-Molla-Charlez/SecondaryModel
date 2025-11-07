@@ -10,7 +10,7 @@ paths:
 
 # ┏━━━━━━━━━━ Which dataset to train on ━━━━━━━━━┓
 dataset:
-  source:  "Kronos"
+  source:  "Chronos"
   type:    "Crypto"
   symbol:  "BTC"
 
@@ -37,6 +37,7 @@ context_features_dn: ["m1_prediction",
 training_mode:
   # ┏━━━━━━━━━━━━━━ Optuna ━━━━━━━━━━━━━━━┓
   cv_optuna:          true                             # Training with (true) or without (false) Cross-Validation (including Optuna)
+  meta_label_optuna:  "original"                             # Meta-Label Mode ("fp", "tp" and "original")
   cross_val_props:    0.40                             # Proportion for the Cross-Validation within the Training Split
   optuna_task:        "DN"                             # Primary task for Optuna optimization
   optuna_both:        true                             # If true, run Optuna for both tasks
@@ -47,21 +48,23 @@ training_mode:
   
   # ┏━━━━━━━━━━━━━━ Usual ━━━━━━━━━━━━━━━┓
   cv_usual:         false
-  normal_task:      "DN"                               # Task to use for standard training workflows
+  meta_label_usual: "fp"                               # Meta-Label Mode ("fp", "tp" and "original")
+  normal_task:      "UP"                               # Task to use for standard training workflows
   loss_function:    "bce"                              # bce | cross_entropy | focal
   focal_gamma:      3.3771842197375523
   focal_alpha:      0.18850587399901642
   num_classes:      1                                  # 1 (bce) | 2 (cross_entropy, focal)
   padding:          true                               # For 1D-CNN
-  granularity_usual: "1m"                              # Granularity used for standard training
+  granularity_usual: "1h"                              # Granularity used for standard training
 
   # ┏━━━━━━━━━━━━━━ Ablation ━━━━━━━━━━━━━━━┓
-  ablation_task:        "UP"                               # Task used by train_ablation.py
-  granularity_ablation: "1m"                             # Granularity for ablation studies
+  ablation_task:        "UP"                           # Task used by train_ablation.py
+  meta_label_ablation:  "original"                           # Meta-Label Mode ("fp", "tp" and "original")
+  granularity_ablation: "1m"                           # Granularity for ablation studies
 
   # ┏━━━━━━━━━━━━━━ Selective Classification ━━━━━━━━━━━━━━━┓
   threshold:
-    policy: "risk_budget"                                   # risk_budget | f_beta
+    policy: "risk_budget"                              # risk_budget | f_beta
     alpha: 0.20                                        # risk budget target (for risk_budget)
     fbeta: 0.90                                        # beta for F-beta optimization
     gating: "prob_only"                                # prob_only | positive_only_hard

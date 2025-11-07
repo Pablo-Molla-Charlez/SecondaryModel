@@ -70,7 +70,8 @@ def merge_meta_targets(asset_type: str,
                        output_dir: str = None,
                        set_index: bool = True,
                        column_features: Optional[Sequence[str]] = None,
-                       context_features: Optional[Sequence[str]] = None) -> pd.DataFrame:
+                       context_features: Optional[Sequence[str]] = None,
+                       meta_label_mode: str = "original") -> pd.DataFrame:
 
     """Merge DOWN/UP meta-target files keeping only requested features."""
     
@@ -88,20 +89,40 @@ def merge_meta_targets(asset_type: str,
     df_down = pd.read_csv(down_path, parse_dates=['date']).set_index('date')
     df_up = pd.read_csv(up_path, parse_dates=['date']).set_index('date')
 
-    # ┏━━━━━━━━━━ Rename Columns ━━━━━━━━━━┓
-    df_down = df_down.rename(columns={'meta_label': 'isTP_DN',
-                                      'meta_target': 'isTP_DN',
-                                      'pred': 'm1_dn',
-                                      'prediction': 'm1_prediction',
-                                      'pred_proba': 'm1_pred_proba_dn',
-                                      'lab': 'lab_dn'})
+    # ┏━━━━━━━━━━ Suffix (TP or FP) from Meta-Labels ━━━━━━━━━━┓
+    mode = (meta_label_mode or "original").lower()
+    suffix = "FP" if mode == "fp" else "TP"
+    down_target = f"is{suffix}_DN"
+    up_target = f"is{suffix}_UP"
 
-    df_up = df_up.rename(columns={'meta_label': 'isTP_UP',
-                                  'meta_target': 'isTP_UP',
-                                  'pred': 'm1_up',
-                                  'pred_proba': 'm1_pred_proba_up',
-                                  'lab': 'lab_up'})
+    rename_down = {'meta_label':    f'is{suffix}_DN',
+                   'meta_target':   f'is{suffix}_DN',
+                   'pred':          'm1_dn',
+                   'prediction':    'm1_prediction',
+                   'pred_proba':    'm1_pred_proba_dn',
+                   'lab':           'lab_dn'}
 
+    rename_up = {'meta_label':      f'is{suffix}_UP',
+                 'meta_target':     f'is{suffix}_UP',
+                 'pred':            'm1_up',
+                 'pred_proba':      'm1_pred_proba_up',
+                 'lab':             'lab_up'}
+
+    # ┏━━━━━━━━━━ Renaming Columns ━━━━━━━━━━┓
+    df_down = df_down.rename(columns = rename_down)
+    df_up = df_up.rename(columns = rename_up)
+
+    # ┏━━━━━━━━━━ Normalizer Function (False -> Nan) ━━━━━━━━━━┓
+    def _normalise_meta(series: pd.Series) -> pd.Series:
+        replacements = {False: np.nan}
+        return series.replace(replacements)
+    
+    # ┏━━━━━━━━━━ Normalizing ━━━━━━━━━━┓
+    if down_target in df_down.columns:
+        df_down[down_target] = _normalise_meta(df_down[down_target])
+    if up_target in df_up.columns:
+        df_up[up_target] = _normalise_meta(df_up[up_target])
+    
     # ┏━━━━━━━━━━ Additional Columns ━━━━━━━━━━┓
     for extra_col in ("lab_dn", "lab_up"):
         if extra_col not in requested:
@@ -119,12 +140,12 @@ def merge_meta_targets(asset_type: str,
         else:
             metrics_df = df_down[quantile_cols].apply(_distribution_metrics, axis=1).apply(pd.Series)
             df_down = pd.concat([df_down, metrics_df[metrics_requested]], axis=1)
-
+    
     # ┏━━━━━━━━━━ Drop quantiles unless explicitly requested ━━━━━━━━━━┓
     keep_quantiles = set(quantile_cols) & set(requested)
     drop_quantiles = [q for q in quantile_cols if q in df_down.columns and q not in keep_quantiles]
     if drop_quantiles:
-        df_down = df_down.drop(columns=drop_quantiles)
+        df_down = df_down.drop(columns = drop_quantiles)
 
     # ┏━━━━━━━━━━ Creation of Empty DataFrame ━━━━━━━━━━┓
     idx = df_down.index.union(df_up.index).sort_values()
@@ -141,13 +162,13 @@ def merge_meta_targets(asset_type: str,
     for column in requested:
         merged[column] = pull(column).reindex(idx)
 
-    # ┏━━━━━━━━━━ Adding Meta-Labels in Merged file & Resetting index━━━━━━━━━━┓
-    merged['isTP_DN'] = pd.to_numeric(pull('isTP_DN').reindex(idx), errors='coerce').astype('float')
-    merged['isTP_UP'] = pd.to_numeric(pull('isTP_UP').reindex(idx), errors='coerce').astype('float')
-
+    # ┏━━━━━━━━━━ Adding Meta-Labels in Merged file & Resetting index ━━━━━━━━━━┓
+    merged[down_target] = pd.to_numeric(pull(down_target).reindex(idx), errors = 'coerce').astype('float')
+    merged[up_target] = pd.to_numeric(pull(up_target).reindex(idx), errors = 'coerce').astype('float')
+    
     # ┏━━━━━━━━━━ Drop quantiles unless explicitly requested ━━━━━━━━━━┓
-    merged = merged.reset_index().rename(columns={'index': 'date'})
-    final_order = ['date'] + column_features + context_features + ['lab_dn', 'lab_up', 'isTP_DN', 'isTP_UP']
+    merged = merged.reset_index().rename(columns = {'index': 'date'})
+    final_order = ['date'] + column_features + context_features + ['lab_dn', 'lab_up', down_target, up_target]
     merged = merged.loc[:, [col for col in final_order if col in merged.columns]]
     
     if set_index:
@@ -157,7 +178,7 @@ def merge_meta_targets(asset_type: str,
     if output_dir:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         merged.to_csv(Path(output_dir) / f"{sym}_merge.csv")
-
+    
     return merged
 
 
@@ -182,7 +203,7 @@ def count_meta_targets(df: pd.DataFrame,
     Dict[str, Dict[str, int]]
         Nested dictionary mapping column → {class_value: count}.
     """
-    
+    # ┏━━━━━━━━━━ Function to count ━━━━━━━━━━┓
     def _serialise_counts(series: pd.Series) -> Dict[str, int]:
         vc = series.value_counts(dropna = False)
         col_counts: Dict[str, int] = {}
@@ -226,7 +247,9 @@ def count_meta_targets(df: pd.DataFrame,
 def prepare_dataset(df: pd.DataFrame,
                     seq_len: int = 90,
                     column_features: Sequence[str] = ("close",),
-                    context_features: Sequence[str] = ()) -> TensorDataset:
+                    context_features: Sequence[str] = (),
+                    meta_label_mode: str = "original",
+                    task: Optional[str] = None) -> TensorDataset:
     """
     Transform the merged dataframe into a TensorDataset of sliding windows plus targets.
 
@@ -252,6 +275,9 @@ def prepare_dataset(df: pd.DataFrame,
     N = n - seq_len + 1
     C = len(column_features)
     L = seq_len + len(context_features)
+    suffix = "FP" if (meta_label_mode or "original").lower() == "fp" else "TP"
+    up_col = f"is{suffix}_UP"
+    dn_col = f"is{suffix}_DN"
 
     # ┏━━━━━━━━━━ 0) Sanity checks ━━━━━━━━━━┓
     for col in column_features:
@@ -259,20 +285,26 @@ def prepare_dataset(df: pd.DataFrame,
             raise KeyError(f"Feature '{col}' not found in DataFrame columns.")
     if n < seq_len:
         raise ValueError(f"Not enough rows ({n}) for seq_len={seq_len}")
-
-    # ┏━━━━━━━━━━ 1) Targets (unchanged) ━━━━━━━━━━┓
-    y_up   = df['isTP_UP'].fillna(0).to_numpy(dtype=np.int64)
-    y_dn   = df['isTP_DN'].fillna(0).to_numpy(dtype=np.int64)
+    if up_col not in df.columns or dn_col not in df.columns:
+        raise KeyError(f"Expected columns '{up_col}' and '{dn_col}' in dataframe.")
+    
+    # ┏━━━━━━━━━━ 1) Targets (preserve NaNs) ━━━━━━━━━━┓
+    y_up = df[up_col].to_numpy(dtype=float)
+    y_dn = df[dn_col].to_numpy(dtype=float)
 
     # ┏━━━━━━━━━━ 2) Raw values matrix for features (no global scaling!) ━━━━━━━━━━┓
     feats = df[list(column_features)].to_numpy(dtype=np.float32)  # shape: (n_rows, C)
-    context_vals = df[list(context_features)].to_numpy(dtype=np.float32)
+    if context_features:    
+        context_vals = df[list(context_features)].to_numpy(dtype=np.float32)
+    else:
+        context_vals = np.zeros((n, 0), dtype=np.float32)
     
     # ┏━━━━━━━━━━ 3) Allocate outputs ━━━━━━━━━━┓
-    X    = np.zeros((N, C, L), dtype=np.float32)
-    Y_up = np.zeros((N,), dtype=np.int64)
-    Y_dn = np.zeros((N,), dtype=np.int64)
-
+    X_list: List[np.ndarray] = []
+    Y_up_list: List[int] = []
+    Y_dn_list: List[int] = []
+    task_upper = task.upper()
+    
     # ┏━━━━━━━━━━ 4) Build sliding windows with MinMax scaling per window and feature ━━━━━━━━━━┓
     # For each window [i:i+seq_len), scale each feature using min/max computed only on that window.
     for i in range(N):
@@ -293,16 +325,41 @@ def prepare_dataset(df: pd.DataFrame,
         w_scaled = w_scaled.T                    # (C, seq_len)
 
         # ┏━━━━━━━━━━ Get context features at window end (1D vector) ━━━━━━━━━━┓
-        context_vector = context_vals[end - 1, :]            # (context_dim,)
-        context_expanded = np.tile(context_vector, (C, 1))   # (C, context_dim)
+        context_vector = context_vals[end - 1, :]
+        context_expanded = np.tile(context_vector, (C, 1)) if context_features else np.zeros((C, 0), dtype=np.float32)
 
         # ┏━━━━━━━━━━ Concatenate along time axis (dim=1) ━━━━━━━━━━┓
-        full_input = np.concatenate([w_scaled, context_expanded], axis=1)  # (C, seq_len + ctx)
+        full_input = np.concatenate([w_scaled, context_expanded], axis=1) if context_features else w_scaled
 
-        # ┏━━━━━━━━━━ Targets at window end ━━━━━━━━━━┓
-        X[i]    = full_input
-        Y_up[i] = y_up[end-1]
-        Y_dn[i] = y_dn[end-1]
+        label_up = y_up[end - 1]
+        label_dn = y_dn[end - 1]
+        
+        # ┏━━━━━━━━━━ Filtering ONLY non-NaN values for the requested Task ━━━━━━━━━━┓
+        keep_sample = True
+        if task_upper == "UP":
+            keep_sample = not np.isnan(label_up) 
+        elif task_upper == "DN":
+            keep_sample = not np.isnan(label_dn)
+        else:
+            keep_sample = not (np.isnan(label_up) and np.isnan(label_dn))
+
+        if not keep_sample:
+            continue
+
+        # ┏━━━━━━━━━━ Appending context and numerical (1/0) label for both tasks  ━━━━━━━━━━┓
+        # However, only the task we want to train will contain pure non-NaN labels
+        # The remaining task is not important for usual (task-specific) training
+        X_list.append(full_input)
+        Y_up_list.append(int(label_up) if not np.isnan(label_up) else 0)
+        Y_dn_list.append(int(label_dn) if not np.isnan(label_dn) else 0)
+
+    if not X_list:
+        raise ValueError("No valid windows remain after filtering NaN meta-labels. Please verify the data or relax the filter.")
+
+    X = np.stack(X_list).astype(np.float32)
+    Y_up = np.asarray(Y_up_list, dtype=np.int64)
+    Y_dn = np.asarray(Y_dn_list, dtype=np.int64)
+    print(f"[prepare_dataset] Final Number of Samples (w/o NaN Values) → X: {len(X)}, Y_up: {len(Y_up)}, Y_dn: {len(Y_dn)}")
 
     return TensorDataset(torch.from_numpy(X),
                          torch.from_numpy(Y_up),

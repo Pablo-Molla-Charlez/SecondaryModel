@@ -1,8 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+
 from pathlib import Path
 from paths import dataset_path
+from typing import Optional
 from sklearn.metrics import (confusion_matrix,
                              ConfusionMatrixDisplay,
                              accuracy_score,
@@ -72,7 +74,8 @@ def export_predictions(df_asset,
                        tpreds_tau: np.ndarray,
                        cfg: dict,
                        checkpoint_dir: Path,
-                       tprobs: np.ndarray = None) -> Path:
+                       tprobs: np.ndarray = None,
+                       meta_label_mode: Optional[str] = None) -> Path:
     """
     Export a CSV with test-timeline dates aligned to CTTS predictions.
 
@@ -113,8 +116,9 @@ def export_predictions(df_asset,
     market   = cfg["dataset"]["type"].capitalize()
     symbol   = cfg["dataset"]["symbol"]
     granularity = cfg["training_mode"]["granularity_usual"]
-    up_path  = dataset_path(provider, market, symbol, "up", granularity = granularity)
-    dn_path  = dataset_path(provider, market, symbol, "down", granularity = granularity)
+    training_mode = cfg.get("training_mode", {})
+    up_path  = dataset_path(provider, market, symbol, "up", granularity = granularity, meta_label_mode = meta_label_mode)
+    dn_path  = dataset_path(provider, market, symbol, "down", granularity = granularity, meta_label_mode = meta_label_mode)
 
     up_df = pd.read_csv(up_path, parse_dates=["date"]) if up_path.exists() else pd.DataFrame(columns=["date"])
     dn_df = pd.read_csv(dn_path, parse_dates=["date"]) if dn_path.exists() else pd.DataFrame(columns=["date"])
@@ -145,7 +149,6 @@ def export_predictions(df_asset,
 
     # ┏━━━━━━━━━━ Coalesce 'prediction' and 'ground_truth' ━━━━━━━━━━┓
     # ┏━━━━━━━━━━ Task-specific columns ━━━━━━━━━━┓
-    training_mode = cfg.get("training_mode", {})
     task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper() # If fails the normal_task, falling back to optuna_task
     task_lower = task.lower()
 

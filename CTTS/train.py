@@ -9,6 +9,7 @@ import warnings
 import numpy as np
 from pathlib import Path
 from tqdm.auto import tqdm
+from torch.utils.data import TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 
 # ┏━━━━━━━━━━ Data Preprocessing utils ━━━━━━━━━━┓
@@ -70,6 +71,8 @@ def run_training(cfg: dict) -> None:
     loss_type         = cfg["training_mode"]["loss_function"].lower()
     provider          = cfg["dataset"]["source"].capitalize()
     cv_usual          = cfg["training_mode"]["cv_usual"]
+    meta_label_usual  = cfg["training_mode"]["meta_label_usual"].lower()
+    meta_suffix       = "FP" if meta_label_usual == "fp" else "TP"
 
     # ┏━━━━━━━━━━ 2.b) Selective Classification Configuration ━━━━━━━━━━┓
     threshold_cfg    = cfg["training_mode"].get("threshold", {})
@@ -85,7 +88,8 @@ def run_training(cfg: dict) -> None:
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
                             "up",
-                            granularity = granularity_usual)
+                            granularity = granularity_usual,
+                            meta_label_mode = meta_label_usual)
 
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -104,10 +108,8 @@ def run_training(cfg: dict) -> None:
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    cfg.setdefault("training_mode", {})
-    normal_task = cfg["training_mode"].get("normal_task", cfg["training_mode"].get("optuna_task", "UP"))
-    normal_task = normal_task.upper()
-    cfg["training_mode"]["normal_task"] = normal_task
+    #cfg.setdefault("training_mode", {})
+    normal_task = cfg["training_mode"]["normal_task"].upper()
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 5) DATALOADERS & CRITERION                                            ┃
@@ -122,29 +124,34 @@ def run_training(cfg: dict) -> None:
         context_features = task_features(cfg, "context_features", task)
 
         # ┏━━━━━━━━━━ Merge of Data [UP & DN CSVs from M1] ━━━━━━━━━━┓
-        df_asset = merge_meta_targets(asset_type      = cfg["dataset"]["type"],
-                                      asset           = cfg["dataset"]["symbol"],
-                                      data_dir        = str(Path(csv_path).parent),
-                                      output_dir      = str(Path(csv_path).parent),
-                                      column_features = column_features,
-                                      context_features = context_features)
+        df_asset = merge_meta_targets(asset_type       = cfg["dataset"]["type"],
+                                      asset            = cfg["dataset"]["symbol"],
+                                      data_dir         = str(Path(csv_path).parent),
+                                      output_dir       = str(Path(csv_path).parent),
+                                      column_features  = column_features,
+                                      context_features = context_features,
+                                      meta_label_mode  = meta_label_usual)
+        
+        
 
         # ┏━━━━━━━━━━ Counting Meta-Labels [Positives & Negatives] ━━━━━━━━━━┓
-        meta_counts = count_meta_targets(df_asset, task = task)
+        meta_columns = (f"is{meta_suffix}_UP", f"is{meta_suffix}_DN")
+        meta_up_col, meta_dn_col = meta_columns
+        meta_counts = count_meta_targets(df_asset, columns = meta_columns, task = task)
         print("Meta-Label counts:")
         for column, stats in meta_counts.items():
             formatted = ", ".join(f"{label}: {count}" for label, count in stats.items())
             print(f"  {column}: {formatted}")
-
-        
         
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
         # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
         dataset_tensor = prepare_dataset(df_asset, 
                                          seq_len          = cfg["sequence_length"],
                                          column_features  = column_features,
-                                         context_features = context_features)
-        
+                                         context_features = context_features,
+                                         meta_label_mode  = meta_label_usual,
+                                         task             = task)
+
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
         seed_everything(1493583942)  # Re-seed for reproducibility
         print(f"\n────────── {task} model ──────────")
@@ -339,7 +346,7 @@ def run_training(cfg: dict) -> None:
                 assert best_state is not None, "No Model saved during Training"
                 model.load_state_dict(best_state)
 
-                # ┏━━━━━━━━━━ Save that best state‐dict to disk ━━━━━━━━━━┓
+                # ┏━━━━━━━━━━ Save that best state-dict to disk ━━━━━━━━━━┓
                 ckpt_path = checkpoint_dir / f'{task}_best.pt'
                 torch.save(best_state, ckpt_path)
 
@@ -537,7 +544,8 @@ def run_training(cfg: dict) -> None:
                                    tpreds_tau      = test_preds_tau,
                                    cfg             = cfg,
                                    checkpoint_dir  = checkpoint_dir,
-                                   tprobs          = tprobs)
+                                   tprobs          = tprobs,
+                                   meta_label_mode = meta_label_usual)
 
                 # ┏━━━━━━━━━━ Meta-Labeling Consensus ━━━━━━━━━━┓
                 plot_meta_labeling_consensus(cfg = cfg,
@@ -546,6 +554,7 @@ def run_training(cfg: dict) -> None:
             
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
             torch.cuda.empty_cache()
+            
 
 def main():
     parser = argparse.ArgumentParser(description = "Train CTTS model")

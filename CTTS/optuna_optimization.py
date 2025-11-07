@@ -761,11 +761,13 @@ def run_optuna_for_task(dataset: TensorDataset,
 if __name__ == "__main__":
     # ┏━━━━━━━━━━ 7.a) Omit Warnings & CSV Paths ━━━━━━━━━━┓
     warnings.filterwarnings("ignore", category=UserWarning)
+    meta_label_optuna = cfg["training_mode"]["meta_label_optuna"]
     csv_path = dataset_path(cfg["dataset"]["source"],
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
                             "up",
-                            granularity = granularity_optuna)
+                            granularity = granularity_optuna,
+                            meta_label_mode = meta_label_optuna)
 
     # ┏━━━━━━━━━━ 7.b) Extracting Column and Context Features ━━━━━━━━━━┓
     # ┏━━━━━━━━━━ 7.b.1) Extracting Column ━━━━━━━━━━┓
@@ -788,7 +790,8 @@ if __name__ == "__main__":
                                   data_dir         = str(Path(csv_path).parent),
                                   output_dir       = str(Path(csv_path).parent),
                                   column_features  = all_columns,
-                                  context_features = all_context)
+                                  context_features = all_context,
+                                  meta_label_mode  = meta_label_optuna)
 
     # ┏━━━━━━━━━━ 7.d) Preparing Data ━━━━━━━━━━┓        
     default_task = optuna_task.upper()
@@ -798,11 +801,12 @@ if __name__ == "__main__":
         if opposite_task not in tasks:
             tasks.append(opposite_task)
 
-    datasets = {task: prepare_dataset(
-                      df_asset,
-                      seq_len = cfg["sequence_length"],
-                      column_features = COLUMN_FEATURES[task],
-                      context_features = CONTEXT_FEATURES[task]) for task in tasks}
+    datasets = {task: prepare_dataset(df_asset,
+                                      seq_len = cfg["sequence_length"],
+                                      column_features = COLUMN_FEATURES[task],
+                                      context_features = CONTEXT_FEATURES[task],
+                                      meta_label_mode = meta_label_optuna,
+                                      task = task) for task in tasks}
 
     # ┏━━━━━━━━━━ 7.e) Running BOTH (UP/DOWN) Optuna Studies ━━━━━━━━━━┓
     studies = {}
