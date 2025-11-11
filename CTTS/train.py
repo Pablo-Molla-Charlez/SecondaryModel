@@ -73,6 +73,8 @@ def run_training(cfg: dict) -> None:
     cv_usual          = cfg["training_mode"]["cv_usual"]
     meta_label_usual  = cfg["training_mode"]["meta_label_usual"].lower()
     meta_suffix       = "FP" if meta_label_usual == "fp" else "TP"
+    meta_dir_suffix   = "og" if meta_label_usual == "original" else meta_label_usual
+    granularity_slug_with_meta = f"{granularity_slug}_{meta_dir_suffix}"
 
     # ┏━━━━━━━━━━ 2.b) Selective Classification Configuration ━━━━━━━━━━┓
     threshold_cfg    = cfg["training_mode"].get("threshold", {})
@@ -133,7 +135,6 @@ def run_training(cfg: dict) -> None:
                                       context_features = context_features,
                                       meta_label_mode  = meta_label_usual)
         
-        
 
         # ┏━━━━━━━━━━ Counting Meta-Labels [Positives & Negatives] ━━━━━━━━━━┓
         meta_columns = (f"is{meta_suffix}_UP", f"is{meta_suffix}_DN")
@@ -152,6 +153,7 @@ def run_training(cfg: dict) -> None:
                                          context_features = context_features,
                                          meta_label_mode  = meta_label_usual,
                                          task             = task)
+
 
         # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
         seed_everything(1493583942)  # Re-seed for reproducibility
@@ -209,17 +211,16 @@ def run_training(cfg: dict) -> None:
         task_root = (Path(cfg["paths"]["output_root"]) / "Usual" / provider
                                                                 / cfg["dataset"]["symbol"] 
                                                                / task 
-                                                              / granularity_slug)
+                                                              / granularity_slug_with_meta)
         
         tb_root = (Path(cfg["paths"]["output_root"]) / "Usual" / "Tensorboard" / provider 
                                                                               / cfg["dataset"]["symbol"])
-
         # ┏━━━━━━━━━━ Main Loop for Training & Validation ━━━━━━━━━━┓
         for fold_idx, (train_loader, val_loader, crit) in enumerate(train_folds):
             # ┏━━━━━━━━━━ 6.b) Checkpoints & Runs and Tensorboard Folders Creation ━━━━━━━━━━┓
             run_stamp = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
             checkpoint_dir = task_root / f"Run_{run_stamp}"
-            tensorboard_dir = tb_root / f"{task}" / granularity_slug / f"Run_{run_stamp}"
+            tensorboard_dir = tb_root / f"{task}" / granularity_slug_with_meta / f"Run_{run_stamp}"
 
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             tensorboard_dir.mkdir(parents=True, exist_ok=True)
@@ -420,7 +421,6 @@ def run_training(cfg: dict) -> None:
                 eval_val = evaluate_threshold(vtargets, val_scores, selected_tau)
                 val_preds_tau = eval_val.pop("predictions")
 
-                print("\nValidation Results:")
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(vpreds_raw,
                                      vtargets,
@@ -518,7 +518,6 @@ def run_training(cfg: dict) -> None:
                 payload_json = checkpoint_dir / f"M2_{task}_R&C_Analysis.json"
                 save_metrics(payload, str(payload_json))
 
-                print("\nTest Results:")
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(tpreds,
                                      ttargets,
@@ -552,16 +551,16 @@ def run_training(cfg: dict) -> None:
                 plot_meta_labeling_consensus(cfg = cfg,
                                              checkpoint_dir = checkpoint_dir,
                                              best_threshold = selected_tau)
-            
+
             # ┏━━━━━━━━━━ Empty Caché ━━━━━━━━━━┓
             torch.cuda.empty_cache()
-            
+                        
 
 def main():
     parser = argparse.ArgumentParser(description = "Train CTTS model")
     parser.add_argument("--config",
                         type    = str,
-                        default = "config.yaml",
+                        default = "config_10.yaml",
                         help    = "Path to the YAML configuration file")
     args = parser.parse_args()
 

@@ -159,7 +159,7 @@ def epoch_loop(model: torch.nn.Module,
             xb = xb.to(device, non_blocking = True)
             tgt_raw = y_up if task_name == "UP" else y_dn
             tgt_raw = tgt_raw.to(device, non_blocking=True)
-            
+
             # ┏━━━━━━━━━━ Criterion Instantiation ━━━━━━━━━━┓
             is_bce = isinstance(criterion, nn.BCEWithLogitsLoss)
 

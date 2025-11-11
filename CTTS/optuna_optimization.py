@@ -391,8 +391,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 risk_constraints_flag = bool(selection["constraint_satisfied"])
 
                 # ┏━━━━━━━━━━ Pruning Filter ━━━━━━━━━━┓ 
-                if not risk_constraints_flag:
-                    print("\nRisk Constraints: ", risk_constraints_flag)
+                if not risk_constraints_flag:                    
                     return {"Policy":              policy,
                             "mean_val_loss":       float(np.mean(fold_losses)),
                             "best_metric":         best_metric,
@@ -415,7 +414,6 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
 
             # ┏━━━━━━━━━━ Pruning of Trial [Validation Conditions] ━━━━━━━━━━┓
             mean_val_loss = float(np.mean(fold_losses))
-            print(f"\nMean Val Loss {mean_val_loss:.3f}: ", mean_val_loss <= 0.7, f"Cov {best_metric:.3f}> Floor {floor_policy:.3f}: ", best_metric >= floor_policy)
             if mean_val_loss <= 0.7 and best_metric >= floor_policy:
                 # ┏━━━━━━━━━━ Folders Creation ━━━━━━━━━━┓
                 for d in (ckpt_dir, cm_dir):
@@ -682,15 +680,22 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
     if metrics["Policy"] == "risk_budget" and not metrics["Risk_Constraints"]:
+        print("\nRisk Constraints: ", metrics["Risk_Constraints"])
         raise optuna.TrialPruned()
     
     elif metrics["mean_val_loss"] > 0.7 or metrics["best_metric"] < floor_policy:
+        print(f"\nMean Val Loss {metrics['mean_val_loss']:.3f}: ",
+              metrics["mean_val_loss"] <= 0.7,
+              f"Cov {metrics['best_metric']:.3f}> Floor {floor_policy:.3f}: ",
+              metrics["best_metric"] >= floor_policy)
         raise optuna.TrialPruned()
+
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
     trial.set_user_attr("task",          task)
     trial.set_user_attr("mean_val_loss", metrics["mean_val_loss"])
     trial.set_user_attr("best_metric",   metrics["best_metric"])
+    print("\n")
               
     # ┏━━━━━━━━━━ Extract Metric(s) to Optimize ━━━━━━━━━━┓
     objective_values: List[float] = []

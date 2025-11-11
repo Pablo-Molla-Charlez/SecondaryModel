@@ -334,36 +334,23 @@ def prepare_dataset(df: pd.DataFrame,
         label_up = y_up[end - 1]
         label_dn = y_dn[end - 1]
         
-        # ┏━━━━━━━━━━ Filtering ONLY non-NaN values for the requested Task ━━━━━━━━━━┓
-        keep_sample = True
-        if task_upper == "UP":
-            keep_sample = not np.isnan(label_up) 
-        elif task_upper == "DN":
-            keep_sample = not np.isnan(label_dn)
-        else:
-            keep_sample = not (np.isnan(label_up) and np.isnan(label_dn))
-
-        if not keep_sample:
-            continue
-
-        # ┏━━━━━━━━━━ Appending context and numerical (1/0) label for both tasks  ━━━━━━━━━━┓
-        # However, only the task we want to train will contain pure non-NaN labels
-        # The remaining task is not important for usual (task-specific) training
+        # ┏━━━━━━━━━━ Appending context and raw labels (NaNs preserved) ━━━━━━━━━━┓
         X_list.append(full_input)
-        Y_up_list.append(int(label_up) if not np.isnan(label_up) else 0)
-        Y_dn_list.append(int(label_dn) if not np.isnan(label_dn) else 0)
+        Y_up_list.append(label_up)
+        Y_dn_list.append(label_dn)
 
-    if not X_list:
-        raise ValueError("No valid windows remain after filtering NaN meta-labels. Please verify the data or relax the filter.")
-
+    # ┏━━━━━━━━━━ CReating Dataset Tensors ━━━━━━━━━━┓
     X = np.stack(X_list).astype(np.float32)
-    Y_up = np.asarray(Y_up_list, dtype=np.int64)
-    Y_dn = np.asarray(Y_dn_list, dtype=np.int64)
-    print(f"[prepare_dataset] Final Number of Samples [{task.upper()}] (w/o NaN Values) → X: {len(X)}, Y_up: {len(Y_up)}, Y_dn: {len(Y_dn)}")
+    Y_up = np.asarray(Y_up_list, dtype=np.float32)
+    Y_dn = np.asarray(Y_dn_list, dtype=np.float32)
+    dataset = TensorDataset(torch.from_numpy(X),
+                            torch.from_numpy(Y_up),
+                            torch.from_numpy(Y_dn))
 
-    return TensorDataset(torch.from_numpy(X),
-                         torch.from_numpy(Y_up),
-                         torch.from_numpy(Y_dn))
+    # ┏━━━━━━━━━━ Adding Timestamp for each Label  ━━━━━━━━━━┓
+    dataset.window_dates = list(df.index[seq_len - 1:])
+
+    return dataset
                          
 
 class FocalLoss(nn.Module):
@@ -528,60 +515,133 @@ def build_loaders(ds: TensorDataset,
 
     N = len(ds)
 
-    # ┏━━━━━━━━━━ Compute split indices ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Compute split values ━━━━━━━━━━┓
     n_train = int(train_frac * N)
     n_val   = int(val_frac   * N)
     n_test  = N - n_train - n_val
 
-    idx_val  = list(range(n_train, n_train + n_val))
-    idx_test = list(range(n_train + n_val, N))
+    # ┏━━━━━━━━━━ Compute split indices values ━━━━━━━━━━┓
+    idx_train = list(range(0, n_train))
+    idx_val   = list(range(n_train, n_train + n_val))
+    idx_test  = list(range(n_train + n_val, N))
 
-    val_loader_outer  = DataLoader(Subset(ds, idx_val),
+    # ┏━━━━━━━━━━ Extracting Target Tensor ━━━━━━━━━━┓
+    target_upper = target.upper()
+    target_tensor = ds.tensors[1] if target_upper == "UP" else ds.tensors[2]
+    date_index = getattr(ds, "window_dates", None)
+
+    # ┏━━━━━━━━━━ Helper Functions to remove NaN Values ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ 1. Indices without NaN Values ━━━━━━━━━━┓
+    def _drop_nan_from_indices(indices: List[int]) -> List[int]:
+        if not indices:
+            return indices
+        idx_tensor = torch.tensor(indices, dtype=torch.long)
+        rel = target_tensor[idx_tensor]
+        if rel.dtype.is_floating_point:
+            keep = ~torch.isnan(rel)
+            return idx_tensor[keep].tolist()
+        return indices
+
+    # ┏━━━━━━━━━━ 2. Labels without NaN Values ━━━━━━━━━━┓
+    def _clean_labels(labels: torch.Tensor) -> torch.Tensor:
+        if labels.dtype.is_floating_point:
+            mask = ~torch.isnan(labels)
+            labels = labels[mask]
+        return labels
+
+    # ┏━━━━━━━━━━ 3. Printing Time Ranges for each Split ━━━━━━━━━━┓
+    def _log_range(name: str, indices: List[int]) -> None:
+        if not indices:
+            print(f"[build_loaders] {name}: no samples")
+            return
+        if date_index and indices[-1] < len(date_index):
+            first = date_index[indices[0]]
+            last = date_index[indices[-1]]
+            print(f"[build_loaders] {name}: {first} → {last} ({len(indices)} samples)")
+        else:
+            print(f"[build_loaders] {name}: idx {indices[0]} → {indices[-1]} ({len(indices)} samples)")
+
+    # ┏━━━━━━━━━━ New Indices (w/o Nans) ━━━━━━━━━━┓
+    idx_train_clean = _drop_nan_from_indices(idx_train)
+    idx_val_clean = _drop_nan_from_indices(idx_val)
+    idx_test_clean = _drop_nan_from_indices(idx_test)
+
+    # ┏━━━━━━━━━━ Warning Check ━━━━━━━━━━┓
+    if not idx_train_clean:
+        raise ValueError(f"No training samples remain after filtering NaNs for target '{target_upper}'.")
+    if not idx_val_clean:
+        raise ValueError(f"No validation samples remain after filtering NaNs for target '{target_upper}'.")
+    if not idx_test_clean:
+        raise ValueError(f"No test samples remain after filtering NaNs for target '{target_upper}'.")
+
+    val_loader_outer  = DataLoader(Subset(ds, idx_val_clean),
                                    batch_size = batch_size,
                                    shuffle    = False)
 
-    test_loader       = DataLoader(Subset(ds, idx_test),
+    test_loader       = DataLoader(Subset(ds, idx_test_clean),
                                    batch_size = batch_size,
                                    shuffle    = False)
-    folds = []
 
     # ┏━━━━━━━━━━ Seed for all train‐set shuffles ━━━━━━━━━━┓
     _seed = 1493583942
+    folds = []
 
-
+    # expose surviving test indices for downstream exporters
+    ds.test_indices = idx_test_clean
+    
     if not cross_validation:
         # ┏━━━━━━━━━━ Single Fold (No CV) ━━━━━━━━━━┓
-        idx_train = list(range(0, n_train))
-        
-        # ┏━━━━━━━━━━ Extract targets on Train only ━━━━━━━━━━┓
-        y_up_tr = ds.tensors[1][idx_train]
-        y_dn_tr = ds.tensors[2][idx_train]
+        # ┏━━━━━━━━━━ To print Time-Lines ━━━━━━━━━━┓
+        #_log_range("Train split (post NaN filter)", idx_train_clean)
+        #_log_range("Validation split (post NaN filter)", idx_val_clean)
+        #_log_range("Test split", idx_test_clean)
+
+        # ┏━━━━━━━━━━ Non-NaN Labels ━━━━━━━━━━┓
+        y_up_tr = _clean_labels(ds.tensors[1][idx_train_clean])
+        y_dn_tr = _clean_labels(ds.tensors[2][idx_train_clean])
         
         # ┏━━━━━━━━━━ Compute class-weights on TRAIN only ━━━━━━━━━━┓
         if loss_type in ('cross_entropy', 'focal'):
-            cu = torch.bincount(y_up_tr, minlength=2).float()
-            cd = torch.bincount(y_dn_tr, minlength=2).float()
+            # ┏━━━━━━━━━━ Compute class-weights on UP & DN ━━━━━━━━━━┓
+            # Lets the training loop keep going even when one split 
+            # temporarily lacks valid labels, instead of crashing on bincount
+            cu = torch.bincount(y_up_tr.long(), minlength=2).float() if y_up_tr.numel() else torch.ones(2)
+            cd = torch.bincount(y_dn_tr.long(), minlength=2).float() if y_dn_tr.numel() else torch.ones(2)
             tu, td = cu.sum(), cd.sum()
             w_up = tu / (cu + 1e-8)
             w_dn = td / (cd + 1e-8)
+        
         elif loss_type == 'bce':
-            pu, nu = y_up_tr.sum().float(), y_up_tr.numel() - y_up_tr.sum().float()
-            pd, nd = y_dn_tr.sum().float(), y_dn_tr.numel() - y_dn_tr.sum().float()
-            w_up = nu / (pu + 1e-8)
-            w_dn = nd / (pd + 1e-8)
+            # ┏━━━━━━━━━━ Compute class-weights on UP ━━━━━━━━━━┓
+            if y_up_tr.numel():
+                pu = y_up_tr.sum().float()
+                nu = y_up_tr.numel() - pu
+                w_up = nu / (pu + 1e-8)
+            else:
+                w_up = torch.tensor(1.0)
+                if target_upper == "UP":
+                    print("[build_loaders] No valid UP labels in train split; using neutral class weight 1.0.")
+            
+            # ┏━━━━━━━━━━ Compute class-weights on DN ━━━━━━━━━━┓
+            if y_dn_tr.numel():
+                pd = y_dn_tr.sum().float()
+                nd = y_dn_tr.numel() - pd
+                w_dn = nd / (pd + 1e-8)
+            else:
+                w_dn = torch.tensor(1.0)
+                if target_upper == "DN":
+                    print("[build_loaders] No valid DN labels in train split; using neutral class weight 1.0.")
         else:
             raise ValueError("loss_type must be 'bce', 'cross_entropy' or 'focal")
 
         w_up = w_up.to(device)
         w_dn = w_dn.to(device)
 
-        # ┏━━━━━━━━━━ Build a standard shuffled DataLoader ━━━━━━━━━━┓
-        train_loader = DataLoader(Subset(ds, idx_train),
+        # ┏━━━━━━━━━━ Build a standard shuffled DataLoader (New Indices) ━━━━━━━━━━┓
+        train_loader = DataLoader(Subset(ds, idx_train_clean),
                                   batch_size = batch_size,
                                   shuffle    = True,
                                   generator  = torch.Generator().manual_seed(_seed))
-
-        
 
         # ┏━━━━━━━━━━ Build both criteria, then pick the one for target ━━━━━━━━━━┓
         crit_up, crit_dn = make_criteria(loss_type, 
@@ -602,31 +662,67 @@ def build_loaders(ds: TensorDataset,
         n_pool = n_train + n_val
         train_end = int(n_pool * p_start)
         val_window = n_val
+        
+        # ┏━━━━━━━━━━ To print Test Time-Line ━━━━━━━━━━┓
+        #_log_range("Test split", idx_test_clean)
 
+        fold_id = 1
         while train_end + val_window <= n_pool:
+            # ┏━━━━━━━━━━ Original Indices (with Nans) ━━━━━━━━━━┓
             idx_train_fold = list(range(0, train_end))
             idx_val_fold   = list(range(train_end, train_end + val_window))
+
+            # ┏━━━━━━━━━━ New Indices (w/o Nans) ━━━━━━━━━━┓
+            idx_train_fold = _drop_nan_from_indices(idx_train_fold)
+            idx_val_fold   = _drop_nan_from_indices(idx_val_fold)
+
+            # ┏━━━━━━━━━━ Warning Check ━━━━━━━━━━┓
+            if not idx_train_fold:
+                raise ValueError(f"No training samples remain for fold (end={train_end}) after filtering NaNs.")
+            if not idx_val_fold:
+                raise ValueError(f"No validation samples remain for fold (end={train_end}) after filtering NaNs.")
 
             # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
             assert max(idx_train_fold) <= min(idx_val_fold), "Train/Val overlap!"
             assert max(idx_val_fold)   < n_pool, "Val fold exceeds pool boundary!"
 
+            # ┏━━━━━━━━━━ To Print per-Fold Time-Line in Train & Val ━━━━━━━━━━┓
+            #(f"CV Fold {fold_id} Train (post NaN filter)", idx_train_fold)
+            #_log_range(f"CV Fold {fold_id} Val (post NaN filter)", idx_val_fold)
+
             # ┏━━━━━━━━━━ Extract targets on Train only ━━━━━━━━━━┓
-            y_up_tr = ds.tensors[1][idx_train_fold]
-            y_dn_tr = ds.tensors[2][idx_train_fold]
+            y_up_tr = _clean_labels(ds.tensors[1][idx_train_fold])
+            y_dn_tr = _clean_labels(ds.tensors[2][idx_train_fold])
 
             # ┏━━━━━━━━━━ Compute class-weights on TRAIN Fold only ━━━━━━━━━━┓
             if loss_type in ('cross_entropy', 'focal'):
-                cu = torch.bincount(y_up_tr, minlength=2).float()
-                cd = torch.bincount(y_dn_tr, minlength=2).float()
+                # ┏━━━━━━━━━━ Compute class-weights on UP & DN ━━━━━━━━━━┓
+                cu = torch.bincount(y_up_tr.long(), minlength=2).float() if y_up_tr.numel() else torch.ones(2)
+                cd = torch.bincount(y_dn_tr.long(), minlength=2).float() if y_dn_tr.numel() else torch.ones(2)
                 tu, td = cu.sum(), cd.sum()
                 w_up = tu / (cu + 1e-8)
                 w_dn = td / (cd + 1e-8)
+
             elif loss_type == 'bce':
-                pu, nu = y_up_tr.sum().float(), y_up_tr.numel() - y_up_tr.sum().float()
-                pd, nd = y_dn_tr.sum().float(), y_dn_tr.numel() - y_dn_tr.sum().float()
-                w_up = nu / (pu + 1e-8)
-                w_dn = nd / (pd + 1e-8)
+                # ┏━━━━━━━━━━ Compute class-weights on UP ━━━━━━━━━━┓
+                if y_up_tr.numel():
+                    pu = y_up_tr.sum().float()
+                    nu = y_up_tr.numel() - pu
+                    w_up = nu / (pu + 1e-8)
+                else:
+                    w_up = torch.tensor(1.0)
+                    if target_upper == "UP":
+                        print("[build_loaders][CV] No valid UP labels for fold; using neutral class weight 1.0.")
+
+                # ┏━━━━━━━━━━ Compute class-weights on DN ━━━━━━━━━━┓
+                if y_dn_tr.numel():
+                    pd = y_dn_tr.sum().float()
+                    nd = y_dn_tr.numel() - pd
+                    w_dn = nd / (pd + 1e-8)
+                else:
+                    w_dn = torch.tensor(1.0)
+                    if target_upper == "DN":
+                        print("[build_loaders][CV] No valid DN labels for fold; using neutral class weight 1.0.")
             else:
                 raise ValueError("loss_type must be 'bce', 'cross_entropy' or 'focal")
 
@@ -658,29 +754,57 @@ def build_loaders(ds: TensorDataset,
 
             # ┏━━━━━━━━━━ Expand training window ━━━━━━━━━━┓
             train_end += val_window 
+            fold_id += 1
         
         # ┏━━━━━━━━━━ Handle leftover samples in the pool ━━━━━━━━━━┓
         if train_end < n_pool:
             # ┏━━━━━━━━━━ Last fold should mirror original split sizes ━━━━━━━━━━┓
-            idx_tr = list(range(0, n_train))
-            idx_va = list(range(n_train, n_train + n_val))
+            idx_tr = _drop_nan_from_indices(list(range(0, n_train)))
+            idx_va = _drop_nan_from_indices(list(range(n_train, n_train + n_val)))
 
-            # ┏━━━━━━━━━━ Extract targets on last train set ━━━━━━━━━━┓
-            y_up_tr = ds.tensors[1][idx_tr]
-            y_dn_tr = ds.tensors[2][idx_tr]
+            # ┏━━━━━━━━━━ Safety Check ━━━━━━━━━━┓
+            if not idx_tr:
+                raise ValueError("No training samples remain for the final fold after filtering NaNs.")
+            if not idx_va:
+                raise ValueError("No validation samples remain for the final fold after filtering NaNs.")
+
+            # ┏━━━━━━━━━━ To print last fold Train & Val ━━━━━━━━━━┓
+            #_log_range(f"CV Fold {fold_id} Train (post NaN filter)", idx_tr)
+            #_log_range(f"CV Fold {fold_id} Val (post NaN filter)", idx_va)
+
+            # ┏━━━━━━━━━━ Extract clean targets on last train set ━━━━━━━━━━┓
+            y_up_tr = _clean_labels(ds.tensors[1][idx_tr])
+            y_dn_tr = _clean_labels(ds.tensors[2][idx_tr])
 
             # ┏━━━━━━━━━━ Compute class-weights on TRAIN Fold only ━━━━━━━━━━┓
             if loss_type in ('cross_entropy', 'focal'):
-                cu = torch.bincount(y_up_tr, minlength=2).float()
-                cd = torch.bincount(y_dn_tr, minlength=2).float()
+                # ┏━━━━━━━━━━ Compute class-weights on UP & DN ━━━━━━━━━━┓
+                cu = torch.bincount(y_up_tr.long(), minlength=2).float() if y_up_tr.numel() else torch.ones(2)
+                cd = torch.bincount(y_dn_tr.long(), minlength=2).float() if y_dn_tr.numel() else torch.ones(2)
                 tu, td = cu.sum(), cd.sum()
                 w_up = tu / (cu + 1e-8)
                 w_dn = td / (cd + 1e-8)
+
             elif loss_type == 'bce':
-                pu, nu = y_up_tr.sum().float(), y_up_tr.numel() - y_up_tr.sum().float()
-                pd, nd = y_dn_tr.sum().float(), y_dn_tr.numel() - y_dn_tr.sum().float()
-                w_up = nu / (pu + 1e-8)
-                w_dn = nd / (pd + 1e-8)
+                # ┏━━━━━━━━━━ Compute class-weights on UP ━━━━━━━━━━┓
+                if y_up_tr.numel():
+                    pu = y_up_tr.sum().float()
+                    nu = y_up_tr.numel() - pu
+                    w_up = nu / (pu + 1e-8)
+                else:
+                    w_up = torch.tensor(1.0)
+                    if target_upper == "UP":
+                        print("[build_loaders][CV-final] No valid UP labels for final fold; using neutral class weight 1.0.")
+                
+                # ┏━━━━━━━━━━ Compute class-weights on DN ━━━━━━━━━━┓
+                if y_dn_tr.numel():
+                    pd = y_dn_tr.sum().float()
+                    nd = y_dn_tr.numel() - pd
+                    w_dn = nd / (pd + 1e-8)
+                else:
+                    w_dn = torch.tensor(1.0)
+                    if target_upper == "DN":
+                        print("[build_loaders][CV-final] No valid DN labels for final fold; using neutral class weight 1.0.")
             else:
                 raise ValueError("loss_type must be 'bce', 'cross_entropy' or 'focal")
 

@@ -94,10 +94,14 @@ def export_predictions(df_asset,
         raise ValueError("tpreds_tau must be provided to export best-threshold predictions.")
 
     # ┏━━━━━━━━━━ Recompute split sizes to recover test indices ━━━━━━━━━━┓
-    N_windows   = len(dataset_tensor)
-    n_train_win = int(cfg["splits"]["train"] * N_windows)
-    n_val_win   = int(cfg["splits"]["val"]   * N_windows)
-    idx_test_ds = list(range(n_train_win + n_val_win, N_windows))
+    idx_test_ds = getattr(dataset_tensor, "test_indices", None)
+    if idx_test_ds is None:
+        N_windows   = len(dataset_tensor)
+        n_train_win = int(cfg["splits"]["train"] * N_windows)
+        n_val_win   = int(cfg["splits"]["val"]   * N_windows)
+        idx_test_ds = list(range(n_train_win + n_val_win, N_windows))
+    else:
+        idx_test_ds = list(idx_test_ds)
 
     # ┏━━━━━━━━━━ Map each dataset index k to its corresponding end-of-window date: df.index[k + seq_len - 1] ━━━━━━━━━━┓
     seq_len = cfg["sequence_length"]
@@ -109,7 +113,8 @@ def export_predictions(df_asset,
         print(f"[WARN] Date/predictions length mismatch: dates={len(mapped_dates)} preds={len(tpreds)}")
 
     # ┏━━━━━━━━━━ Start with DataFrame of test dates ━━━━━━━━━━┓
-    base_df = pd.DataFrame({"date": mapped_dates[:len(tpreds)]})
+    limit = min(len(mapped_dates), len(tpreds))
+    base_df = pd.DataFrame({"date": mapped_dates[:limit]})
 
     # ┏━━━━━━━━━━ Load M1 CSVs (UP and DOWN) ━━━━━━━━━━┓
     provider = cfg["dataset"]["source"]
@@ -248,13 +253,16 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
     Additionally, plot M1 vs lab confusion matrices for the UP and DOWN predictions
     (if the exported CSV provides those columns).
     """
+    # ┏━━━━━━━━━━ Resolve training metadata needed for consensus ━━━━━━━━━━┓
     training_mode = cfg.get("training_mode", {})
     task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper()
+    meta_mode = training_mode.get("meta_label_usual", training_mode.get("meta_label_optuna", "tp")).lower()
     symbol = cfg["dataset"]["symbol"]
     csv_path = Path(checkpoint_dir) / f"{symbol}_{task}_predictions.csv"
     if not csv_path.exists():
         raise FileNotFoundError(f"Predictions CSV not found at {csv_path}")
 
+    # ┏━━━━━━━━━━ Load exported predictions ━━━━━━━━━━┓
     df = pd.read_csv(csv_path)
     task_lower = task.lower()
     m1_suffix = "down" if task == "DN" else "up"
@@ -263,21 +271,30 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
     m2_tau_col = f"{m2_col}_tau"
     target_col = "lab_dn" if task == "DN" else "lab_up"
 
+    # ┏━━━━━━━━━━ Ensure required columns exist ━━━━━━━━━━┓
     required_cols = {m1_col, m2_col, m2_tau_col, target_col}
     missing = required_cols - set(df.columns)
     if missing:
         raise KeyError(f"Missing required columns in predictions CSV: {sorted(missing)}")
 
+    # ┏━━━━━━━━━━ Cast predictions/targets to clean integer arrays ━━━━━━━━━━┓
     m1_preds = df[m1_col].fillna(0).astype(int)
     m2_preds = df[m2_col].fillna(0).astype(int)
     m2_preds_tau = df[m2_tau_col].fillna(0).astype(int)
     targets  = df[target_col].fillna(0).astype(int)
 
+    # ┏━━━━━━━━━━ Configure label names and FP-specific consensus rule ━━━━━━━━━━┓
     labels = (f"No_TP_{task}", f"TP_{task}")
+    invert_consensus = meta_mode == "fp"
 
     def _plot_consensus(m2_series: pd.Series, suffix: str, tau_value: float = None, cmap: str = "Purples") -> Path:
-        consensus_preds = ((m1_preds == 1) & (m2_series == 1)).astype(int)
+        # ┏━━━━━━━━━━ Combine M1+M2 signals depending on meta_label mode ━━━━━━━━━━┓
+        if invert_consensus:
+            consensus_preds = ((m1_preds == 1) & (m2_series == 0)).astype(int)
+        else:
+            consensus_preds = ((m1_preds == 1) & (m2_series == 1)).astype(int)
 
+        # ┏━━━━━━━━━━ Build confusion matrix and plot aesthetics ━━━━━━━━━━┓
         cm = confusion_matrix(targets, consensus_preds, labels=[0, 1])
         fig, ax = plt.subplots(figsize=(4, 4))
         disp = ConfusionMatrixDisplay(cm, display_labels=labels)
@@ -290,6 +307,7 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
         ax.set_xlabel("Predicted Consensus")
         ax.set_ylabel("True Label")
 
+        # ┏━━━━━━━━━━ Aggregate scalar metrics ━━━━━━━━━━┓
         acc  = accuracy_score(targets, consensus_preds)
         prec = precision_score(targets, consensus_preds, zero_division=0)
         rec  = recall_score(targets, consensus_preds, zero_division=0)
@@ -315,6 +333,7 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
         print(f"Meta-Labeling Results{'' if not suffix else ' (@Tau)'}: {out_path}")
         return out_path
 
+    # ┏━━━━━━━━━━ Produce default and @tau consensus plots ━━━━━━━━━━┓
     default_path = _plot_consensus(m2_preds, suffix = "", tau_value = None)
     _plot_consensus(m2_preds_tau, suffix = "@tau", tau_value = best_threshold)
 
