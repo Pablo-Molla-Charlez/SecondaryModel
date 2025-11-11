@@ -95,7 +95,13 @@ padding            = cfg["training_mode"]["padding"]
 granularity_optuna = cfg["training_mode"]["granularity_optuna"]
 granularity_slug   = granularity_optuna.replace(" ", "").replace("-", "").lower()
 
-# ┏━━━━━━━━━━ 3.f) Coverage Configuration ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ 3.f) Meta-Label Modes ━━━━━━━━━━┓
+meta_label_optuna = cfg["training_mode"]["meta_label_optuna"]
+meta_suffix_optuna = "FP" if meta_label_optuna == "fp" else "TP"
+meta_dir_suffix = "og" if meta_label_optuna == "original" else meta_label_optuna
+granularity_slug_with_meta = f"{granularity_slug}_{meta_dir_suffix}"
+
+# ┏━━━━━━━━━━ 3.g) Coverage Configuration ━━━━━━━━━━┓
 threshold_cfg      = cfg["training_mode"].get("threshold", {})
 policy             = threshold_cfg["policy"].lower()
 alpha_cfg          = float(threshold_cfg["alpha"])
@@ -105,7 +111,7 @@ min_coverage_cfg   = float(threshold_cfg["min_coverage"])
 min_selected_cfg   = float(threshold_cfg["min_selected_count"])
 floor_policy       = float(threshold_cfg["floor_policy"])
 
-# ┏━━━━━━━━━━ 3.g) Client ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ 3.h) Client ━━━━━━━━━━┓
 cli = argparse.ArgumentParser()
 cli.add_argument("--trials",  type = int, default = 500,    help = "Optuna trials")    # 500 different parameter combinations
 cli.add_argument("--seed",    type = int, default = 42,     help = "Global random seed")
@@ -129,6 +135,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
     task = task.upper()
     task_columns = COLUMN_FEATURES[task]
     task_context = CONTEXT_FEATURES[task]
+    cm_labels = (f'No_{meta_suffix_optuna}_{task}', f'{meta_suffix_optuna}_{task}')
 
     # ┏━━━━━━━━━━ 5.a) Build Tensors ━━━━━━━━━━┓
     seed_everything(1493583942)
@@ -165,14 +172,15 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
     # last_fold_metric   = None
     
     # ┏━━━━━━━━━━ Prepare directory for this Trial's Confusion Matrices (Val & Test) & TensorBoard ━━━━━━━━━━┓
-    optuna_task_dir = base / cfg["paths"]["output_root"] / "Optuna" / provider / symbol / task / granularity_slug
+    optuna_task_dir = (base / cfg["paths"]["output_root"] / "Optuna" / provider
+                       / symbol / task / granularity_slug_with_meta)
     trial_dir = optuna_task_dir / run_id / f"Trial_{trial_number}"
     ckpt_dir  = trial_dir / "checkpoints"
     cm_dir    = trial_dir / "confusion_matrices"
 
     # ┏━━━━━━━━━━ TensorBoard Directory (holding the writer here once we hit the last fold) ━━━━━━━━━━┓
     tb_trial_dir = (base / cfg["paths"]["output_root"] / "Optuna" / "Tensorboard"
-                    / provider / symbol / task / granularity_slug / run_id)
+                    / provider / symbol / task / granularity_slug_with_meta / run_id)
     tb_trial_dir.mkdir(parents = True, exist_ok = True)
     writer = None
 
@@ -247,14 +255,14 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                       train_ld,
                                       criterion,
                                       DEVICE,
-                                      mode = "train",
-                                      task_name = task,
-                                      optimizer = optimizer,
-                                      bce_thr = 0.5,
-                                      amp = True,
-                                      clip_grad = 1.0,
-                                      beta = train_cfg[task]["fbeta"],
-                                      return_raw = False)
+                                      mode        = "train",
+                                      task_name   = task,
+                                      optimizer   = optimizer,
+                                      bce_thr     = 0.5,
+                                      amp         = True,
+                                      clip_grad   = 1.0,
+                                      beta        = train_cfg[task]["fbeta"],
+                                      return_raw  = False)
             
             # ┏━━━━━━━━━━ Train Loss ━━━━━━━━━━┓
             train_loss = train_result["loss"]
@@ -264,13 +272,13 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                     val_ld,
                                     criterion,
                                     DEVICE,
-                                    mode = "val",
-                                    task_name = task,
-                                    optimizer = None,
-                                    bce_thr = 0.5,
-                                    amp = True,
-                                    clip_grad = 0.0,
-                                    beta = train_cfg[task]["fbeta"],
+                                    mode       = "val",
+                                    task_name  = task,
+                                    optimizer  = None,
+                                    bce_thr    = 0.5,
+                                    amp        = True,
+                                    clip_grad  = 0.0,
+                                    beta       = train_cfg[task]["fbeta"],
                                     return_raw = True)
             
             # ┏━━━━━━━━━━ Validation Loss & Metrics ━━━━━━━━━━┓
@@ -332,14 +340,14 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                   val_ld,
                                   criterion,
                                   DEVICE,
-                                  mode = "val",
-                                  task_name = task,
-                                  optimizer = None,
-                                  bce_thr = 0.5,
-                                  amp = True,
-                                  clip_grad = 0.0,
-                                  beta = train_cfg[task]["fbeta"],
-                                  return_raw = True)
+                                  mode        = "val",
+                                  task_name   = task,
+                                  optimizer   = None,
+                                  bce_thr     = 0.5,
+                                  amp         = True,
+                                  clip_grad   = 0.0,
+                                  beta        = train_cfg[task]["fbeta"],
+                                  return_raw  = True)
             
             # ┏━━━━━━━━━━ Extraction of raw predictions & probabilities ━━━━━━━━━━┓
             vpreds_raw = val_eval["preds"]
@@ -407,9 +415,8 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
 
             # ┏━━━━━━━━━━ Pruning of Trial [Validation Conditions] ━━━━━━━━━━┓
             mean_val_loss = float(np.mean(fold_losses))
-            print("\nMean Val Loss: ", mean_val_loss <= 0.7, "Cov > Floor: ", best_metric >= floor_policy)
+            print(f"\nMean Val Loss {mean_val_loss:.3f}: ", mean_val_loss <= 0.7, f"Cov {best_metric:.3f}> Floor {floor_policy:.3f}: ", best_metric >= floor_policy)
             if mean_val_loss <= 0.7 and best_metric >= floor_policy:
-                
                 # ┏━━━━━━━━━━ Folders Creation ━━━━━━━━━━┓
                 for d in (ckpt_dir, cm_dir):
                     d.mkdir(parents = True, exist_ok = True)
@@ -421,7 +428,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(vpreds_raw,
                                      vtargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = cm_dir,
                                      best_threshold = None,
@@ -430,7 +437,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(val_preds_tau, 
                                      vtargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = cm_dir,
                                      best_threshold = selected_tau,
@@ -463,7 +470,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                            "Val_Tau":            selected_tau,
                            "Val_Coverage@Tau":   eval_val["coverage"],
                            "Val_Risk@Tau":       eval_val["risk"],
-                           "Selected_Count@Tau": eval_val["selected_count"]}
+                           "Val_Selected_Count@Tau": eval_val["selected_count"]}
             
                 # ┏━━━━━━━━━━ Adding Data to Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
                 if policy == "risk_budget":
@@ -519,7 +526,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(tpreds,
                                      ttargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = cm_dir,
                                      best_threshold = None,
@@ -528,7 +535,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(test_preds_tau,
                                      ttargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = cm_dir,
                                      best_threshold = selected_tau,
@@ -681,9 +688,9 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
         raise optuna.TrialPruned()
     
     # ┏━━━━━━━━━━ Record metrics on the Trial ━━━━━━━━━━┓
-    trial.set_user_attr("task",                 task)
-    trial.set_user_attr("mean_val_loss",        metrics["mean_val_loss"])
-    trial.set_user_attr("best_metric",          metrics["best_metric"])
+    trial.set_user_attr("task",          task)
+    trial.set_user_attr("mean_val_loss", metrics["mean_val_loss"])
+    trial.set_user_attr("best_metric",   metrics["best_metric"])
               
     # ┏━━━━━━━━━━ Extract Metric(s) to Optimize ━━━━━━━━━━┓
     objective_values: List[float] = []
@@ -715,8 +722,9 @@ def run_optuna_for_task(dataset: TensorDataset,
     # ┏━━━━━━━━━━ 1) Prepare Optuna Storage ━━━━━━━━━━┓
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = f"run_{timestamp}"
-    run_root = base / cfg["paths"]["output_root"] / "Optuna" / provider / symbol / task / granularity_slug / run_id
-    run_root.mkdir(parents=True, exist_ok=True)
+    run_root = (base / cfg["paths"]["output_root"] / "Optuna" / provider
+                / symbol / task / granularity_slug_with_meta / run_id)
+    run_root.mkdir(parents = True, exist_ok = True)
     db_path = run_root / f"optuna_study_{task}_{timestamp}.db"
     storage_url = f"sqlite:///{db_path.resolve()}"
     study_name = f"CTTS_Study_{task}_{timestamp}"
@@ -740,12 +748,12 @@ def run_optuna_for_task(dataset: TensorDataset,
 
     # ┏━━━━━━━━━━ 3) Optuna Optimization ━━━━━━━━━━┓
     study.optimize(lambda trial: objective(trial,
-                            dataset,
-                            props,
-                            task,
-                            run_id),
-                   n_trials = ARGS.trials,
-                   show_progress_bar = True)
+                                           dataset,
+                                           props,
+                                           task,
+                                           run_id),
+                                  n_trials = ARGS.trials,
+                                  show_progress_bar = True)
 
     # ┏━━━━━━━━━━ 4) Export Pareto-optimal configs ━━━━━━━━━━┓
     pareto_trials = [t for t in study.best_trials if t.state.is_finished()]
@@ -761,7 +769,6 @@ def run_optuna_for_task(dataset: TensorDataset,
 if __name__ == "__main__":
     # ┏━━━━━━━━━━ 7.a) Omit Warnings & CSV Paths ━━━━━━━━━━┓
     warnings.filterwarnings("ignore", category=UserWarning)
-    meta_label_optuna = cfg["training_mode"]["meta_label_optuna"]
     csv_path = dataset_path(cfg["dataset"]["source"],
                             cfg["dataset"]["type"].capitalize(),
                             cfg["dataset"]["symbol"],
@@ -796,7 +803,7 @@ if __name__ == "__main__":
     # ┏━━━━━━━━━━ 7.d) Preparing Data ━━━━━━━━━━┓        
     default_task = optuna_task.upper()
     tasks = [default_task]
-    if cfg["training_mode"].get("optuna_both", True):
+    if cfg["training_mode"]["optuna_both"]:
         opposite_task = "DN" if default_task == "UP" else "UP"
         if opposite_task not in tasks:
             tasks.append(opposite_task)

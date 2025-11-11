@@ -118,6 +118,7 @@ def run_training(cfg: dict) -> None:
         # ┏━━━━━━━━━━ Accessing Configuration per Task ━━━━━━━━━━┓
         model_cfg = architecture_cfg[task]
         trainer_cfg = train_cfg[task]
+        cm_labels = (f'No_{meta_suffix}_{task}', f'{meta_suffix}_{task}')
 
         # ┏━━━━━━━━━━ Extracting Column & Context Features ━━━━━━━━━━┓
         column_features = task_features(cfg, "column_features", task)
@@ -423,7 +424,7 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(vpreds_raw,
                                      vtargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = checkpoint_dir,
                                      best_threshold = None,
@@ -432,7 +433,7 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(val_preds_tau, 
                                      vtargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = checkpoint_dir,
                                      best_threshold = selected_tau,
@@ -521,7 +522,7 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(tpreds,
                                      ttargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = checkpoint_dir,
                                      best_threshold = None,
@@ -530,7 +531,7 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(test_preds_tau,
                                      ttargets,
-                                     labels         = (f'No_TP_{task}', f'TP_{task}'),
+                                     labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = checkpoint_dir,
                                      best_threshold = selected_tau,

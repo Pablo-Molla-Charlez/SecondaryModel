@@ -359,7 +359,7 @@ def prepare_dataset(df: pd.DataFrame,
     X = np.stack(X_list).astype(np.float32)
     Y_up = np.asarray(Y_up_list, dtype=np.int64)
     Y_dn = np.asarray(Y_dn_list, dtype=np.int64)
-    print(f"[prepare_dataset] Final Number of Samples (w/o NaN Values) → X: {len(X)}, Y_up: {len(Y_up)}, Y_dn: {len(Y_dn)}")
+    print(f"[prepare_dataset] Final Number of Samples [{task.upper()}] (w/o NaN Values) → X: {len(X)}, Y_up: {len(Y_up)}, Y_dn: {len(Y_dn)}")
 
     return TensorDataset(torch.from_numpy(X),
                          torch.from_numpy(Y_up),
@@ -448,12 +448,12 @@ def make_criteria(loss_type: str,
     """
     # ┏━━━━━━━━━━ BCE ━━━━━━━━━━┓
     if loss_type == 'bce':
-        crit_up = nn.BCEWithLogitsLoss()
+        crit_up = nn.BCEWithLogitsLoss(pos_weight = w_up)
         crit_dn = nn.BCEWithLogitsLoss(pos_weight = w_dn)
 
     # ┏━━━━━━━━━━ Cross‐Entropy ━━━━━━━━━━┓
     elif loss_type == 'cross_entropy':
-        crit_up = nn.CrossEntropyLoss()
+        crit_up = nn.CrossEntropyLoss(weight = w_up)
         crit_dn = nn.CrossEntropyLoss(weight = w_dn)
 
     # ┏━━━━━━━━━━ Focal Loss ━━━━━━━━━━┓

@@ -65,7 +65,7 @@ def plot_cm_with_metrics(preds,
     fig.savefig(out_path / fname, dpi=150)
     plt.close(fig)
 
-    print(f"Path: {out_path / fname}")
+    #print(f"Path: {out_path / fname}")
 
 
 def export_predictions(df_asset,
@@ -234,7 +234,7 @@ def export_predictions(df_asset,
     # ┏━━━━━━━━━━ Write with requested naming ━━━━━━━━━━┓
     out_path = checkpoint_dir / f"{symbol}_{task}_predictions.csv"
     out_df.to_csv(out_path, index=False)
-    print(f"Path: {out_path}")
+    #print(f"Path: {out_path}")
     return out_path
 
 
