@@ -32,15 +32,32 @@ def build_m1_window(df_asset: pd.DataFrame, task: str, seq_len: int, total_sampl
 
 
 def build_scores(probs: np.ndarray, gating: str) -> np.ndarray:
+    """
+    Adapt raw probabilities to the configured gating policy.
+
+    Parameters
+    ----------
+    probs : np.ndarray
+        Raw probability outputs from M2.
+    gating : str
+        Gating mode name (e.g., "prob_only", "positive_only_hard").
+    """
+    # ┏━━━━━━━━━━ No gating ━━━━━━━━━━┓
     if gating == "prob_only":
         return probs
+    # ┏━━━━━━━━━━ Hard-positive gating ━━━━━━━━━━┓
     if gating == "positive_only_hard":
         base = probs >= 0.5
         return np.where(base, probs, float("-inf"))
+    # ┏━━━━━━━━━━ Unknown policy ━━━━━━━━━━┓
     raise ValueError(f"Unknown gating mode: {gating!r}") 
 
 
 def apply_threshold(scores: np.ndarray, threshold: float) -> np.ndarray:
+    """
+    Convert continuous scores into binary decisions via τ.
+    """
+    # ┏━━━━━━━━━━ Element-wise comparison ━━━━━━━━━━┓
     return (scores >= threshold).astype(int)
 
 
@@ -48,9 +65,13 @@ def select_threshold_fbeta(y_true: np.ndarray,
                            scores: np.ndarray,
                            thresholds: np.ndarray,
                            beta: float) -> tuple[float, float]:
-
+    """
+    Sweep candidate thresholds and pick the best by Fβ.
+    """
+    # ┏━━━━━━━━━━ Initialise trackers ━━━━━━━━━━┓
     best_tau = float(thresholds[0])
     best_score = -1.0
+    # ┏━━━━━━━━━━ Iterate over τ candidates ━━━━━━━━━━┓
     for tau in thresholds:
         preds = apply_threshold(scores, tau)
         if preds.sum() == 0:
@@ -69,11 +90,15 @@ def select_threshold_fbeta(y_true: np.ndarray,
 def evaluate_threshold(y_true: np.ndarray, 
                        scores: np.ndarray, 
                        threshold: float) -> Dict[str, float]:
-    
+    """
+    Compute risk/coverage metrics at a fixed τ.
+    """
+    # ┏━━━━━━━━━━ Binary decisions ━━━━━━━━━━┓
     preds = apply_threshold(scores, threshold)
     selected = preds == 1
     coverage = float(np.mean(selected))
     selected_count = int(np.sum(selected))
+    # ┏━━━━━━━━━━ Risk over selected subset ━━━━━━━━━━┓
     if selected_count == 0:
         risk = np.nan
     else:
@@ -90,10 +115,13 @@ def task_features(cfg: dict, prefix: str, task: str) -> list:
 
     An empty list is allowed to explicitly disable a feature family (e.g. context channels).
     """
+    # ┏━━━━━━━━━━ Resolve config key ━━━━━━━━━━┓
     key = f"{prefix}_{task.lower()}"
     if key not in cfg:
         raise KeyError(f"Missing '{key}' in configuration for task '{task}'.")
     values = cfg[key]
+    
+    # ┏━━━━━━━━━━ Normalise value ━━━━━━━━━━┓
     if values is None:
         return []
     if not isinstance(values, list):

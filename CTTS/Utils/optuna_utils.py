@@ -1,4 +1,4 @@
-# ┏━━━━━━━━━━ Provide module-level summary for these helper utilities ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ Module overview ━━━━━━━━━━┓
 """Utility helpers for Optuna config generation with preserved formatting."""
 from __future__ import annotations
 
@@ -10,21 +10,15 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# ┏━━━━━━━━━━ Declare default objective directions and metrics when none provided ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ Default objectives ━━━━━━━━━━┓
 DEFAULT_OPTUNA_OBJECTIVES: List[Tuple[str, str]] = [("minimize", "mean_val_loss"),
                                                     ("maximize", "best_fbeta")]
 
 def parse_optuna_objectives(raw: Optional[Any],
                             fallback: Optional[Sequence[Any]] = None) -> List[Tuple[str, str]]:
     """Normalize configurable Optuna objectives from YAML or CLI sources."""
-    
-    # ┏━━━━━━━━━━ When user provided explicit objectives, adopt them directly ━━━━━━━━━━┓
-    if raw:
-        objectives_source = raw
-
-    # ┏━━━━━━━━━━ Prepare container for normalized direction/metric pairs ━━━━━━━━━━┓
+    objectives_source = raw or fallback or DEFAULT_OPTUNA_OBJECTIVES
     normalized: List[Tuple[str, str]] = []
-    # ┏━━━━━━━━━━ Enumerate provided objectives to normalize each entry ━━━━━━━━━━┓
     for idx, entry in enumerate(objectives_source):
         direction_raw = None
         metric = None
@@ -83,34 +77,27 @@ def parse_optuna_objectives(raw: Optional[Any],
 
 def to_builtin(obj: Any):
     """Recursively convert numpy / scalar types to builtin Python values."""
-    # ┏━━━━━━━━━━ Convert numpy scalar objects via .item() ━━━━━━━━━━┓
     if isinstance(obj, np.generic):
         return obj.item()
-    # ┏━━━━━━━━━━ Convert dictionary values recursively ━━━━━━━━━━┓
     if isinstance(obj, dict):
         return {k: to_builtin(v) for k, v in obj.items()}
-    # ┏━━━━━━━━━━ Convert list/tuple entries recursively ━━━━━━━━━━┓
     if isinstance(obj, (list, tuple)):
         return [to_builtin(v) for v in obj]
 
     return obj
 
 
-# ┏━━━━━━━━━━ Define feature mapper that resolves per-task feature lists ━━━━━━━━━━┓
 def feature_map(cfg: Dict[str, Any], prefix: str) -> Dict[str, list]:
     """Return per-task feature lists, falling back to shared definitions."""
-    # ┏━━━━━━━━━━ Build expected UP & DN suffix key ━━━━━━━━━━┓
     up_key = f"{prefix}_up"
     dn_key = f"{prefix}_dn"
 
-    # ┏━━━━━━━━━━ When both keys exist, return mapping for each task ━━━━━━━━━━┓
     if up_key in cfg and dn_key in cfg:
-        # ┏━━━━━━━━━━ Return explicit mapping for UP and DN tasks ━━━━━━━━━━┓
         return {"UP": cfg[up_key], 
                 "DN": cfg[dn_key]}
 
-    # ┏━━━━━━━━━━ Otherwise raise helpful error referencing expected names ━━━━━━━━━━┓
     raise KeyError(f"Configuration must define '{prefix}_up'/'{prefix}_dn' or shared '{prefix}'.")
+
 
 def build_candidate_config(base_cfg: Dict[str, Any], 
                            task: str, 
@@ -131,13 +118,12 @@ def build_candidate_config(base_cfg: Dict[str, Any],
     # ┏━━━━━━━━━━ Capture any auxiliary architecture hints stored in user attrs ━━━━━━━━━━┓
     user_attrs = getattr(trial, "user_attrs", {}) or {}
 
-    # ┏━━━━━━━━━━ Pull CNN embedding dims, kernel sizes, CNN strides and explicit convolution count ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ CNN backbone params ━━━━━━━━━━┓
     cnn_embed_dim = user_attrs.get("cnn_embed_dim_list")
     cnn_kernel = user_attrs.get("cnn_kernel_list")
     cnn_stride = user_attrs.get("cnn_stride_list")
     n_convs = user_attrs.get("n_convs")
 
-    # ┏━━━━━━━━━━ Fall back to trial params for CNN definitions when attrs missing ━━━━━━━━━━┓
     if cnn_embed_dim is None or cnn_kernel is None or cnn_stride is None:
         n_convs = int(params.get("n_convs", len(candidate_cfg.get(model_key, {}).get("cnn_embed_dim", []))))
         cnn_embed_dim = [params[f"cnn_embed_dim_{i}"] for i in range(n_convs)]
@@ -146,48 +132,33 @@ def build_candidate_config(base_cfg: Dict[str, Any],
 
     # ┏━━━━━━━━━━ Grab model section for mutation ━━━━━━━━━━┓
     model_section = candidate_cfg.get(model_key, {})
-
-    # ┏━━━━━━━━━━ Set number of CNN blocks observed, per-layer embed dims, per-layer kernel sizes, per-layer stride sizes ━━━━━━━━━━┓
     model_section["cnn_blocks"] = len(cnn_embed_dim)
     model_section["cnn_embed_dim"] = cnn_embed_dim
     model_section["cnn_kernel"] = cnn_kernel
     model_section["cnn_stride"] = cnn_stride
-
-    # ┏━━━━━━━━━━ Persist positional dropout probability ━━━━━━━━━━┓
     model_section["p_pos_drop"] = params["p_pos_drop"]
 
-    # ┏━━━━━━━━━━ Retrieve nested transformer structure for updates ━━━━━━━━━━┓
-    transformer = model_section.get("transformer", {})
     
     # ┏━━━━━━━━━━ Apply transformer hyper-parameters from trial values ━━━━━━━━━━┓
+    transformer = model_section.get("transformer", {})
     transformer.update({"heads": params["heads"],
                         "layers": params["layers"],
                         "ffn_dim": params["ffn_dim"],
                         "dropout": params["dropout"],
                         "activation": params["activation"]})
-
-    # ┏━━━━━━━━━━ Persist transformer block back into model section ━━━━━━━━━━┓
     model_section["transformer"] = transformer
-
-    # ┏━━━━━━━━━━ Retrieve classifier head configuration ━━━━━━━━━━┓
     classifier = model_section.get("classifier", {})
 
     # ┏━━━━━━━━━━ Update classifier hyper-parameters using trial values ━━━━━━━━━━┓
-    classifier.update(
-        {"mlp_hidden": params["mlp_hidden"],
-         "mlp_dropout": params["mlp_dropout"],
-         "mlp_activation": params["mlp_activation"],
-         "mlp_pooling": params["mlp_pooling"]})
-
-    # ┏━━━━━━━━━━ Persist classifier block back into model section ━━━━━━━━━━┓
+    classifier.update({"mlp_hidden": params["mlp_hidden"],
+                       "mlp_dropout": params["mlp_dropout"],
+                       "mlp_activation": params["mlp_activation"],
+                       "mlp_pooling": params["mlp_pooling"]})
     model_section["classifier"] = classifier
-    # ┏━━━━━━━━━━ Write fully-updated model section into candidate config ━━━━━━━━━━┓
     candidate_cfg[model_key] = model_section
 
-    # ┏━━━━━━━━━━ Duplicate training section so edits are isolated ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Trainer hyper-parameters ━━━━━━━━━━┓
     train_section = copy.deepcopy(candidate_cfg.get(train_key, {}))
-    
-    # ┏━━━━━━━━━━ Store Hyper-Parameters ━━━━━━━━━━┓
     train_section["optimizer"] = params["optimizer"]
     train_section["lr"] = params["lr"]
     train_section["weight_decay"] = params["weight_decay"]
@@ -211,25 +182,15 @@ def build_candidate_config(base_cfg: Dict[str, Any],
     train_section["scheduler"] = scheduler_section
     candidate_cfg[train_key] = train_section
 
-    # ┏━━━━━━━━━━ Copy overarching training_mode block for updates ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Training mode mirror ━━━━━━━━━━┓
     training_mode = copy.deepcopy(candidate_cfg.get("training_mode", {}))
-    
-    # ┏━━━━━━━━━━ Record which task Optuna optimized for this candidate ━━━━━━━━━━┓
     training_mode["optuna_task"] = task.upper()
-    # ┏━━━━━━━━━━ Keep training mode loss function consistent ━━━━━━━━━━┓
     training_mode["loss_function"] = params["loss_function"]
 
-    # ┏━━━━━━━━━━ Mirror resolved focal gamma into training_mode when present ━━━━━━━━━━┓
     if focal_gamma is not None:
         training_mode["focal_gamma"] = focal_gamma
-    
-    # ┏━━━━━━━━━━ Mirror focal alpha from train section back into training_mode ━━━━━━━━━━┓
     training_mode["focal_alpha"] = train_section.get("focal_alpha", training_mode.get("focal_alpha"))
-    
-    # ┏━━━━━━━━━━ Derive class count from chosen loss ━━━━━━━━━━┓
     training_mode["num_classes"] = 1 if params["loss_function"] == "bce" else 2
-    
-    # ┏━━━━━━━━━━ Persist training_mode block back in candidate config ━━━━━━━━━━┓
     candidate_cfg["training_mode"] = training_mode
 
     return to_builtin(candidate_cfg)
@@ -237,7 +198,6 @@ def build_candidate_config(base_cfg: Dict[str, Any],
 # ┏━━━━━━━━━━ Define ruamel-aware deep update helper ━━━━━━━━━━┓
 def _update_structure(target, updates):
     """Recursively update ruamel structures preserving formatting."""
-    # ┏━━━━━━━━━━ Handle mapping-to-mapping updates ━━━━━━━━━━┓
     if isinstance(target, CommentedMap) and isinstance(updates, dict):
         # ┏━━━━━━━━━━ Iterate over provided update items ━━━━━━━━━━┓
         for key, value in updates.items():

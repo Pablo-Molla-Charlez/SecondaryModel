@@ -21,12 +21,9 @@ def plot_cm_with_metrics(preds,
                          best_threshold,
                          cmap="Oranges"):
     """
-    preds, targets : array-like of shape (n_samples,)
-    labels         : tuple of display labels, e.g. ("No_TP","TP")
-    title          : str, e.g. "UP — Test"
-    out_dir        : pathlib.Path or str where to save the PNG
-    cmap           : Matplotlib colormap name
+    Render a confusion matrix plus scalar metrics and dump it as PNG.
     """
+    # ┏━━━━━━━━━━ Aggregate confusion matrix & metrics ━━━━━━━━━━┓
     cm    = confusion_matrix(targets, preds)
     acc   = accuracy_score(targets, preds)
     prec  = precision_score(targets, preds, zero_division = 0)
@@ -34,6 +31,7 @@ def plot_cm_with_metrics(preds,
     f1    = f1_score(targets, preds)
     fbeta = fbeta_score(targets, preds, beta = 0.9, zero_division = 0)
 
+    # ┏━━━━━━━━━━ Plot setup ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(4, 4))
     disp = ConfusionMatrixDisplay(cm, display_labels=labels)
     disp.plot(cmap=cmap, ax=ax, colorbar=False)
@@ -42,6 +40,7 @@ def plot_cm_with_metrics(preds,
     else:
         ax.set_title(title)
 
+    # ┏━━━━━━━━━━ Text annotation ━━━━━━━━━━┓
     textstr = (f"Accuracy : {acc:.2f}\n"
                f"Precision: {prec:.2f}\n"
                f"Recall   : {rec:.2f}\n"
@@ -55,6 +54,7 @@ def plot_cm_with_metrics(preds,
             verticalalignment = 'top',
             bbox              = dict(boxstyle='round', facecolor='white', edgecolor='gray'))
 
+    # ┏━━━━━━━━━━ Persist figure ━━━━━━━━━━┓
     fig.tight_layout()
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
