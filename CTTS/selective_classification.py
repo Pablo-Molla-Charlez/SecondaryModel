@@ -196,7 +196,9 @@ def plot_coverage_risk_curve(y_true = None,
                              label: Optional[str] = None,
                              ax: Optional[plt.Axes] = None,
                              save_path: Optional[str] = None,
-                             show: bool = True):
+                             show: bool = True,
+                             highlight_point: Optional[tuple] = None,
+                             highlight_text: Optional[str] = None):
 
     """Minimal coverage-risk plot."""
 
@@ -234,6 +236,19 @@ def plot_coverage_risk_curve(y_true = None,
     ax.set_ylabel("Risk (Error Rate)")
     ax.set_title("Coverage-Risk Curve")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
+
+    # ┏━━━━━━━━━━ Optional highlight of a selected operating point (coverage, risk) ━━━━━━━━━━┓
+    if highlight_point is not None:
+        try:
+            hx, hy = float(highlight_point[0]), float(highlight_point[1])
+            if not (np.isnan(hx) or np.isnan(hy)):
+                ax.scatter([hx], [hy], color="red", marker="x", s=80, zorder=5)
+                if highlight_text:
+                    ax.annotate(highlight_text,
+                                xy=(hx, hy), xytext=(6, -6), textcoords="offset points",
+                                fontsize=9, color="red")
+        except Exception:
+            pass
 
     handles, labels = ax.get_legend_handles_labels()
     filtered = [(h, l) for h, l in zip(handles, labels) if l]

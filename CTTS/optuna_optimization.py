@@ -33,7 +33,8 @@ from Utils.train_utils import (epoch_loop,
                               seed_everything, 
                               select_threshold_fbeta, 
                               evaluate_threshold,
-                              build_scores)
+                              build_scores,
+                              build_m1_window)
 
 # ┏━━━━━━━━━━ Optimization utils ━━━━━━━━━━┓
 from Utils.optim_utils import (make_scheduler, 
@@ -131,7 +132,16 @@ seed_everything(1493583942)
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 5. CROSS-VALIDATION RUN                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Optional[optuna.Trial] = None) -> dict[str, float]:
+def cv_folds(ds, 
+             params, 
+             props, 
+             task, 
+             trial_number: int, 
+             run_id: str, 
+             trial: Optional[optuna.Trial] = None,
+             m1_window: Optional[np.ndarray] = None) -> dict[str, float]:
+
+    # ┏━━━━━━━━━━ Task-specific Features ━━━━━━━━━━┓
     task = task.upper()
     task_columns = COLUMN_FEATURES[task]
     task_context = CONTEXT_FEATURES[task]
@@ -183,6 +193,11 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                     / provider / symbol / task / granularity_slug_with_meta / run_id)
     tb_trial_dir.mkdir(parents = True, exist_ok = True)
     writer = None
+
+    # ┏━━━━━━━━━━ Warn if M1 window length does not match dataset length ━━━━━━━━━━┓
+    if m1_window is not None and len(m1_window) != len(ds):
+        print(f"[WARN] M1 window length ({len(m1_window)}) does not match dataset length ({len(ds)}). "
+              "Risk-budget alignment may be incorrect.")
 
     # ┏━━━━━━━━━━ 5.c) Model Instantiation, Train & Validation per fold ━━━━━━━━━━┓
     for fold_idx, (train_ld, val_ld, criterion) in enumerate(folds):
@@ -276,7 +291,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                     task_name  = task,
                                     optimizer  = None,
                                     bce_thr    = 0.5,
-                                    amp        = True,
+                                    amp        = False,
                                     clip_grad  = 0.0,
                                     beta       = train_cfg[task]["fbeta"],
                                     return_raw = True)
@@ -344,7 +359,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                   task_name   = task,
                                   optimizer   = None,
                                   bce_thr     = 0.5,
-                                  amp         = True,
+                                  amp         = False,
                                   clip_grad   = 0.0,
                                   beta        = train_cfg[task]["fbeta"],
                                   return_raw  = True)
@@ -357,14 +372,61 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 raise ValueError("Validation probabilities were not produced; ensure the criterion supports probability extraction.")
 
             # ┏━━━━━━━━━━ Adapt raw probabilities to Gating Policy & Threshold Uniqueness with endpoints ━━━━━━━━━━┓ 
-            val_scores        = build_scores(vprobs, gating_mode)
-            finite_scores     = val_scores[np.isfinite(val_scores)]
-            thresholds_unique = np.unique(finite_scores)
-            thresholds_unique = np.unique(np.concatenate([thresholds_unique, np.array([0.0, 1.0])]))
-                
+            val_scores = build_scores(vprobs, gating_mode)
+
+            """
+
+            HERE IT MIGHT NOT WORK FOR TP AND FP SINCE IT'S INDEX BASED AND NOT TIME-BASED.
+
+            """
+            # ┏━━━━━━━━━━ Aligning Validation Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+            if hasattr(val_ld.dataset, "indices"):
+                val_indices = np.asarray(val_ld.dataset.indices, dtype=int)
+            else:
+                print("[WARN] Validation dataset has no 'indices' attribute; "
+                        "falling back to np.arange(len(scores)). Alignment with M1 window may be incorrect.")
+                val_indices = np.arange(val_scores.shape[0], dtype=int)
+
+            # ┏━━━━━━━━━━ Extracting Validation Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+            val_m1_mask = None
+            if m1_window is not None:
+                val_m1_mask = m1_window[val_indices].astype(bool)
+
+            """
+
+            HERE IT MIGHT NOT WORK FOR TP AND FP SINCE IT'S INDEX BASED AND NOT TIME-BASED.
+
+            """
+            # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
+            if val_m1_mask is None:
+                raise ValueError("M1 mask unavailable for risk_budget policy during validation.")
+
+            # ┏━━━━━━━━━━ Align M1 Window to M2 Validation Subset ━━━━━━━━━━┓
+            if not val_m1_mask.any():
+                # ┏━━━━━━━━━━ Protects against empty Val splits ━━━━━━━━━━┓
+                raise ValueError("No M1-positive samples in validation split for risk_budget policy.")
+            
+            # ┏━━━━━━━━━━ Apply mask to both targets (GT) and scores (probs) to keep them aligned ━━━━━━━━━━┓
+            val_targets_policy = vtargets[val_m1_mask]
+            val_scores_policy  = val_scores[val_m1_mask]
+
+            # ┏━━━━━━━━━━ Sanity Alignment Check ━━━━━━━━━━┓
+            if val_targets_policy.shape[0] != val_scores_policy.shape[0]:
+                raise AssertionError(f"Validation targets ({val_targets_policy.shape[0]}) and scores ({val_scores_policy.shape[0]}) mismatch.")
+            
+            # ┏━━━━━━━━━━ Gating Policy Probabilities & Threshold Uniqueness with endpoints ━━━━━━━━━━┓ 
+            finite_scores = val_scores_policy[np.isfinite(val_scores_policy)]
+            if finite_scores.size == 0:
+                # No usable scores, at least create a trivial curve
+                thresholds_unique = np.array([0.0, 1.0])
+                print("[WARN] No finite validation scores available; using trivial thresholds {0, 1}.")
+            else:
+                thresholds_unique = np.unique(finite_scores)
+                thresholds_unique = np.unique(np.concatenate([thresholds_unique, np.array([0.0, 1.0])]))
+ 
             # ┏━━━━━━━━━━ Risk/Coverage Curve Creation with Sweeping Thresholds ━━━━━━━━━━┓ 
-            val_curve = collect_risk_coverage_curve(y_true = vtargets,
-                                                    y_score = val_scores, 
+            val_curve = collect_risk_coverage_curve(y_true = val_targets_policy,
+                                                    y_score = val_scores_policy, 
                                                     thresholds = thresholds_unique, 
                                                     include_error_counts = True)
 
@@ -400,8 +462,8 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 
             elif policy == "f_beta":
                 # ┏━━━━━━━━━━ Optimized Threshold with its FBeta Metric ━━━━━━━━━━┓ 
-                selected_tau, best_metric = select_threshold_fbeta(vtargets,
-                                                                   val_scores,
+                selected_tau, best_metric = select_threshold_fbeta(val_targets_policy,
+                                                                   val_scores_policy,
                                                                    thresholds_unique,
                                                                    fbeta_cfg)
 
@@ -409,7 +471,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 raise ValueError(f"Unknown threshold policy: {policy}")
 
             # ┏━━━━━━━━━━ Optimized/Best Threshold for Validation Predictions [Last Fold] ━━━━━━━━━━┓ 
-            eval_val = evaluate_threshold(vtargets, val_scores, selected_tau)
+            eval_val = evaluate_threshold(val_targets_policy, val_scores_policy, selected_tau)
             val_preds_tau = eval_val.pop("predictions")
 
             # ┏━━━━━━━━━━ Pruning of Trial [Validation Conditions] ━━━━━━━━━━┓
@@ -424,8 +486,8 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 torch.save(best_state, ckpt_path)
 
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
-                plot_cm_with_metrics(vpreds_raw,
-                                     vtargets,
+                plot_cm_with_metrics(vpreds_raw[val_m1_mask],
+                                     vtargets[val_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = cm_dir,
@@ -434,7 +496,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
 
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(val_preds_tau, 
-                                     vtargets,
+                                     vtargets[val_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = cm_dir,
@@ -442,11 +504,13 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                      cmap           = "Greens")
 
                 # ┏━━━━━━━━━━ Plotting Risk & Coverage Curve ━━━━━━━━━━┓
-                val_rc_png = cm_dir / f"M2_{task}_Val_RiskCoverage.png"
+                val_rc_png = cm_dir / f"M1+M2_{task}_Val_RiskCoverage.png"
                 plot_coverage_risk_curve(curve = val_curve, 
                                          label = f"Gating: {gating_mode}", 
                                          save_path = str(val_rc_png), 
-                                         show = False)
+                                         show = False,
+                                         highlight_point = (eval_val["coverage"], eval_val["risk"]),
+                                         highlight_text = f"τ* = {selected_tau:.3f}")
                 
                 # ┏━━━━━━━━━━ Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
                 curve_rows = [{"Threshold": float(t),
@@ -460,14 +524,14 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                                                                                                        val_curve.get("error_count", [0] * len(val_curve["thresholds"])))
                               ]
 
-                payload = {"Dataset":            "Validation",
-                           "Task":               task,
-                           "Policy":             policy,
-                           "Gating":             gating_mode,
-                           "Val_AURC":           val_aurc,
-                           "Val_Tau":            selected_tau,
-                           "Val_Coverage@Tau":   eval_val["coverage"],
-                           "Val_Risk@Tau":       eval_val["risk"],
+                payload = {"Dataset":                "Validation",
+                           "Task":                   task,
+                           "Policy":                 policy,
+                           "Gating":                 gating_mode,
+                           "Val_AURC":               val_aurc,
+                           "Val_Tau":                selected_tau,
+                           "Val_Coverage@Tau":       eval_val["coverage"],
+                           "Val_Risk@Tau":           eval_val["risk"],
                            "Val_Selected_Count@Tau": eval_val["selected_count"]}
             
                 # ┏━━━━━━━━━━ Adding Data to Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
@@ -492,7 +556,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                                       task_name = task,
                                       optimizer = None,
                                       bce_thr = 0.5,
-                                      amp = True,
+                                      amp = False,
                                       clip_grad = 0.0,
                                       beta = train_cfg[task]["fbeta"],
                                       return_raw = True)
@@ -506,9 +570,58 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
 
                 # ┏━━━━━━━━━━ Risk & Coverage Scores [Optimized Threshold] ━━━━━━━━━━┓
                 test_scores = build_scores(tprobs, gating_mode)
-                eval_test_tau = evaluate_threshold(ttargets, test_scores, selected_tau)
+
+                """
+
+                HERE IT MIGHT NOW WORK FOR TP AND FP SINCE IT'S INDEX BASED AND NOT TIME-BASED.
+
+                """
+
+                # ┏━━━━━━━━━━ Aligning Test Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+                if hasattr(test_loader.dataset, "indices"):
+                    test_indices = np.asarray(test_loader.dataset.indices, dtype=int)
+                else:
+                    print("[WARN] Test dataset has no 'indices' attribute; "
+                          "falling back to np.arange(len(scores)). Alignment with M1 window may be incorrect.")
+                    test_indices = np.arange(test_scores.shape[0], dtype=int)
+                
+                if test_indices.size != test_scores.shape[0]:
+                    # ┏━━━━━━━━━━ Protects against different lengths ━━━━━━━━━━┓
+                    raise ValueError("Test loader indices do not match the number of test scores."
+                                     f" Expected {test_scores.shape[0]} entries, got {test_indices.size}.")
+
+                """
+
+                HERE IT MIGHT NOW WORK FOR TP AND FP SINCE IT'S INDEX BASED AND NOT TIME-BASED.
+
+                """
+
+                # ┏━━━━━━━━━━ M1 Predictions Aligned to Test Set & Test Mask ━━━━━━━━━━┓
+                m1_test_preds = (m1_window[test_indices].astype(int) if m1_window is not None else np.zeros_like(ttargets))
+                test_m1_mask = m1_test_preds.astype(bool) if m1_window is not None else None
+
+                # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
+                if test_m1_mask is None:
+                    raise ValueError("M1 mask unavailable for risk_budget policy during test.")
+                if not test_m1_mask.any():
+                    raise ValueError("No M1-positive samples in test split for risk_budget policy.")
+
+                # ┏━━━━━━━━━━ Apply mask to both targets (GT) and scores (probs) to keep them aligned ━━━━━━━━━━┓
+                ttargets_policy = ttargets[test_m1_mask]
+                test_scores_policy = test_scores[test_m1_mask]
+
+                 # ┏━━━━━━━━━━ Final safety: targets and scores must stay aligned ━━━━━━━━━━┓
+                if ttargets_policy.shape[0] != test_scores_policy.shape[0]:
+                    raise AssertionError(f"Test targets ({ttargets_policy.shape[0]}) and scores ({test_scores_policy.shape[0]}) mismatch.")
+
+                # ┏━━━━━━━━━━ Optimized/Best Threshold for Test Predictions ━━━━━━━━━━┓ 
+                eval_test_tau = evaluate_threshold(ttargets_policy, test_scores_policy, selected_tau)
                 test_preds_tau = eval_test_tau.pop("predictions")
 
+                # ┏━━━━━━━━━━ Ensure predictions length matches test length ━━━━━━━━━━┓
+                if test_preds_tau.shape[0] != ttargets[test_m1_mask].shape[0]:
+                    raise AssertionError("Length of test predictions at τ does not match test targets.")
+                
                 # ┏━━━━━━━━━━ Test Metrics ━━━━━━━━━━┓
                 payload["Test_Coverage@Tau"]       = eval_test_tau["coverage"]
                 payload["Test_Risk@Tau"]           = eval_test_tau["risk"]
@@ -522,8 +635,8 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 save_metrics(payload, str(payload_json))
 
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
-                plot_cm_with_metrics(tpreds,
-                                     ttargets,
+                plot_cm_with_metrics(tpreds[test_m1_mask],
+                                     ttargets[test_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = cm_dir,
@@ -532,7 +645,7 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                 
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(test_preds_tau,
-                                     ttargets,
+                                     ttargets[test_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = cm_dir,
@@ -566,18 +679,19 @@ def cv_folds(ds, params, props, task, trial_number: int, run_id: str, trial: Opt
                             "mean_val_loss":    float(np.mean(fold_losses)),
                             "best_metric":      best_metric,
                             "Risk_Constraints": risk_constraints_flag}   
-            
 
-        
-        
-
-   
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ 6. OPTUNA OBJECTIVE                                                   ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], task: str, run_id: str) -> float:
+def objective(trial: optuna.Trial, 
+              dataset: TensorDataset, 
+              props: List[float], 
+              task: str, 
+              run_id: str,
+              m1_window: Optional[np.ndarray]) -> float:
+
     task = task.upper()
     
     # ┏━━━━━━━━━━ Multiple Convolutions for CNN Architecture ━━━━━━━━━━┓
@@ -676,7 +790,14 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
 
     # ┏━━━━━━━━━━ CV_Folds Call ━━━━━━━━━━┓
     seed_everything(1493583942)
-    metrics = cv_folds(dataset, params, props, task, trial.number, run_id, trial = trial)
+    metrics = cv_folds(dataset, 
+                       params, 
+                       props, 
+                       task, 
+                       trial.number, 
+                       run_id, 
+                       trial = trial, 
+                       m1_window = m1_window)
 
     # ┏━━━━━━━━━━ Filter Results ━━━━━━━━━━┓
     if metrics["Policy"] == "risk_budget" and not metrics["Risk_Constraints"]:
@@ -717,7 +838,9 @@ def objective(trial: optuna.Trial, dataset: TensorDataset, props: List[float], t
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 def run_optuna_for_task(dataset: TensorDataset,
                         props: List[float],
-                        task: str) -> optuna.study.Study:
+                        task: str,
+                        m1_window: Optional[np.ndarray]) -> optuna.study.Study:
+
     """Launch an Optuna study for the provided task ("UP" | "DN")."""
     
     task = task.upper()
@@ -756,7 +879,8 @@ def run_optuna_for_task(dataset: TensorDataset,
                                            dataset,
                                            props,
                                            task,
-                                           run_id),
+                                           run_id,
+                                           m1_window),
                                   n_trials = ARGS.trials,
                                   show_progress_bar = True)
 
@@ -819,11 +943,21 @@ if __name__ == "__main__":
                                       context_features = CONTEXT_FEATURES[task],
                                       meta_label_mode = meta_label_optuna,
                                       task = task) for task in tasks}
+    
+    # ┏━━━━━━━━━━ 7.e) Extracting M1 Positive Predictions ━━━━━━━━━━┓
+    m1_windows = {}
+    for task in tasks:
+        total_samples = len(datasets[task])
+        try:
+            m1_windows[task] = build_m1_window(df_asset, task, cfg["sequence_length"], total_samples)
+        except Exception as exc:
+            print(f"[WARN] Unable to build M1 window for task {task}: {exc}")
+            m1_windows[task] = None
 
     # ┏━━━━━━━━━━ 7.e) Running BOTH (UP/DOWN) Optuna Studies ━━━━━━━━━━┓
     studies = {}
     for task in tasks:
-        studies[task] = run_optuna_for_task(datasets[task], cross_val_props, task)
+        studies[task] = run_optuna_for_task(datasets[task], cross_val_props, task, m1_windows.get(task))
 
     print("\n Completed Optuna optimization for tasks:")
     for task, study in studies.items():

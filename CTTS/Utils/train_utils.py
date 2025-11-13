@@ -1,8 +1,9 @@
 import os
 import torch
-import torch.nn as nn
-import numpy as np
 import random
+import torch.nn as nn
+import pandas as pd
+import numpy as np
 from typing import Any, Dict, Optional, Literal, List
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, fbeta_score
 from torch.amp import GradScaler, autocast
@@ -11,6 +12,25 @@ from .optim_utils import step_scheduler
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ THRESHOLD / GATING UTILITIES                                          ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+def build_m1_window(df_asset: pd.DataFrame, task: str, seq_len: int, total_samples: int) -> np.ndarray:
+    """Align per-window M1 predictions with the sliding-window dataset."""
+    task = task.upper()
+    m1_col = "m1_up" if task == "UP" else "m1_dn"
+
+    if m1_col not in df_asset.columns:
+        raise KeyError(f"Column '{m1_col}' not found in merged dataset; required for risk/coverage analysis.")
+    
+    if total_samples <= 0:
+        raise ValueError("Dataset contains no samples; cannot build M1 window alignment.")
+    
+    m1_series = df_asset[m1_col].fillna(0).to_numpy(dtype=float)
+    end_indices = np.arange(seq_len - 1, seq_len - 1 + total_samples)
+    
+    if end_indices[-1] >= m1_series.shape[0]:
+        raise IndexError("M1 series shorter than expected when aligning with dataset windows.")
+    return np.nan_to_num(m1_series[end_indices], nan=0.0).astype(int)
+
+
 def build_scores(probs: np.ndarray, gating: str) -> np.ndarray:
     if gating == "prob_only":
         return probs
@@ -65,14 +85,19 @@ def evaluate_threshold(y_true: np.ndarray,
 
 
 def task_features(cfg: dict, prefix: str, task: str) -> list:
-    """Return the feature list for the given task, falling back to shared entries."""
+    """
+    Return the feature list for the given task, falling back to shared entries.
+
+    An empty list is allowed to explicitly disable a feature family (e.g. context channels).
+    """
     key = f"{prefix}_{task.lower()}"
-    if key in cfg:
-        values = cfg[key]
-    else:
+    if key not in cfg:
         raise KeyError(f"Missing '{key}' in configuration for task '{task}'.")
-    if not isinstance(values, list) or not values:
-        raise ValueError(f"Configuration key '{key}' must be a non-empty list.")
+    values = cfg[key]
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        raise ValueError(f"Configuration key '{key}' must be a list.")
     return values
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓

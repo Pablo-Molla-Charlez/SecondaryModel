@@ -38,7 +38,7 @@ def plot_cm_with_metrics(preds,
     disp = ConfusionMatrixDisplay(cm, display_labels=labels)
     disp.plot(cmap=cmap, ax=ax, colorbar=False)
     if best_threshold is not None:
-        ax.set_title(title + f"@Tau = {best_threshold}")
+        ax.set_title(title + f"@Tau = {best_threshold:.4f}")
     else:
         ax.set_title(title)
 
@@ -302,7 +302,7 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
 
         title = f"M1+M2_{task} — Test"
         if tau_value is not None:
-            title = f"{title}@Tau = {tau_value}"
+            title = f"{title}@Tau = {tau_value:.4f}"
         ax.set_title(title)
         ax.set_xlabel("Predicted Consensus")
         ax.set_ylabel("True Label")

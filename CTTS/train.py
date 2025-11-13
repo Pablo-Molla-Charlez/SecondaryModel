@@ -8,6 +8,7 @@ import copy
 import warnings
 import numpy as np
 from pathlib import Path
+from typing import Sequence
 from tqdm.auto import tqdm
 from torch.utils.data import TensorDataset
 from torch.utils.tensorboard import SummaryWriter
@@ -30,7 +31,8 @@ from Utils.train_utils import (epoch_loop,
                                task_features,
                                build_scores,
                                select_threshold_fbeta,
-                               evaluate_threshold)
+                               evaluate_threshold,
+                               build_m1_window)
 
 # ┏━━━━━━━━━━ Model Class ━━━━━━━━━━┓
 from model import CTTSModel, EarlyStopping
@@ -71,6 +73,7 @@ def run_training(cfg: dict) -> None:
     loss_type         = cfg["training_mode"]["loss_function"].lower()
     provider          = cfg["dataset"]["source"].capitalize()
     cv_usual          = cfg["training_mode"]["cv_usual"]
+    seq_len           = cfg["sequence_length"]
     meta_label_usual  = cfg["training_mode"]["meta_label_usual"].lower()
     meta_suffix       = "FP" if meta_label_usual == "fp" else "TP"
     meta_dir_suffix   = "og" if meta_label_usual == "original" else meta_label_usual
@@ -110,7 +113,6 @@ def run_training(cfg: dict) -> None:
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-    #cfg.setdefault("training_mode", {})
     normal_task = cfg["training_mode"]["normal_task"].upper()
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -148,14 +150,42 @@ def run_training(cfg: dict) -> None:
         # ┏━━━━━━━━━━ 5.a) Preparation of Dataloaders and Training/Validation/Testing Splits with corresponding Criterion ━━━━━━━━━━┓
         # ┏━━━━━━━━━━ Preparation of Dataloaders ━━━━━━━━━━┓
         dataset_tensor = prepare_dataset(df_asset, 
-                                         seq_len          = cfg["sequence_length"],
+                                         seq_len          = seq_len,
                                          column_features  = column_features,
                                          context_features = context_features,
                                          meta_label_mode  = meta_label_usual,
                                          task             = task)
+        window_dates = np.asarray(dataset_tensor.window_dates)
 
+        
+        # ┏━━━━━━━━━━ 5.b) Sanity-check window count vs raw rows ━━━━━━━━━━┓
+        expected_samples = len(df_asset) - seq_len + 1
+        total_samples = len(dataset_tensor)    
+        if total_samples != expected_samples:
+            # This means prepare_dataset does something more than “raw sliding window”
+            # (e.g. drops rows, filters NaNs, merges context). Downstream we must be
+            # careful when aligning M1 or original indices.
+            print(f"[WARN] Dataset tensor contains {total_samples} windows but expected {expected_samples}."
+                  " Check for downstream alignment issues.")
 
-        # ┏━━━━━━━━━━ 5.b) Splits and Criterion ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ 5.c) Building M1 Mask Aligned to Dataset Windows ━━━━━━━━━━┓
+        m1_window = build_m1_window(df_asset, task, seq_len, total_samples)
+
+        def _policy_mask_from_indices(indices: Sequence[int]) -> np.ndarray:
+            """Return the policy mask aligned either via indices or timestamps."""
+            if m1_window is None:
+                return None
+            idx_array = np.asarray(indices, dtype=int)
+            if meta_label_usual in {"fp", "tp"}:
+                meta_col = f"is{meta_suffix}_{task}"
+                if meta_col not in df_asset.columns:
+                    raise KeyError(f"Column '{meta_col}' not found in merged dataset for task '{task}'.")
+                subset_dates = window_dates[idx_array]
+                meta_vals = df_asset.loc[subset_dates, meta_col].to_numpy(dtype=float)
+                return np.isfinite(meta_vals)
+            return m1_window[idx_array].astype(bool)
+
+        # ┏━━━━━━━━━━ 5.d) Splits and Criterion ━━━━━━━━━━┓
         seed_everything(1493583942)  # Re-seed for reproducibility
         print(f"\n────────── {task} model ──────────")
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
@@ -171,7 +201,7 @@ def run_training(cfg: dict) -> None:
                                                  focal_alpha      = cfg["training_mode"]["focal_alpha"],
                                                  device           = device)
         
-        # ┏━━━━━━━━━━ 5.c) Get the model parameters ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ 5.e) Get the model parameters ━━━━━━━━━━┓
         model_kwargs = dict(
             # ┏━━━━━━━━━━ CNN Parameters ━━━━━━━━━━┓
             cnn_embed_dim = model_cfg["cnn_embed_dim"],
@@ -222,8 +252,8 @@ def run_training(cfg: dict) -> None:
             checkpoint_dir = task_root / f"Run_{run_stamp}"
             tensorboard_dir = tb_root / f"{task}" / granularity_slug_with_meta / f"Run_{run_stamp}"
 
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            tensorboard_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_dir.mkdir(parents = True, exist_ok = True)
+            tensorboard_dir.mkdir(parents = True, exist_ok = True)
 
             # ┏━━━━━━━━━━ 6.c) Instantiate the model (fresh for each fold) ━━━━━━━━━━┓
             seed_everything(1493583942)
@@ -255,13 +285,7 @@ def run_training(cfg: dict) -> None:
             
             # ┏━━━━━━━━━━ Best Metrics (temporary) ━━━━━━━━━━┓
             best_loss  = float('inf')
-            best_acc   = 0.0
-            best_prec  = 0.0
-            best_rec   = 0.0
-            best_f1    = 0.0
-            best_fbeta = 0.0
             best_state = None        
-
 
             # ┏━━━━━━━━━━ Train & Validation ━━━━━━━━━━┓
             epoch_iter = tqdm(range(trainer_cfg["max_epochs"]),
@@ -296,7 +320,7 @@ def run_training(cfg: dict) -> None:
                                         task_name = task,
                                         optimizer = None,
                                         bce_thr = 0.5,
-                                        amp = True,
+                                        amp = False,
                                         clip_grad = 0.0,
                                         beta = trainer_cfg["fbeta"],
                                         return_raw = False)
@@ -361,7 +385,7 @@ def run_training(cfg: dict) -> None:
                                       task_name = task,
                                       optimizer = None,
                                       bce_thr = 0.5,
-                                      amp = True,
+                                      amp = False,
                                       clip_grad = 0.0,
                                       beta = trainer_cfg["fbeta"],
                                       return_raw = True)
@@ -369,19 +393,54 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Extraction of raw predictions & probabilities ━━━━━━━━━━┓
                 vpreds_raw = val_eval["preds"]
                 vtargets   = val_eval["targets"]
-                vprobs     = val_eval.get("probs")
+                vprobs     = val_eval["probs"]
                 if vprobs is None:
                     raise ValueError("Validation probabilities were not produced; ensure the criterion supports probability extraction.")
 
                 # ┏━━━━━━━━━━ Adapt raw probabilities to Gating Policy & Threshold Uniqueness with endpoints ━━━━━━━━━━┓ 
-                val_scores        = build_scores(vprobs, gating_mode)
-                finite_scores     = val_scores[np.isfinite(val_scores)]
-                thresholds_unique = np.unique(finite_scores)
-                thresholds_unique = np.unique(np.concatenate([thresholds_unique, np.array([0.0, 1.0])]))
+                val_scores = build_scores(vprobs, gating_mode)
+
+                # ┏━━━━━━━━━━ Aligning Validation Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+                if hasattr(val_loader.dataset, "indices"):
+                    val_indices = np.asarray(val_loader.dataset.indices, dtype=int)
+                else:
+                    print("[WARN] Validation dataset has no 'indices' attribute; "
+                          "falling back to np.arange(len(scores)). Alignment with M1 window may be incorrect.")
+                    val_indices = np.arange(val_scores.shape[0], dtype=int)
+
+                # ┏━━━━━━━━━━ Extracting Validation Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+                val_m1_mask = _policy_mask_from_indices(val_indices)
+
+                # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
+                if val_m1_mask is None:
+                    raise ValueError("M1 mask unavailable for risk_budget policy during validation.")
+
+                # ┏━━━━━━━━━━ Align M1 Window to M2 Validation Subset ━━━━━━━━━━┓
+                if not val_m1_mask.any():
+                    # ┏━━━━━━━━━━ Protects against empty Val splits ━━━━━━━━━━┓
+                    raise ValueError("No M1-positive samples in validation split for risk_budget policy.")
+                
+                # ┏━━━━━━━━━━ Apply mask to both targets (GT) and scores (probs) to keep them aligned ━━━━━━━━━━┓
+                val_targets_policy = vtargets[val_m1_mask]
+                val_scores_policy  = val_scores[val_m1_mask]
+
+                # ┏━━━━━━━━━━ Sanity Alignment Check ━━━━━━━━━━┓
+                if val_targets_policy.shape[0] != val_scores_policy.shape[0]:
+                    raise AssertionError(f"Validation targets ({val_targets_policy.shape[0]}) and scores ({val_scores_policy.shape[0]}) mismatch.")
+                
+                # ┏━━━━━━━━━━ Gating Policy Probabilities & Threshold Uniqueness with endpoints ━━━━━━━━━━┓ 
+                finite_scores     = val_scores_policy[np.isfinite(val_scores_policy)]
+                if finite_scores.size == 0:
+                    # No usable scores, at least create a trivial curve
+                    thresholds_unique = np.array([0.0, 1.0])
+                    print("[WARN] No finite validation scores available; using trivial thresholds {0, 1}.")
+                else:
+                    thresholds_unique = np.unique(finite_scores)
+                    thresholds_unique = np.unique(np.concatenate([thresholds_unique, np.array([0.0, 1.0])]))
                 
                 # ┏━━━━━━━━━━ Risk/Coverage Curve Creation with Sweeping Thresholds ━━━━━━━━━━┓ 
-                val_curve = collect_risk_coverage_curve(y_true = vtargets,
-                                                        y_score = val_scores, 
+                val_curve = collect_risk_coverage_curve(y_true = val_targets_policy,
+                                                        y_score = val_scores_policy, 
                                                         thresholds = thresholds_unique, 
                                                         include_error_counts = True)
 
@@ -409,30 +468,29 @@ def run_training(cfg: dict) -> None:
 
                 elif policy == "f_beta":
                     # ┏━━━━━━━━━━ Optimized Threshold with its FBeta Metric ━━━━━━━━━━┓ 
-                    selected_tau, best_metric = select_threshold_fbeta(vtargets,
-                                                                       val_scores,
+                    selected_tau, best_metric = select_threshold_fbeta(val_targets_policy,
+                                                                       val_scores_policy,
                                                                        thresholds_unique,
                                                                        fbeta_cfg)
-
                 else:
                     raise ValueError(f"Unknown threshold policy: {policy}")
 
                 # ┏━━━━━━━━━━ Optimized/Best Threshold for Validation Predictions [Last Fold] ━━━━━━━━━━┓ 
-                eval_val = evaluate_threshold(vtargets, val_scores, selected_tau)
+                eval_val      = evaluate_threshold(val_targets_policy, val_scores_policy, selected_tau)
                 val_preds_tau = eval_val.pop("predictions")
 
-                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
-                plot_cm_with_metrics(vpreds_raw,
-                                     vtargets,
+                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold & Masked] ━━━━━━━━━━┓
+                plot_cm_with_metrics(vpreds_raw[val_m1_mask],
+                                     vtargets[val_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = checkpoint_dir,
                                      best_threshold = None,
                                      cmap           = "Oranges")
 
-                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
-                plot_cm_with_metrics(val_preds_tau, 
-                                     vtargets,
+                # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Optimized Threshold & Masked] ━━━━━━━━━━┓
+                plot_cm_with_metrics(val_preds_tau,
+                                     vtargets[val_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Val',
                                      out_dir        = checkpoint_dir,
@@ -440,11 +498,13 @@ def run_training(cfg: dict) -> None:
                                      cmap           = "Greens")
 
                 # ┏━━━━━━━━━━ Plotting Risk & Coverage Curve ━━━━━━━━━━┓
-                val_rc_png = checkpoint_dir / f"M2_{task}_Val_RiskCoverage.png"
+                val_rc_png = checkpoint_dir / f"M1+M2_{task}_Val_RiskCoverage.png"
                 plot_coverage_risk_curve(curve = val_curve, 
                                          label = f"Gating: {gating_mode}", 
                                          save_path = str(val_rc_png), 
-                                         show = False)
+                                         show = False,
+                                         highlight_point = (eval_val["coverage"], eval_val["risk"]),
+                                         highlight_text = f"τ* = {selected_tau:.3f}")
                 
                 # ┏━━━━━━━━━━ Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
                 curve_rows = [{"Threshold": float(t),
@@ -489,7 +549,7 @@ def run_training(cfg: dict) -> None:
                                        task_name = task,
                                        optimizer = None,
                                        bce_thr = 0.5,
-                                       amp = True,
+                                       amp = False,
                                        clip_grad = 0.0,
                                        beta = trainer_cfg["fbeta"],
                                        return_raw = True)
@@ -502,10 +562,47 @@ def run_training(cfg: dict) -> None:
                     raise ValueError("Test probabilities were not produced; ensure the criterion supports probability extraction.")
 
                 # ┏━━━━━━━━━━ Risk & Coverage Scores [Optimized Threshold] ━━━━━━━━━━┓
-                test_scores = build_scores(tprobs, gating_mode)
-                eval_test_tau = evaluate_threshold(ttargets, test_scores, selected_tau)
+                test_scores    = build_scores(tprobs, gating_mode)
+                
+                # ┏━━━━━━━━━━ Aligning Test Indices for M1 Masking (Aware of Subsets) ━━━━━━━━━━┓
+                if hasattr(test_loader.dataset, "indices"):
+                    test_indices = np.asarray(test_loader.dataset.indices, dtype=int)
+                else:
+                    print("[WARN] Test dataset has no 'indices' attribute; "
+                          "falling back to np.arange(len(scores)). Alignment with M1 window may be incorrect.")
+                    test_indices = np.arange(test_scores.shape[0], dtype=int)
+                
+                if test_indices.size != test_scores.shape[0]:
+                    # ┏━━━━━━━━━━ Protects against different lengths ━━━━━━━━━━┓
+                    raise ValueError("Test loader indices do not match the number of test scores."
+                                     f" Expected {test_scores.shape[0]} entries, got {test_indices.size}.")
+
+                # ┏━━━━━━━━━━ M1 Predictions Aligned to Test Set & Test Mask ━━━━━━━━━━┓
+                test_m1_mask = _policy_mask_from_indices(test_indices)
+
+                # ┏━━━━━━━━━━ Sanity Check ━━━━━━━━━━┓
+                if test_m1_mask is None:
+                    raise ValueError("M1 mask unavailable for risk_budget policy during test.")
+                if not test_m1_mask.any():
+                    raise ValueError("No M1-positive samples in test split for risk_budget policy.")
+
+                # ┏━━━━━━━━━━ Apply mask to both targets (GT) and scores (probs) to keep them aligned ━━━━━━━━━━┓
+                ttargets_policy = ttargets[test_m1_mask]
+                test_scores_policy = test_scores[test_m1_mask]
+
+                 # ┏━━━━━━━━━━ Final safety: targets and scores must stay aligned ━━━━━━━━━━┓
+                if ttargets_policy.shape[0] != test_scores_policy.shape[0]:
+                    raise AssertionError(f"Test targets ({ttargets_policy.shape[0]}) and scores ({test_scores_policy.shape[0]}) mismatch.")
+
+                # ┏━━━━━━━━━━ Optimized/Best Threshold for Test Predictions ━━━━━━━━━━┓ 
+                eval_test_tau = evaluate_threshold(ttargets_policy, test_scores_policy, selected_tau)
                 test_preds_tau = eval_test_tau.pop("predictions")
 
+                # ┏━━━━━━━━━━ Ensure predictions length matches test length ━━━━━━━━━━┓
+                if test_preds_tau.shape[0] != ttargets[test_m1_mask].shape[0]:
+                    raise AssertionError("Length of test predictions at τ does not match test targets.")
+                
+    
                 # ┏━━━━━━━━━━ Test Metrics ━━━━━━━━━━┓
                 payload["Test_Coverage@Tau"]       = eval_test_tau["coverage"]
                 payload["Test_Risk@Tau"]           = eval_test_tau["risk"]
@@ -519,8 +616,8 @@ def run_training(cfg: dict) -> None:
                 save_metrics(payload, str(payload_json))
 
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
-                plot_cm_with_metrics(tpreds,
-                                     ttargets,
+                plot_cm_with_metrics(tpreds[test_m1_mask],
+                                     ttargets[test_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = checkpoint_dir,
@@ -529,7 +626,7 @@ def run_training(cfg: dict) -> None:
                 
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(test_preds_tau,
-                                     ttargets,
+                                     ttargets[test_m1_mask],
                                      labels         = cm_labels,
                                      title          = f'M2_{task} — Test',
                                      out_dir        = checkpoint_dir,
@@ -538,10 +635,12 @@ def run_training(cfg: dict) -> None:
 
                 # ┏━━━━━━━━━━ Export into CSV Test Predictions ━━━━━━━━━━┓
                 print("\nEnriched Results: ")
+                tpreds_tau_aligned = np.zeros_like(tpreds)
+                tpreds_tau_aligned[test_m1_mask] = test_preds_tau
                 export_predictions(df_asset        = df_asset,
                                    dataset_tensor  = dataset_tensor,
                                    tpreds          = tpreds,
-                                   tpreds_tau      = test_preds_tau,
+                                   tpreds_tau      = tpreds_tau_aligned,
                                    cfg             = cfg,
                                    checkpoint_dir  = checkpoint_dir,
                                    tprobs          = tprobs,
@@ -560,7 +659,7 @@ def main():
     parser = argparse.ArgumentParser(description = "Train CTTS model")
     parser.add_argument("--config",
                         type    = str,
-                        default = "config_10.yaml",
+                        default = "config.yaml",
                         help    = "Path to the YAML configuration file")
     args = parser.parse_args()
 
