@@ -14,6 +14,7 @@ Meta-Labeling-CTTS packages the second-stage ("meta") classifier that sits on to
 7. [Running the Trainer](#running-the-trainer)
 8. [Ablation Study](#ablation-study)
 9. [Optuna Study](#optuna-study)
+10. [Statistical Study](#statistical-study)
 
 ---
 
@@ -398,5 +399,19 @@ python CTTS/optuna_optimization.py --trials 500
 - `training_mode.optuna_task` decides which task is optimised when `training_mode.optuna_both` is `false`; setting `optuna_both: true` runs both tasks sequentially.
 - The sweep honours `train_<task>` / `model_<task>` ranges encoded in the config and produces Pareto-optimal configs under `Output/Optuna/Task_<TASK>/run_<timestamp>/`.
 - Use the exported configs to update `config.yaml` before running `train.py`.
+
+---
+
+## Statistical Study
+
+```bash
+# Activate your environment, then run e.g.:
+python CTTS/statistical_study.py --config CTTS/config.yaml --runs 20 --output-dir CTTS/Statistical_Studies --base-seed 1493583942
+```
+
+- **Purpose** – Launches `train.py` repeatedly with different seeds, captures each run's `M2_<TASK>_R&C_Analysis.json`, and aggregates mean/std tables alongside bar charts for the most relevant validation/test metrics. This is useful to quantify the variance of CTTS under stochastic initialisation or data-order shuffling.
+- **Key arguments** – `--config` points to the baseline training config (relative paths are resolved from `CTTS/`). `--runs` controls how many independent seeds are evaluated (default `10`). `--python` lets you pin a specific interpreter if the active `python` is not the desired one. Provide `--base-seed` to deterministically offset seeds (`seed = base + run_index`); omit it to draw random seeds every time.
+- **Outputs** – Each study lives under `<output-dir>/Study_<timestamp>/` (defaults to `CTTS/Statistical_Studies/`). Expect `Logs/run_*.log` for the captured trainer stdout/stderr, `Run_###_metrics.json` copies, a per-run CSV (`Stats_Complete_Metrics.csv`), an aggregated mean/std table (`Stats_Study.csv`), saved seed list (`Stats_Seeds.txt`), and PNG plots for classification and risk/coverage metrics grouped by validation/test/consensus objectives.
+- **Prerequisites** – Ensure `paths.output_root` stays consistent with the training runs so the script can locate the freshly-created `Run_*` directories. Because a single failure halts the batch, confirm the baseline config trains successfully once before launching large studies.
 
 ---
