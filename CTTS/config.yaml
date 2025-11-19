@@ -11,9 +11,9 @@ paths:
 
 # ┏━━━━━━━━━━ Which dataset to train on ━━━━━━━━━┓
 dataset:
-  source: "TimeGPT"
-  type: "Equities"
-  symbol: "TSLA"
+  source: "Chronos"
+  type: "Crypto"
+  symbol: "BTC"
 
 
 # ┏━━━━━━━━ Data-split & sequence shape ━━━━━━━━━┓
@@ -50,7 +50,7 @@ training_mode:
   # ┏━━━━━━━━━━━━━━ Usual ━━━━━━━━━━━━━━━┓
   cv_usual: false
   meta_label_usual: "original"                         # Meta-Label Mode ("fp", "tp" and "original")
-  normal_task: "UP"                                    # Task to use for standard training workflows
+  normal_task: "DN"                                    # Task to use for standard training workflows
   loss_function: "cross_entropy"                       # bce | cross_entropy | focal
   focal_gamma: 3.3771842197375523
   focal_alpha: 0.7195401178935061
@@ -138,37 +138,37 @@ train_up:
 model_dn:
   # ┏━━━━━━━━━━━━━━ CNN ━━━━━━━━━━━━━━━┓
   cnn_blocks: 2
-  cnn_embed_dim: [64, 64]
-  cnn_kernel: [4, 8]
+  cnn_embed_dim: [256, 128]
+  cnn_kernel: [8, 8]
   cnn_stride: [4, 4]
-  p_pos_drop: 0.08181022135340893                  # Positional-dropout
+  p_pos_drop: 0.23774546722243206                  # Positional-dropout
 
   # ┏━━━━━━━━━━━━━━ Transformer ━━━━━━━━━━━━━━━┓
   transformer:
-    heads: 2
+    heads: 4
     layers: 4
     ffn_dim: 4                                     # Feed-forward inner dim
-    dropout: 0.33474990524566367
-    activation: "gelu"                               # gelu | relu | silu | mish
+    dropout: 0.39554541649514974
+    activation: "relu"                               # gelu | relu | silu | mish
 
   # ┏━━━━━━━━━━━━━━ MLP Classifier ━━━━━━━━━━━━━━━┓
   classifier:
     mlp_hidden: 128
-    mlp_dropout: 0.35928322893553655
-    mlp_activation: "gelu"                            # gelu | relu | silu | mish
+    mlp_dropout: 0.2089636899633544
+    mlp_activation: "mish"                            # gelu | relu | silu | mish
     mlp_pooling: "attention"                          # attention | meanmax
 
 # ┏━━━━━━━━━━ Training hyper-params (DN) ━━━━━━━━┓
 train_dn:
   # ┏━━━━━━━━━━ Optimizer ━━━━━━━━┓
   optimizer: "ranger"                                # adagrad | rmsprop | adam | adamw | adabelief | ranger
-  lr: 0.0011004549759453476
-  weight_decay: 4.4230937423662554e-05
+  lr: 0.000020263943920679726
+  weight_decay: 0.002755634570802198
 
   # ┏━━━━━━━━━━ Optimizer Parameters ━━━━━━━━┓
   eps: '1e-16'                                         # Only for adabelief
   betas: [0.9, 0.98]                                  # [beta1, beta2] Common for adam | adamw | adabelief | ranger
-  lr_decay: 0.07713467080254313                       # Only for Adagrad
+  lr_decay: 0.00035147413049249285                       # Only for Adagrad
   #rms_alpha:        0.9336763960402219                # Only for rmsprop
   #rms_momentum:     0.30881101362483226               # Only for rmsprop
   lookahead_k: 6                                       # Only for ranger (Lookahead)
@@ -177,7 +177,7 @@ train_dn:
   rectify: false                                        # Only for adabelief
 
   # ┏━━━━━━━━━━ Basic ━━━━━━━━┓
-  batch_size: 64
+  batch_size: 256
   max_epochs: 50
   patience: 35                                        # Early-stopping
   bce_thr: 0.5                                        # BCE threshold
@@ -185,10 +185,10 @@ train_dn:
 
   # ┏━━━━━━━━━━ Learning Rate Scheduler ━━━━━━━━┓
   scheduler:                                          # Omit entire block → "none"
-    sch_name: cosine_plateau                                    # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
+    sch_name: linear_plateau                                    # none | power | exponential | linear | cosine | plateau | linear_plateau | cosine_plateau
     warmup_epochs: 5
-    plateau_patience: 8
-    plateau_factor: 0.339066573132889
+    plateau_patience: 15
+    plateau_factor: 0.307943565426142
     power_s: 0.23630352134198931                      # Power Scheduling
     power_c: 0.42006764977060695                      # Power Scheduling
     exp_s: 5                                          # Exponential Scheduling

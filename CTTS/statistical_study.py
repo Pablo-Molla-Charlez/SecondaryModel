@@ -8,6 +8,7 @@ Batch runner to estimate the mean/stdev of CTTS metrics over many random seeds.
 """
 from __future__ import annotations
 
+import os
 import sys
 import json
 import yaml
@@ -262,7 +263,8 @@ def run_study(config_path: Path,
               runs: int,
               output_dir: Path,
               python_exe: str,
-              base_seed: int | None = None) -> None:
+              base_seed: int | None = None,
+              seed_mode: str = "random") -> None:
 
     # ┏━━━━━━━━━━ Parent Directory and Path of Train.py ━━━━━━━━━━┓ 
     script_dir = Path(__file__).resolve().parent
@@ -288,21 +290,37 @@ def run_study(config_path: Path,
     print(f"\nStatistical Study: {runs} Runs.")
     for idx in range(1, runs + 1):
         # ┏━━━━━━━━━━ Seed Selection ━━━━━━━━━━┓
-        seed = _choose_seed(idx - 1, base_seed, rng)
-        print(f"\n[Run {idx}/{runs}] with seed = {seed}.")
+        if seed_mode == "none":
+            seed = None
+            print(f"\n[Run {idx}/{runs}] without forcing a seed.")
+        elif seed_mode == "incremental":
+            seed = _choose_seed(idx - 1, base_seed, rng)
+            print(f"\n[Run {idx}/{runs}] with seed = {seed}.")
+        else:
+            seed = _choose_seed(idx - 1, None, rng)
+            print(f"\n[Run {idx}/{runs}] with seed = {seed}.")
 
         # ┏━━━━━━━━━━ To locate Runs in "Usual" Folder BEFORE running a trial ━━━━━━━━━━┓
         before = _list_run_dirs(task_root)
         
         # ┏━━━━━━━━━━ To store logs for each trial ━━━━━━━━━━┓
         log_path = logs_dir / f"run_{idx:03d}.log"
+        cmd = [python_exe, str(train_script), "--config", str(config_path)]
+        if seed is not None:
+            cmd.extend(["--seed", str(seed)])
+
+        env = os.environ.copy()
+        env_seed_value = "none" if seed is None else str(seed)
+        env["CTTS_FORCE_SEED"] = env_seed_value
+
         with log_path.open("w") as log_file:
             subprocess.run(
-                [python_exe, str(train_script), "--config", str(config_path), "--seed",   str(seed)],
+                cmd,
                 cwd    = script_dir,
                 check  = True,                # Statistical study stops immediately when any training run fails or crashes
                 stdout = log_file,            # Storing stdout (“standard output”) ~ Information appearing on Terminal.
                 stderr = subprocess.STDOUT,   # Storing stderr (“standard error)   ~ Errors appearing on Terminal.
+                env    = env,
             )
 
         # ┏━━━━━━━━━━ To locate Runs in "Usual" Folder AFTER running a trial ━━━━━━━━━━┓
@@ -372,7 +390,8 @@ def run_study(config_path: Path,
     seeds_txt = study_dir / "Stats_Seeds.txt"
     with seeds_txt.open("w") as fh:
         for row in rows:
-            fh.write(f"Run={row['run']}\tseed={row['seed']}\tpath={row['run_dir']}\n")
+            seed_text = row["seed"] if row["seed"] is not None else "unseeded"
+            fh.write(f"Run={row['run']}\tseed={seed_text}\tpath={row['run_dir']}\n")
     print(f"[Study] Recorded seeds in {seeds_txt}")
     
 
@@ -411,8 +430,25 @@ def parse_args() -> argparse.Namespace:
                         default = None,
                         help    = "Optional base seed; actual seeds become base+run_index. "
                         "If omitted, seeds are random.")
-    
-    return parser.parse_args()
+    parser.add_argument("--seed-mode",
+                        choices = ("random", "incremental", "none"),
+                        default = None,
+                        help    = ("How to choose seeds: 'random' draws a new value per run "
+                                   "(default unless --base-seed is provided), "
+                                   "'incremental' uses base+run_index, and 'none' skips "
+                                   "passing --seed so train.py controls randomness."))
+
+    args = parser.parse_args()
+    if args.seed_mode is None:
+        args.seed_mode = "incremental" if args.base_seed is not None else "random"
+
+    if args.seed_mode == "incremental" and args.base_seed is None:
+        parser.error("--seed-mode incremental requires --base-seed.")
+
+    if args.seed_mode != "incremental":
+        args.base_seed = None
+
+    return args
 
 
 def main() -> None:
@@ -438,7 +474,8 @@ def main() -> None:
               runs        = args.runs,
               output_dir  = output_dir,
               python_exe  = args.python,
-              base_seed   = args.base_seed)
+              base_seed   = args.base_seed,
+              seed_mode   = args.seed_mode)
 
 
 if __name__ == "__main__":

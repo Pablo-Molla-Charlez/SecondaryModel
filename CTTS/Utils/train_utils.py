@@ -132,6 +132,15 @@ def task_features(cfg: dict, prefix: str, task: str) -> list:
 # ┃ INITIALIZATION OF SEEDS                                               ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 def seed_everything(seed):
+    override = os.getenv("CTTS_FORCE_SEED")
+    if override is not None:
+        override = override.strip()
+        if override == "" or override.lower() == "none":
+            seed = None
+        else:
+            seed = int(override)
+    if seed is None:
+        return
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
