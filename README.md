@@ -405,12 +405,20 @@ python CTTS/optuna_optimization.py --trials 500
 ## Statistical Study
 
 ```bash
-# Activate your environment, then run e.g.:
-python CTTS/statistical_study.py --config CTTS/config.yaml --runs 20 --output-dir CTTS/Statistical_Studies --base-seed 1493583942
+# Activate your environment, then run one of the following:
+
+# 1) Incremental/deterministic seeds (requires --base-seed)
+python CTTS/statistical_study.py --config CTTS/config.yaml --runs 20 --output-dir CTTS/Statistical_Studies --seed-mode incremental --base-seed 1493583942
+
+# 2) Fresh random seed per run
+python CTTS/statistical_study.py --config CTTS/config.yaml --runs 20 --output-dir CTTS/Statistical_Studies --seed-mode random
+
+# 3) Unseeded runs (defer randomness to train.py)
+python CTTS/statistical_study.py --config CTTS/config.yaml --runs 20 --output-dir CTTS/Statistical_Studies --seed-mode none
 ```
 
 - **Purpose** – Launches `train.py` repeatedly with different seeds, captures each run's `M2_<TASK>_R&C_Analysis.json`, and aggregates mean/std tables alongside bar charts for the most relevant validation/test metrics. This is useful to quantify the variance of CTTS under stochastic initialisation or data-order shuffling.
-- **Key arguments** – `--config` points to the baseline training config (relative paths are resolved from `CTTS/`). `--runs` controls how many independent seeds are evaluated (default `10`). `--python` lets you pin a specific interpreter if the active `python` is not the desired one. Provide `--base-seed` to deterministically offset seeds (`seed = base + run_index`); omit it to draw random seeds every time.
+- **Key arguments** – `--config` points to the baseline training config (relative paths are resolved from `CTTS/`). `--runs` controls how many independent seeds are evaluated (default `10`). `--seed-mode` governs how randomness is handled: `incremental` (default when `--base-seed` is provided) uses `seed = base + run_index`, `random` draws a fresh seed for every run, and `none` refrains from passing `--seed` so `train.py` keeps whatever non-deterministic behaviour it currently has. `--python` lets you pin a specific interpreter if the active `python` is not the desired one.
 - **Outputs** – Each study lives under `<output-dir>/Study_<timestamp>/` (defaults to `CTTS/Statistical_Studies/`). Expect `Logs/run_*.log` for the captured trainer stdout/stderr, `Run_###_metrics.json` copies, a per-run CSV (`Stats_Complete_Metrics.csv`), an aggregated mean/std table (`Stats_Study.csv`), saved seed list (`Stats_Seeds.txt`), and PNG plots for classification and risk/coverage metrics grouped by validation/test/consensus objectives.
 - **Prerequisites** – Ensure `paths.output_root` stays consistent with the training runs so the script can locate the freshly-created `Run_*` directories. Because a single failure halts the batch, confirm the baseline config trains successfully once before launching large studies.
 
