@@ -509,8 +509,14 @@ def cv_folds(ds,
                                          label = f"Gating: {gating_mode}", 
                                          save_path = str(val_rc_png), 
                                          show = False,
-                                         highlight_point = (eval_val["coverage"], eval_val["risk"]),
-                                         highlight_text = f"τ* = {selected_tau:.3f}")
+                                         #highlight_point = (eval_val["coverage"], eval_val["risk"]),
+                                         highlight_point = None,
+                                         #highlight_text = f"τ* = {selected_tau:.3f}",
+                                         highlight_text = None,
+                                         smooth = True,
+                                         smooth_method = "spline",
+                                         smooth_points = 300,
+                                         smooth_s_factor =0.1 * len(val_curve["coverage"]))
                 
                 # ┏━━━━━━━━━━ Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
                 curve_rows = [{"Threshold": float(t),

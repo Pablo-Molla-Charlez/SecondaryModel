@@ -32,7 +32,8 @@ from Utils.train_utils import (epoch_loop,
                                build_scores,
                                select_threshold_fbeta,
                                evaluate_threshold,
-                               build_m1_window)
+                               build_m1_window,
+                               compute_basic_metrics)
 
 # ┏━━━━━━━━━━ Model Class ━━━━━━━━━━┓
 from model import CTTSModel, EarlyStopping
@@ -54,7 +55,9 @@ os.environ.setdefault("TORCH_CUDA_NVML_DISABLE_WARNING", "1")
 warnings.filterwarnings("ignore", message="Can't initialize NVML")
 
 
-def run_training(cfg: dict) -> None:
+DEFAULT_SEED = 1493583942
+
+def run_training(cfg: dict, seed: int = DEFAULT_SEED) -> None:
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 1) CONFIG & ASSET SELECTION                                           ┃
     # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -107,8 +110,7 @@ def run_training(cfg: dict) -> None:
     # device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
     # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
-    seed_everything(1493583942)   
-
+    seed_everything(seed)
 
     # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
     # ┃ 4) DATA PREPARATION                                                   ┃
@@ -123,6 +125,7 @@ def run_training(cfg: dict) -> None:
         model_cfg = architecture_cfg[task]
         trainer_cfg = train_cfg[task]
         cm_labels = (f'No_{meta_suffix}_{task}', f'{meta_suffix}_{task}')
+        beta_metric = trainer_cfg["fbeta"]
 
         # ┏━━━━━━━━━━ Extracting Column & Context Features ━━━━━━━━━━┓
         column_features = task_features(cfg, "column_features", task)
@@ -186,7 +189,7 @@ def run_training(cfg: dict) -> None:
             return m1_window[idx_array].astype(bool)
 
         # ┏━━━━━━━━━━ 5.d) Splits and Criterion ━━━━━━━━━━┓
-        seed_everything(1493583942)  # Re-seed for reproducibility
+        seed_everything(seed)  # Re-seed for reproducibility
         print(f"\n────────── {task} model ──────────")
         train_folds, test_loader = build_loaders(ds               = dataset_tensor,
                                                  cross_validation = cv_usual,
@@ -256,7 +259,7 @@ def run_training(cfg: dict) -> None:
             tensorboard_dir.mkdir(parents = True, exist_ok = True)
 
             # ┏━━━━━━━━━━ 6.c) Instantiate the model (fresh for each fold) ━━━━━━━━━━┓
-            seed_everything(1493583942)
+            seed_everything(seed)
             model = CTTSModel(**model_kwargs).to(device)
 
             # ┏━━━━━━━━━━ 6.d) Optimizer ━━━━━━━━━━┓
@@ -327,11 +330,11 @@ def run_training(cfg: dict) -> None:
                 
                 # ┏━━━━━━━━━━ Validation Loss & Metrics ━━━━━━━━━━┓
                 val_loss = val_result["loss"]
-                vacc = val_result["acc"]
-                vprec = val_result["prec"]
-                vrec = val_result["rec"]
-                vf1 = val_result["f1"]
-                vfbeta = val_result["fbeta"]
+                vacc     = val_result["acc"]
+                vprec    = val_result["prec"]
+                vrec     = val_result["rec"]
+                vf1      = val_result["f1"]
+                vfbeta   = val_result["fbeta"]
                             
                 # ┏━━━━━━━━━━ Log to TensorBoard if last fold ━━━━━━━━━━┓
                 if writer is not None:
@@ -423,6 +426,10 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Apply mask to both targets (GT) and scores (probs) to keep them aligned ━━━━━━━━━━┓
                 val_targets_policy = vtargets[val_m1_mask]
                 val_scores_policy  = val_scores[val_m1_mask]
+                
+                # ┏━━━━━━━━━━ Validation Metrics [w/o Optimized Threshold] ━━━━━━━━━━┓
+                val_preds_default   = vpreds_raw[val_m1_mask]
+                val_metrics_default = compute_basic_metrics(val_targets_policy, val_preds_default, beta_metric)
 
                 # ┏━━━━━━━━━━ Sanity Alignment Check ━━━━━━━━━━┓
                 if val_targets_policy.shape[0] != val_scores_policy.shape[0]:
@@ -459,11 +466,9 @@ def run_training(cfg: dict) -> None:
                     selected_tau = float(selection["threshold"])
                     
                     # ┏━━━━━━━━━━ Risk & Coverage corresponding metrics to Selected Threshold ━━━━━━━━━━┓ 
-                    selection_metric = {"achieved_risk": selection["risk"],
-                                        "achieved_coverage": selection["coverage"],
-                                        "risk_constraint_satisfied": bool(selection["constraint_satisfied"])}
+                    selection_metric = {"Risk_Constraint_Satisfied": bool(selection["constraint_satisfied"])}
                     
-                    if not selection_metric["risk_constraint_satisfied"]:
+                    if not selection_metric["Risk_Constraint_Satisfied"]:
                         print(f"[WARN] Risk Budget infeasible at Alpha - {alpha_cfg:.3f}. Then, using lowest-risk fallback threshold.")
 
                 elif policy == "f_beta":
@@ -478,6 +483,9 @@ def run_training(cfg: dict) -> None:
                 # ┏━━━━━━━━━━ Optimized/Best Threshold for Validation Predictions [Last Fold] ━━━━━━━━━━┓ 
                 eval_val      = evaluate_threshold(val_targets_policy, val_scores_policy, selected_tau)
                 val_preds_tau = eval_val.pop("predictions")
+
+                # ┏━━━━━━━━━━ Validation Metrics [Optimized Threshold] ━━━━━━━━━━┓
+                val_metrics_tau = compute_basic_metrics(val_targets_policy, val_preds_tau, beta_metric)
 
                 # ┏━━━━━━━━━━ Validation Confusion Matrix & Metrics [Not Optimized Threshold & Masked] ━━━━━━━━━━┓
                 plot_cm_with_metrics(vpreds_raw[val_m1_mask],
@@ -504,7 +512,13 @@ def run_training(cfg: dict) -> None:
                                          save_path = str(val_rc_png), 
                                          show = False,
                                          highlight_point = (eval_val["coverage"], eval_val["risk"]),
-                                         highlight_text = f"τ* = {selected_tau:.3f}")
+                                         #highlight_point = None,
+                                         highlight_text = f"τ* = {selected_tau:.3f}",
+                                         #highlight_text = None,
+                                         smooth = True,
+                                         smooth_method = "spline",
+                                         smooth_points = 300,
+                                         smooth_s_factor = 0.1 * len(val_curve["coverage"]))
                 
                 # ┏━━━━━━━━━━ Summary of Risk & Coverage Analysis ━━━━━━━━━━┓
                 curve_rows = [{"Threshold": float(t),
@@ -518,7 +532,8 @@ def run_training(cfg: dict) -> None:
                                                                                                                        val_curve.get("error_count", [0] * len(val_curve["thresholds"])))
                               ]
 
-                payload = {"Dataset":            "Validation",
+                dataset_id = f"{cfg['dataset']['source']}_{cfg['dataset']['symbol']}_{granularity_usual}"
+                payload = {"Dataset":            dataset_id,
                            "Task":               task,
                            "Policy":             policy,
                            "Gating":             gating_mode,
@@ -590,6 +605,10 @@ def run_training(cfg: dict) -> None:
                 ttargets_policy = ttargets[test_m1_mask]
                 test_scores_policy = test_scores[test_m1_mask]
 
+                # ┏━━━━━━━━━━ Test Metrics [w/o Optimized Threshold] ━━━━━━━━━━┓
+                test_preds_default   = tpreds[test_m1_mask]
+                test_metrics_default = compute_basic_metrics(ttargets_policy, test_preds_default, beta_metric)
+
                  # ┏━━━━━━━━━━ Final safety: targets and scores must stay aligned ━━━━━━━━━━┓
                 if ttargets_policy.shape[0] != test_scores_policy.shape[0]:
                     raise AssertionError(f"Test targets ({ttargets_policy.shape[0]}) and scores ({test_scores_policy.shape[0]}) mismatch.")
@@ -598,22 +617,39 @@ def run_training(cfg: dict) -> None:
                 eval_test_tau = evaluate_threshold(ttargets_policy, test_scores_policy, selected_tau)
                 test_preds_tau = eval_test_tau.pop("predictions")
 
+                # ┏━━━━━━━━━━ Test Metrics [Optimized Threshold] ━━━━━━━━━━┓
+                test_metrics_tau = compute_basic_metrics(ttargets_policy, test_preds_tau, beta_metric)
+
                 # ┏━━━━━━━━━━ Ensure predictions length matches test length ━━━━━━━━━━┓
                 if test_preds_tau.shape[0] != ttargets[test_m1_mask].shape[0]:
                     raise AssertionError("Length of test predictions at τ does not match test targets.")
                 
     
-                # ┏━━━━━━━━━━ Test Metrics ━━━━━━━━━━┓
+                # ┏━━━━━━━━━━ Additional Information for Payload: R&C, Validation and Test ━━━━━━━━━━┓
                 payload["Test_Coverage@Tau"]       = eval_test_tau["coverage"]
                 payload["Test_Risk@Tau"]           = eval_test_tau["risk"]
                 payload["Test_Selected_Count@Tau"] = eval_test_tau["selected_count"]
                 
-                # ┏━━━━━━━━━━ Validation Risk & Coverage Curves ━━━━━━━━━━┓
-                payload["Val_Curves"] = curve_rows
-
-                # ┏━━━━━━━━━━ Path & Save Summary ━━━━━━━━━━┓
-                payload_json = checkpoint_dir / f"M2_{task}_R&C_Analysis.json"
-                save_metrics(payload, str(payload_json))
+                payload.update({"Val_Accuracy":        val_metrics_default["accuracy"],
+                                "Val_Precision":       val_metrics_default["precision"],
+                                "Val_Recall":          val_metrics_default["recall"],
+                                "Val_F1":              val_metrics_default["f1"],
+                                "Val_FBeta":           val_metrics_default["fbeta"],
+                                "Val_Accuracy@Tau":    val_metrics_tau["accuracy"],
+                                "Val_Precision@Tau":   val_metrics_tau["precision"],
+                                "Val_Recall@Tau":      val_metrics_tau["recall"],
+                                "Val_F1@Tau":          val_metrics_tau["f1"],
+                                "Val_FBeta@Tau":       val_metrics_tau["fbeta"],
+                                "Test_Accuracy":       test_metrics_default["accuracy"],
+                                "Test_Precision":      test_metrics_default["precision"],
+                                "Test_Recall":         test_metrics_default["recall"],
+                                "Test_F1":             test_metrics_default["f1"],
+                                "Test_FBeta":          test_metrics_default["fbeta"],
+                                "Test_Accuracy@Tau":   test_metrics_tau["accuracy"],
+                                "Test_Precision@Tau":  test_metrics_tau["precision"],
+                                "Test_Recall@Tau":     test_metrics_tau["recall"],
+                                "Test_F1@Tau":         test_metrics_tau["f1"],
+                                "Test_FBeta@Tau":      test_metrics_tau["fbeta"]})
 
                 # ┏━━━━━━━━━━ Test Confusion Matrix & Metrics [Not Optimized Threshold] ━━━━━━━━━━┓
                 plot_cm_with_metrics(tpreds[test_m1_mask],
@@ -637,14 +673,22 @@ def run_training(cfg: dict) -> None:
                 print("\nEnriched Results: ")
                 tpreds_tau_aligned = np.zeros_like(tpreds)
                 tpreds_tau_aligned[test_m1_mask] = test_preds_tau
-                export_predictions(df_asset        = df_asset,
-                                   dataset_tensor  = dataset_tensor,
-                                   tpreds          = tpreds,
-                                   tpreds_tau      = tpreds_tau_aligned,
-                                   cfg             = cfg,
-                                   checkpoint_dir  = checkpoint_dir,
-                                   tprobs          = tprobs,
-                                   meta_label_mode = meta_label_usual)
+                _, consensus_metrics = export_predictions(df_asset        = df_asset,
+                                                          dataset_tensor  = dataset_tensor,
+                                                          tpreds          = tpreds,
+                                                          tpreds_tau      = tpreds_tau_aligned,
+                                                          cfg             = cfg,
+                                                          checkpoint_dir  = checkpoint_dir,
+                                                          tprobs          = tprobs,
+                                                          meta_label_mode = meta_label_usual)
+                
+                # ┏━━━━━━━━━━ Additional Information for Payload: Consensus Metrics from M1+M2 and R&C Curves ━━━━━━━━━━┓
+                payload.update(consensus_metrics)
+                payload["Val_Curves"] = curve_rows
+
+                # ┏━━━━━━━━━━ Path & Save Summary ━━━━━━━━━━┓
+                payload_json = checkpoint_dir / f"M2_{task}_R&C_Analysis.json"
+                save_metrics(payload, str(payload_json))
 
                 # ┏━━━━━━━━━━ Meta-Labeling Consensus ━━━━━━━━━━┓
                 plot_meta_labeling_consensus(cfg = cfg,
@@ -657,23 +701,34 @@ def run_training(cfg: dict) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description = "Train CTTS model")
+    
+    # ┏━━━━━━━━━━ Config Argument ━━━━━━━━━━┓
     parser.add_argument("--config",
                         type    = str,
                         default = "config.yaml",
                         help    = "Path to the YAML configuration file")
+    
+    # ┏━━━━━━━━━━ Seed Argument ━━━━━━━━━━┓
+    parser.add_argument("--seed",
+                        type    = int,
+                        default = DEFAULT_SEED,
+                        help    = "Random seed for data splits and model init")
+    
+    # ┏━━━━━━━━━━ Extracting Arguments & Paths ━━━━━━━━━━┓
     args = parser.parse_args()
-
     cfg_path = Path(args.config)
     if not cfg_path.is_absolute():
         cfg_path = Path(__file__).parent / cfg_path
 
+    # ┏━━━━━━━━━━ Config Path & Load ━━━━━━━━━━┓
     if not cfg_path.exists():
         raise FileNotFoundError(f"Could not find config file at {cfg_path}")
 
     with cfg_path.open("r") as fh:
         cfg = yaml.safe_load(fh)
 
-    run_training(cfg)
+    # ┏━━━━━━━━━━ Run Training ━━━━━━━━━━┓
+    run_training(cfg, seed = args.seed)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import numpy as np
 from scipy.stats import beta
 import matplotlib.pyplot as plt
 from typing import Any, Dict, Iterable, Optional
+from scipy.interpolate import PchipInterpolator, UnivariateSpline
 
 def collect_risk_coverage_curve(y_true,
                                 y_score,
@@ -198,7 +199,13 @@ def plot_coverage_risk_curve(y_true = None,
                              save_path: Optional[str] = None,
                              show: bool = True,
                              highlight_point: Optional[tuple] = None,
-                             highlight_text: Optional[str] = None):
+                             highlight_text: Optional[str] = None,
+                             smooth: bool = False,
+                             smooth_points: int = 200,
+                             smooth_method: str = "spline",
+                             smooth_s_factor: Optional[float] = None,
+                             coverage_min: Optional[float] = None,
+                             coverage_max: Optional[float] = None):
 
     """Minimal coverage-risk plot."""
 
@@ -222,6 +229,46 @@ def plot_coverage_risk_curve(y_true = None,
     coverage_sorted = coverage[order]
     risk_sorted = risk[order]
 
+    # ┏━━━━━━━━━━ Optional smoothing using PCHIP or spline ━━━━━━━━━━┓
+    coverage_plot = coverage_sorted
+    risk_plot = risk_sorted
+    if smooth and coverage_sorted.size >= 2:
+        unique_mask = np.concatenate(([True], np.diff(coverage_sorted) != 0))
+        cov_unique = coverage_sorted[unique_mask]
+        risk_unique = risk_sorted[unique_mask]
+        finite_mask = np.isfinite(risk_unique)
+        cov_unique = cov_unique[finite_mask]
+        risk_unique = risk_unique[finite_mask]
+        if cov_unique.size >= 2:
+            grid = np.linspace(cov_unique.min(), cov_unique.max(), smooth_points)
+            method = (smooth_method or "pchip").lower()
+            if method == "spline":
+                s_factor = smooth_s_factor
+                if s_factor is None:
+                    s_factor = max(1.0, 0.001 * cov_unique.size)
+                try:
+                    interpolator = UnivariateSpline(cov_unique, risk_unique, s=s_factor)
+                    risk_interp = interpolator(grid)
+                except Exception:
+                    interpolator = PchipInterpolator(cov_unique, risk_unique, extrapolate=False)
+                    risk_interp = interpolator(grid)
+            else:
+                interpolator = PchipInterpolator(cov_unique, risk_unique, extrapolate=False)
+                risk_interp = interpolator(grid)
+            valid = np.isfinite(risk_interp)
+            coverage_plot = grid[valid]
+            risk_plot = risk_interp[valid]
+
+    if coverage_min is not None or coverage_max is not None:
+        clip_mask = np.ones_like(coverage_plot, dtype=bool)
+        if coverage_min is not None:
+            clip_mask &= coverage_plot >= coverage_min
+        if coverage_max is not None:
+            clip_mask &= coverage_plot <= coverage_max
+        coverage_plot = coverage_plot[clip_mask]
+        risk_plot = risk_plot[clip_mask]
+
+
     # ┏━━━━━━━━━━ Create Skeleton Plot ━━━━━━━━━━┓
     created_fig = False
     if ax is None:
@@ -231,7 +278,7 @@ def plot_coverage_risk_curve(y_true = None,
         fig = ax.figure
 
     # ┏━━━━━━━━━━ Legend of Plot ━━━━━━━━━━┓
-    ax.plot(coverage_sorted, risk_sorted, marker="o", label=label)
+    ax.plot(coverage_plot, risk_plot, label=label)
     ax.set_xlabel("Coverage")
     ax.set_ylabel("Risk (Error Rate)")
     ax.set_title("Coverage-Risk Curve")
@@ -249,7 +296,11 @@ def plot_coverage_risk_curve(y_true = None,
                                 fontsize=9, color="red")
         except Exception:
             pass
-
+    
+    # ┏━━━━━━━━━━ Optional Shortening Interval ━━━━━━━━━━┓
+    if coverage_min is not None or coverage_max is not None:
+        ax.set_xlim(left=coverage_min, right=coverage_max)
+        
     handles, labels = ax.get_legend_handles_labels()
     filtered = [(h, l) for h, l in zip(handles, labels) if l]
     if filtered:

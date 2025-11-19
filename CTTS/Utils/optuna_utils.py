@@ -14,6 +14,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 DEFAULT_OPTUNA_OBJECTIVES: List[Tuple[str, str]] = [("minimize", "mean_val_loss"),
                                                     ("maximize", "best_fbeta")]
 
+# ┏━━━━━━━━━━ Default focal settings ━━━━━━━━━━┓
+DEFAULT_FOCAL_ALPHA = 2.954 / (2.954 + 1.1514)
+
 def parse_optuna_objectives(raw: Optional[Any],
                             fallback: Optional[Sequence[Any]] = None) -> List[Tuple[str, str]]:
     """Normalize configurable Optuna objectives from YAML or CLI sources."""
@@ -166,12 +169,6 @@ def build_candidate_config(base_cfg: Dict[str, Any],
     train_section["batch_size"] = 2 ** int(params["batch_pow"])
     betas = train_section.get("betas", [0.9, 0.999])
     train_section["betas"] = [params.get("beta1", betas[0]), params.get("beta2", betas[1])]
-    train_section["loss_function"] = params["loss_function"]
-    focal_gamma = params.get("focal_gamma", train_section.get("focal_gamma"))
-
-    if focal_gamma is not None:
-        train_section["focal_gamma"] = focal_gamma
-    train_section["focal_alpha"] = train_section.get("focal_alpha", 2.954 / (2.954 + 1.1514))
 
     # ┏━━━━━━━━━━ Copy scheduler subsection for isolated mutation ━━━━━━━━━━┓
     scheduler_section = copy.deepcopy(train_section.get("scheduler", {}))
@@ -187,9 +184,12 @@ def build_candidate_config(base_cfg: Dict[str, Any],
     training_mode["optuna_task"] = task.upper()
     training_mode["loss_function"] = params["loss_function"]
 
+    focal_gamma = params.get("focal_gamma", training_mode.get("focal_gamma"))
     if focal_gamma is not None:
         training_mode["focal_gamma"] = focal_gamma
-    training_mode["focal_alpha"] = train_section.get("focal_alpha", training_mode.get("focal_alpha"))
+
+    focal_alpha = params.get("focal_alpha", training_mode.get("focal_alpha", DEFAULT_FOCAL_ALPHA))
+    training_mode["focal_alpha"] = focal_alpha
     training_mode["num_classes"] = 1 if params["loss_function"] == "bce" else 2
     candidate_cfg["training_mode"] = training_mode
 
@@ -257,6 +257,17 @@ def _sync_usual_with_optuna(training_mode: CommentedMap):
         if optuna_key in training_mode:
             training_mode[usual_key] = training_mode[optuna_key]
 
+def _prune_redundant_loss_fields(doc: CommentedMap):
+    """Ensure loss configuration is only stored under training_mode."""
+    if not isinstance(doc, CommentedMap):
+        return
+
+    for train_key in ("train_up", "train_dn"):
+        section = doc.get(train_key)
+        if isinstance(section, CommentedMap):
+            section.pop("loss_function", None)
+            section.pop("focal_alpha", None)
+
 # ┏━━━━━━━━━━ Define exporter that persists Pareto candidate configs ━━━━━━━━━━┓
 def export_pareto_configs(base_config_path: Path,
                           base_cfg: Dict[str, Any],
@@ -310,6 +321,9 @@ def export_pareto_configs(base_config_path: Path,
         
         # ┏━━━━━━━━━━ Merge train section overrides ━━━━━━━━━━┓
         _update_structure(doc[f"train_{task_lower}"], candidate[f"train_{task_lower}"])
+
+        # ┏━━━━━━━━━━ Ensure redundant loss parameters stay under training_mode ━━━━━━━━━━┓
+        _prune_redundant_loss_fields(doc)
 
         # ┏━━━━━━━━━━ Compute destination file path for this trial ━━━━━━━━━━┓
         cfg_path = candidates_dir / f"config_{trial.number}.yaml"

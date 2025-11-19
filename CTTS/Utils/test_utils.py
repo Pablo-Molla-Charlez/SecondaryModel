@@ -13,6 +13,8 @@ from sklearn.metrics import (confusion_matrix,
                              f1_score,
                              fbeta_score)
 
+from Utils.train_utils import compute_basic_metrics
+
 def plot_cm_with_metrics(preds,
                          targets,
                          labels,
@@ -75,7 +77,7 @@ def export_predictions(df_asset,
                        cfg: dict,
                        checkpoint_dir: Path,
                        tprobs: np.ndarray = None,
-                       meta_label_mode: Optional[str] = None) -> Path:
+                       meta_label_mode: Optional[str] = None) -> tuple[Path, dict]:
     """
     Export a CSV with test-timeline dates aligned to CTTS predictions.
 
@@ -88,7 +90,9 @@ def export_predictions(df_asset,
     - checkpoint_dir: Path where to save the CSV.
 
     Returns
-    - Path to the written CSV.
+    -------
+    Tuple[Path, dict]
+        Path to the CSV and consensus metrics for M1+M2 (default & τ).
     """
     if tpreds_tau is None:
         raise ValueError("tpreds_tau must be provided to export best-threshold predictions.")
@@ -121,7 +125,7 @@ def export_predictions(df_asset,
     market   = cfg["dataset"]["type"].capitalize()
     symbol   = cfg["dataset"]["symbol"]
     granularity = cfg["training_mode"]["granularity_usual"]
-    training_mode = cfg.get("training_mode", {})
+    training_mode = cfg["training_mode"]
     up_path  = dataset_path(provider, market, symbol, "up", granularity = granularity, meta_label_mode = meta_label_mode)
     dn_path  = dataset_path(provider, market, symbol, "down", granularity = granularity, meta_label_mode = meta_label_mode)
 
@@ -154,19 +158,19 @@ def export_predictions(df_asset,
 
     # ┏━━━━━━━━━━ Coalesce 'prediction' and 'ground_truth' ━━━━━━━━━━┓
     # ┏━━━━━━━━━━ Task-specific columns ━━━━━━━━━━┓
-    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper() # If fails the normal_task, falling back to optuna_task
+    task = training_mode["normal_task"].upper()
     task_lower = task.lower()
 
-    pred_series_up = merged.get("numerical_prediction_up")
-    pred_series_dn = merged.get("numerical_prediction_dn")
-    gt_series_up   = merged.get("ground_truth_up")
-    gt_series_dn   = merged.get("ground_truth_dn")
+    pred_series_up = merged["numerical_prediction_up"]
+    pred_series_dn = merged["numerical_prediction_dn"]
+    gt_series_up   = merged["ground_truth_up"]
+    gt_series_dn   = merged["ground_truth_dn"]
 
     task_pred_col = f"numerical_prediction_{task_lower}"
     task_gt_col   = f"ground_truth_{task_lower}"
 
     # ┏━━━━━━━━━━ Use the series that matches the active task, fall back to whichever exists  ━━━━━━━━━━┓
-    if isinstance(merged.get(task_pred_col), pd.Series):
+    if isinstance(merged[task_pred_col], pd.Series):
         merged["prediction"] = merged[task_pred_col]
     elif isinstance(pred_series_up, pd.Series) or isinstance(pred_series_dn, pd.Series):
         merged["prediction"] = (
@@ -175,7 +179,7 @@ def export_predictions(df_asset,
     else:
         merged["prediction"] = pd.Series([pd.NA] * len(merged), index=merged.index)
 
-    if isinstance(merged.get(task_gt_col), pd.Series):
+    if isinstance(merged[task_gt_col], pd.Series):
         merged["ground_truth"] = merged[task_gt_col]
     elif isinstance(gt_series_up, pd.Series) or isinstance(gt_series_dn, pd.Series):
         merged["ground_truth"] = (
@@ -185,9 +189,9 @@ def export_predictions(df_asset,
         merged["ground_truth"] = pd.Series([pd.NA] * len(merged), index=merged.index)
 
     if task == "UP":
-        merged["meta_label"] = merged.get("meta_label_up")
+        merged["meta_label"] = merged["meta_label_up"]
     else:
-        merged["meta_label"] = merged.get("meta_label_dn")
+        merged["meta_label"] = merged["meta_label_dn"]
 
     # ┏━━━━━━━━━━ Include CTTS (M2) discrete predictions ━━━━━━━━━━┓
     pred_col = f"m2_pred_{task_lower}"
@@ -195,6 +199,7 @@ def export_predictions(df_asset,
     merged[pred_col] = pd.NA
     merged[pred_tau_col] = pd.NA
 
+    # ┏━━━━━━━━━━ Helper Function: Copy numpy window into merged DataFrame column ━━━━━━━━━━┓
     def _assign_numpy(values: np.ndarray, column: str, cast) -> None:
         arr = np.asarray(values)
         limit = min(len(arr), len(merged))
@@ -236,11 +241,78 @@ def export_predictions(df_asset,
     out_df = merged[final_cols].copy()
     out_df["date"] = pd.to_datetime(out_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
 
+    # ┏━━━━━━━━━━ Consensus Metrics ━━━━━━━━━━┓
+    training_mode = cfg["training_mode"]
+    task          = training_mode["normal_task"].upper()
+    task_lower    = task.lower()
+    beta_metric   = cfg[f"train_{task_lower}"]["fbeta"]
+    invert_consensus = meta_label_mode == "fp"
+    
+    # ┏━━━━━━━━━━ Column Names ━━━━━━━━━━┓
+    m1_col = "m1_pred_down" if task == "DN" else "m1_pred_up"
+    m2_col = f"m2_pred_{task_lower}"
+    m2_tau_col = f"{m2_col}_tau"
+    target_col = "lab_dn" if task == "DN" else "lab_up"
+
+    # ┏━━━━━━━━━━ Empty Payload ━━━━━━━━━━┓
+    metrics_payload = {"M1&M2_Accuracy":      0.0,
+                       "M1&M2_Precision":     0.0,
+                       "M1&M2_Recall":        0.0,
+                       "M1&M2_F1":            0.0,
+                       "M1&M2_FBeta":         0.0,
+                       "M1&M2_Accuracy@Tau":  0.0,
+                       "M1&M2_Precision@Tau": 0.0,
+                       "M1&M2_Recall@Tau":    0.0,
+                       "M1&M2_F1@Tau":        0.0,
+                       "M1&M2_FBeta@Tau":     0.0}
+
+    valid_mask = out_df[target_col].notna()
+    if valid_mask.any():
+        def _series_to_int_array(series: pd.Series) -> np.ndarray:
+            """Fill gaps with zeros and ensure numeric dtype before casting to int."""
+            return (
+                series.fillna(0)
+                .infer_objects(copy=False)
+                .astype(int)
+                .to_numpy()
+            )
+
+        y_true = _series_to_int_array(out_df.loc[valid_mask, target_col])
+        m1_preds = _series_to_int_array(out_df.loc[valid_mask, m1_col])
+        m2_preds = _series_to_int_array(out_df.loc[valid_mask, m2_col])
+        m2_preds_tau = _series_to_int_array(out_df.loc[valid_mask, m2_tau_col])
+        
+        # ┏━━━━━━━━━━ Helper Function: Consensus Logic for "original" & "tp" vs "fp" ━━━━━━━━━━┓
+        def _consensus(m2_series: np.ndarray) -> np.ndarray:
+            if invert_consensus:
+                return ((m1_preds == 1) & (m2_series == 0)).astype(int)
+            return ((m1_preds == 1) & (m2_series == 1)).astype(int)
+
+        # ┏━━━━━━━━━━ Consensus Logic for "original" & "tp" vs "fp" depending on predictions ━━━━━━━━━━┓
+        m1m2_default = _consensus(m2_preds)
+        m1m2_tau = _consensus(m2_preds_tau)
+
+        # ┏━━━━━━━━━━ Classification Metrics ━━━━━━━━━━┓
+        metrics_default = compute_basic_metrics(y_true, m1m2_default, beta_metric)
+        metrics_tau     = compute_basic_metrics(y_true, m1m2_tau, beta_metric)
+
+        # ┏━━━━━━━━━━ Final Payload ━━━━━━━━━━┓
+        metrics_payload = {"M1+M2_Accuracy":      metrics_default["accuracy"],
+                           "M1+M2_Precision":     metrics_default["precision"],
+                           "M1+M2_Recall":        metrics_default["recall"],
+                           "M1+M2_F1":            metrics_default["f1"],
+                           "M1+M2_FBeta":         metrics_default["fbeta"],
+                           "M1+M2_Accuracy@Tau":  metrics_tau["accuracy"],
+                           "M1+M2_Precision@Tau": metrics_tau["precision"],
+                           "M1+M2_Recall@Tau":    metrics_tau["recall"],
+                           "M1+M2_F1@Tau":        metrics_tau["f1"],
+                           "M1+M2_FBeta@Tau":     metrics_tau["fbeta"]}
+
     # ┏━━━━━━━━━━ Write with requested naming ━━━━━━━━━━┓
     out_path = checkpoint_dir / f"{symbol}_{task}_predictions.csv"
     out_df.to_csv(out_path, index=False)
-    #print(f"Path: {out_path}")
-    return out_path
+
+    return out_path, metrics_payload
 
 
 def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold: float = None) -> Path:
@@ -254,9 +326,9 @@ def plot_meta_labeling_consensus(cfg: dict, checkpoint_dir: Path, best_threshold
     (if the exported CSV provides those columns).
     """
     # ┏━━━━━━━━━━ Resolve training metadata needed for consensus ━━━━━━━━━━┓
-    training_mode = cfg.get("training_mode", {})
-    task = training_mode.get("normal_task", training_mode.get("optuna_task", "UP")).upper()
-    meta_mode = training_mode.get("meta_label_usual", training_mode.get("meta_label_optuna", "tp")).lower()
+    training_mode = cfg["training_mode"]
+    task = training_mode["normal_task"].upper()
+    meta_mode = training_mode["meta_label_usual"].lower()
     symbol = cfg["dataset"]["symbol"]
     csv_path = Path(checkpoint_dir) / f"{symbol}_{task}_predictions.csv"
     if not csv_path.exists():

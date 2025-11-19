@@ -274,10 +274,10 @@ def epoch_loop(model: torch.nn.Module,
     mean_loss = float(np.mean(losses)) if losses else 0.0
 
     # ┏━━━━━━━━━━ Compute Metrics ━━━━━━━━━━┓
-    acc = accuracy_score(targets, preds) if targets.size else 0.0
-    prec = precision_score(targets, preds, zero_division = 0) if targets.size else 0.0
-    rec = recall_score(targets, preds, zero_division = 0) if targets.size else 0.0
-    f1 = f1_score(targets, preds, zero_division = 0) if targets.size else 0.0
+    acc   = accuracy_score(targets, preds) if targets.size else 0.0
+    prec  = precision_score(targets, preds, zero_division = 0) if targets.size else 0.0
+    rec   = recall_score(targets, preds, zero_division = 0) if targets.size else 0.0
+    f1    = f1_score(targets, preds, zero_division = 0) if targets.size else 0.0
     fbeta = fbeta_score(targets, preds, beta = beta, zero_division = 0) if targets.size else 0.0
 
     # ┏━━━━━━━━━━ Dictionary to store Results ━━━━━━━━━━┓
@@ -298,6 +298,28 @@ def epoch_loop(model: torch.nn.Module,
             result["logits"] = torch.cat(logits_cpu).numpy()
 
     return result
+
+
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃ CLASSIFICATION METRICS                                                ┃
+# ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+def compute_basic_metrics(y_true: np.ndarray,
+                          y_pred: np.ndarray,
+                          beta: float) -> dict:
+    """Compute accuracy/precision/recall/F1/Fβ for masked subsets."""
+    # ┏━━━━━━━━━━ If empty ━━━━━━━━━━┓
+    if y_true.size == 0:
+        return {"accuracy":  0.0,
+                "precision": 0.0,
+                "recall":    0.0,
+                "f1":        0.0,
+                "fbeta":     0.0}
+
+    return {"accuracy":  accuracy_score(y_true, y_pred),
+            "precision": precision_score(y_true, y_pred, zero_division = 0),
+            "recall":    recall_score(y_true, y_pred, zero_division = 0),
+            "f1":        f1_score(y_true, y_pred, zero_division = 0),
+            "fbeta":     fbeta_score(y_true, y_pred, beta = beta, zero_division = 0)}
 
 
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
