@@ -177,6 +177,12 @@ def build_candidate_config(base_cfg: Dict[str, Any],
     scheduler_section["plateau_patience"] = params["plateau_patience"]
     scheduler_section["plateau_factor"] = params["plateau_factor"]
     train_section["scheduler"] = scheduler_section
+    
+    # ┏━━━━━━━━━━ Sanitize train_section to avoid duplicating loss parameters ━━━━━━━━━━┓
+    train_section.pop("loss_function", None)
+    train_section.pop("focal_alpha", None)
+    train_section.pop("focal_gamma", None)
+
     candidate_cfg[train_key] = train_section
 
     # ┏━━━━━━━━━━ Training mode mirror ━━━━━━━━━━┓
@@ -257,6 +263,7 @@ def _sync_usual_with_optuna(training_mode: CommentedMap):
         if optuna_key in training_mode:
             training_mode[usual_key] = training_mode[optuna_key]
 
+
 def _prune_redundant_loss_fields(doc: CommentedMap):
     """Ensure loss configuration is only stored under training_mode."""
     if not isinstance(doc, CommentedMap):
@@ -267,6 +274,7 @@ def _prune_redundant_loss_fields(doc: CommentedMap):
         if isinstance(section, CommentedMap):
             section.pop("loss_function", None)
             section.pop("focal_alpha", None)
+            section.pop("focal_gamma", None)
 
 # ┏━━━━━━━━━━ Define exporter that persists Pareto candidate configs ━━━━━━━━━━┓
 def export_pareto_configs(base_config_path: Path,
