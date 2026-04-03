@@ -1,181 +1,277 @@
-# Bi-FAST Framework
+# Secondary-Model
 
-A PyTorch implementation of the **Bi-FAST Framework** (Bi-level Flow Adaptation with Sampling Techniques) for time-series classification. This version (`src`) features a streamlined 4-phase Hyperparameter Optimization (HPO) pipeline.
-
-## 📂 Project Structure
-
-| File | Description |
-|------|-------------|
-| `config.yaml` | Central configuration for data, model, and HPO ranges. |
-| `kronos_clas.py` | **Standalone** Kronos classifier: frozen backbone + trainable head + clean trainer with TensorBoard. |
-| `HPO/hpo_utils.py` | Shared utilities for Optuna studies, expanding window CV, and config overrides. |
-| `HPO/global_exploration.py` | **Phase 1A**: Global search on a single Train/Val split (Pruning ENABLED). |
-| `HPO/fine_exploration.py` | **Phase 1B**: Local search around best Phase 1A params using 5-Fold Expanding Window CV (Pruning DISABLED). |
-| `HPO/inflow_exploration.py` | **Phase 2**: Freezes Main Model ($\theta^*$), searches IN-Flow ($\phi$) using Bi-Level Expanding Window CV. |
-| `HPO/meta_exploration.py` | **Phase 3**: Freezes Main ($\theta^*$), searches Meta-Controller ($\psi$) using Bi-Level Expanding Window CV. |
-| `HPO/kronos_exploration.py` | **Standalone** Kronos HPO: searches head architecture, LR, loss type with per-trial TensorBoard. |
-| `s2_model.py` | Core M2 architecture: SecondaryModel, RoPE, Patching, Fusion Transformer. |
-| `Bi_FAST/` | Modules for IN-Flow, Meta-Controller, and Bi-Level Trainer. |
+> Current `src/` workspace for the M2 layer of the Kronos pipeline.
+> This README documents the code that is actually present today: the tree-based M2 analysis stack, the Bi-FAST deep-learning path, and the modular `Utils/` toolchain.
 
 ---
 
-## 🚀 HPO Pipeline Overview
+## Visual Overview
 
-Run the phases in order. Each phase loads the best parameters from the previous one.
+```mermaid
+flowchart LR
+    A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data_preprocessing.py]
+    B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
+    C --> D[kronos_tree.py<br/>RF / XGBoost / AutoGluon]
+    D --> E[Selective Classification<br/>utility threshold or SAOCP]
+    E --> F[Feature Plots]
+    E --> G[Temporal Evaluation]
+    E --> H[Backtests]
+    E --> I[Comparison Tables]
+    E --> J[OCP Diagnostics]
 
-| Phase | Script | Goal | Parameters Searched | Data Split | Modules Optimized | Optimization |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1.A Global** | `HPO/global_exploration.py` | Find rough architecture baselines of Main Model ($\theta$) | `d_model`, `n_heads`, `n_layers`, `lr`, `gamma`, `dropout` | **Train / Val**<br>(Single Split: 60/20) | **Main Model Only** ($\theta$) | **TPE + MedianPruner**<br>on Main Model ($\theta$) |
-| **1.B Fine** | `HPO/fine_exploration.py` | Refine parameters carefully of Main Model ($\theta$) | Narrowed ranges around Phase 1.A best. | **Expanding Rolling Window CV: 5 Folds of Train / Val** | **Main Model Only** ($\theta$) | **TPE (No Pruning + Full Training on Folds)**<br>on Main Model ($\theta$) |
-| **2.A IN-Flow (Global)** | `HPO/inflow_exploration.py --phase 2a` | Rough search for IN-Flow ($\phi$) | `flow_depth`, `hidden_dim`, `meta_lr` | **Expanding Rolling Window CV: 3 Folds of Train / Val** | **IN-Flow** ($\phi$) + **Fixed Main Model** ($\theta^*$) | **Coordinate Descent**<br>TPE+MedianPruner on Fixed Main Model Best Config ($\theta^*$) + IN-Flow ($\phi$) (Pruning ENABLED) |
-| **2.B IN-Flow (Fine)** | `HPO/inflow_exploration.py --phase 2b` | Refine IN-Flow ($\phi$) carefully | Narrowed ranges around Phase 2.A best. | **Expanding Rolling Window CV: 5 Folds of Train / Val** | **IN-Flow** ($\phi$) + **Fixed Main Model** ($\theta^*$) | **Coordinate Descent**<br>TPE (No Pruning) on Fixed Main Model Best Config ($\theta^*$) + IN-Flow ($\phi$) |
-| **3.A Meta (Global)** | `HPO/meta_exploration.py --phase 3a` | Rough search for Meta-Controller ($\psi$) | `lambda_barrier`, `meta_lr`, `hidden_dim`, `layers` | **Bi-Level Expanding Rolling Window CV: 3 Folds of Train / Meta / Val** | **Meta** ($\psi$) + **Main** ($\theta^*$) + **IN-Flow** ($\phi$) | **Bi-Level with TPE+MedianPruner**<br> on Fixed Main Model ($\theta^*$). IN-Flow ($\phi$) can be frozen or trained with Main Model ($\theta^*$). |
-| **3.B Meta (Fine)** | `HPO/meta_exploration.py --phase 3b` | Refine Meta-Controller ($\psi$) carefully | Narrowed ranges around Phase 3.A best. | **Bi-Level Expanding Rolling Window CV: 5 Folds of Train / Meta / Val** | **Meta** ($\psi$) + **Main** ($\theta^*$) + **IN-Flow** ($\phi$) | **Bi-Level with TPE**<br>on Fixed Main Model ($\theta^*$). IN-Flow ($\phi$) can be frozen or trained altogether with Meta-Controller. |
+    C --> K[Bi_FAST/train.py<br/>deep-learning branch]
+    K --> L[Bi-FAST Trainer / IN-Flow / Meta-Controller]
+    L --> M[Test Metrics + Risk-Coverage]
+```
 
-### ❄️ Freezing & Symbiosis (Phase 2 & 3)
-
-#### Phase 2: IN-Flow Exploration 🌊
-By default, the Main Model is **Frozen** ❄️ ($\theta^*$ fixed) to provide a stable target 🎯 for the IN-Flow module to adapt to.
-- **Frozen (Default)**: Best for initial IN-Flow search. Gradients still flow through the frozen model to guide the IN-Flow network.
-- **Unfrozen (`--unfreeze-main`)**: Useful if you suspect the Main Model needs to adapt its weights to the new IN-Flow distribution immediately.
-
-#### Phase 3: Meta-Controller Exploration 🧠
-By default, the IN-Flow module is **Unfrozen** ($\phi$ learnable) to allow fine-tuning alongside the Meta-Controller.
-- **Unfrozen (Default)**: Best for final performance. The IN-Flow adapts to the weighting policy.
-- **Frozen (`--freeze-inflow`)**: Useful if you want to strictly isolate the Meta-Controller's effect.
+```mermaid
+flowchart TD
+    A[config.yaml] --> B[paths]
+    A --> C[data.load]
+    A --> D[data.split]
+    A --> E[data.features]
+    A --> F[main_model.forecast_horizon]
+    A --> G[evaluation.fee_per_trade]
+```
 
 ---
 
-## 🏛️ Kronos Classifier (Standalone)
+## What This Codebase Is Now
 
-The Kronos Foundation Model integration is now **fully separated** from the Bi-FAST pipeline into its own standalone module (`kronos_clas.py`). This allows independent development, debugging, and HPO of the classification head without any BiFAST machinery.
+The active `src/` tree is centered around two complementary M2 workflows:
 
-### Architecture
-- **Frozen Backbone** ❄️: Pre-trained Kronos from HuggingFace (`NeoQuasar/Kronos-base`). Extracts context embeddings `(B, T, D)` from tokenized time-series.
-- **Trainable Head** 🔥: Lightweight MLP (`ClassificationHead`): `[Linear → GELU → LayerNorm → Dropout] × N → Linear`. Optimized independently via `kronos_exploration.py`.
-- **Clean Trainer**: `KronosTrainer` with AdamW, cosine annealing, early stopping, and full TensorBoard logging (all train/val metrics per epoch).
+1. `kronos_tree.py`
+   Tree-based meta-labeling analysis for the Kronos M1 output.
+   It supports Random Forest, XGBoost, and AutoGluon, and produces feature diagnostics, temporal validation/test metrics, selective-classification operating points, financial backtests, unified-vs-separate comparison tables, and OCP diagnostics.
 
-### HPO (`HPO/kronos_exploration.py`)
-- **Search Space**: `head_hidden_dim`, `head_layers`, `head_dropout`, `lr`, `loss_type` (CE vs Focal), `gamma`.
-- **Per-trial TensorBoard**: Each trial logs to its own TensorBoard directory.
-- **Dataset Caching**: Tokenized dataset is cached to disk for fast re-use across trials.
+2. `Bi_FAST/train.py`
+   Deep-learning training pipeline for the Bi-FAST branch.
+   It combines the main secondary model, IN-Flow normalization/adaptation, a shadow model, and a meta-controller for bi-level sample weighting.
 
-### Usage
-```bash
-# Standalone training
-python kronos_clas.py --config config.yaml
-
-# HPO search over classification head
-python HPO/kronos_exploration.py --n-trials 100 --max-epochs 50 --patience 15
-```
-
-## 🛠️ Usage
-
-### 1. Global Exploration
-```bash
-python HPO/global_exploration.py --n-trials 400 --study-name Phase1A_Global_Exploration --db Output/HPO/Phase1A_Global_Exploration.db
-```
-### 2. Fine Exploration (Baseline)
-```bash
-python HPO/fine_exploration.py --n-trials 200 --n-folds 3 --study-name Phase1B_Fine_Exploration --db Output/HPO/Phase1B_Fine_Exploration.db \
-    --best-from Output/HPO/Phase1A_Global_Exploration_best_params.json
-```
-
-### 3. IN-Flow Exploration
-```bash
-# Phase 2.A Global
-python HPO/inflow_exploration.py --phase 2a --n-trials 200 --n-folds 3 --study-name Phase2A_Inflow_Exploration --db Output/HPO/Phase2A_Inflow_Exploration.db \
-    --best-from Output/HPO/Phase1B_Fine_Exploration_best_params.json
-
-# Phase 2.B Fine
-python HPO/inflow_exploration.py --phase 2b --n-trials 100 --n-folds 5 --study-name Phase2B_Inflow_Exploration --db Output/HPO/Phase2B_Inflow_Exploration.db \
-    --best-from Output/HPO/Phase2A_Inflow_Exploration_best_params.json
-```
-
-### 4. Meta-Controller Exploration
-```bash
-# Phase 3.A Global (Symbiotic)
-python HPO/meta_exploration.py --phase 3a --n-trials 200 --n-folds 3 --study-name Phase3A_Meta_Controller --db Output/HPO/Phase3A_Meta_Controller.db \
-    --best-from Output/HPO/Phase2B_Inflow_Exploration_best_params.json \
-    --checkpoint Output/HPO/checkpoints/Phase2B_Inflow_Exploration_best_params.pt
-
-# Phase 3.B Fine (Symbiotic)
-python HPO/meta_exploration.py --phase 3b --n-trials 100 --n-folds 5 --study-name Phase3B_Meta_Controller --db Output/HPO/Phase3B_Meta_Controller.db \
-    --best-from Output/HPO/Phase3A_Meta_Controller_best_params.json \
-    --checkpoint Output/HPO/checkpoints/Phase2B_Inflow_Exploration_best_params.pt
-```
-
-## ⚙️ Configuration (`config.yaml`)
-
-### **1. Paths (`paths`)**
-Defines where data is stored and where results go.
-- `csv_dir`: Directory containing the processed CSV files (e.g., `1h_og`).
-- `output_root`: Root directory for all HPO databases, checkpoints, and logs.
-
-### **2. Data Loading (`data.load`)**
-Controls how the raw CSVs are ingested.
-- `symbol`: List of assets to load (e.g., `["BTC", "ETH"]`).
-- `start_date` / `end_date`: Filters the dataset to a specific range.
-- `target_col`: The column to predict (e.g., `meta_label`).
-- `granularity`: Timeframe of the data (e.g., `1h`).
-
-### **3. Data Splits (`data.split`)**
-Defines how the dataset is partitioned for **Global Exploration** and determining sizes for **Expanding Window CV**.
-- `train`: **0.60** (60%) - Used for training models in all phases.
-- `meta`: **0.10** (10%) - Used ONLY in Phase 3 for the **Meta-Controller's held-out set**. It acts as a proxy for test performance to optimize the weighting policy ($\psi$).
-- `val`: **0.20** (20%) - Used for validation (early stopping, hyperparameter scoring) in all phases.
-- `context_length`: **48** - The number of past timesteps ($T$) fed into the model (e.g., 48 hours).
-
-### **4. Features (`data.features`)**
-Specifies input channels.
-- `input`: OHLCV columns (Open, High, Low, Close, Volume).
-- `extrinsic`: Indicators like RSI, MACD, Bollinger Bands that bypass the main transformer branch (fed via Cross-Attention).
-
-### **5. Main Model (`main_model`)**
-Base architecture parameters (refined in Phase 1).
-- `d_model`, `n_heads`, `n_layers`, `dropout`, `ffn_mult`: Transformer dimensions.
-- `patch_size`: **24** - Number of timesteps per patch. With `context_length=48`, this creates $48/24 = 2$ patch tokens.
-
-### **6. Kronos Model (`kronos_model`)**
-Settings for the standalone Kronos classifier (`kronos_clas.py`). These are used by `kronos_clas.py` and `HPO/kronos_exploration.py` — **not** by the BiFAST pipeline.
-- `enabled`: Legacy flag (ignored by BiFAST pipeline after separation).
-- `model_path`: HuggingFace ID (e.g., `NeoQuasar/Kronos-base`).
-- `tokenizer_path`: HuggingFace ID for the tokenizer.
-- `head_hidden_dim`: Hidden layer size for the classification head.
-- `head_dropout`: Dropout rate for the head.
-- `head_layers`: Number of MLP layers.
-
-### **7. IN-Flow Module (`in_flow`)**
-Configuration for the Normalizing Flow (Phase 2).
-- `type`: `revin` (Phase 1 Baseline) or `in_flow` (Phase 2+).
-- `flow_depth`: Number of affine coupling layers.
-- `hidden_dim`: Hidden dimension of the flow network.
-
-### **7. Meta-Controller (`meta_controller`)**
-Configuration for the Bi-Level Optimization policy (Phase 3).
-- `enabled`: `true`/`false`.
-- `lambda_barrier`: Coefficient for the barrier penalty (prevents weights from collapsing to 0).
-- `hidden_dim`, `temperature`: Architecture of the meta-network.
-
-### **8. Training (`training`)**
-Hyperparameters for the optimization loop.
-- `batch_size`: Number of samples per batch (e.g., 64).
-- `learning_rate`: Baseline LR for the Main Model.
-- `meta_lr`: Learning rate for Meta-Controller and IN-Flow (outer loop).
-- `max_epochs`: Maximum training duration.
-- `patience`: Early stopping counter.
-- `loss.type`: `focal_loss` (handles class imbalance) or `cross_entropy`.
-
-## ⚡ Performance Optimization
-
-### Dataset Caching 💾
-To speed up HPO, the pipeline automatically caches the **tokenized** dataset.
-- **Cache Location**: `Output/HPO/cache/dataset_{hash}.pt`
-- **Mechanism**: A unique SHA256 hash is generated from your `config.yaml` (data paths, splits, task type).
-    - **First Run**: Computes tokens (slow ~minutes) -> Saves to Cache.
-    - **Subsequent Runs**: Loads from Cache (fast ~seconds).
-- **Invalidation**: Changing critical config parameters (e.g., `start_date`, `context_length`) automatically generates a new hash and triggers a fresh computation.
+The old README content about a multi-phase HPO exploration stack is no longer the right mental model for this folder.
 
 ---
 
+## Current Project Map
 
+| Path | Role |
+| --- | --- |
+| `config.yaml` | Main runtime configuration for paths, split dates, selected engineered features, forecast horizon, and fees. |
+| `kronos_tree.py` | Main M2 analysis entrypoint for tree models and reporting. |
+| `Bi_FAST/train.py` | Main deep-learning training/evaluation entrypoint. |
+| `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, temporal splitting, and feature plumbing. |
+| `Utils/features.py` | Correlation plots, point-biserial analysis, class distributions, MI, tree importance, and probability diagnostics. |
+| `Utils/selective_classification.py` | Risk-coverage utilities, AURC, plotting, metrics export, and utility-threshold search. |
+| `Utils/saocp.py` | OCP / SAOCP logic, including delayed-feedback online adaptation helpers. |
+| `Utils/backtest.py` | Financial backtest helpers, equity construction, Sharpe / drawdown, and reporting. |
+| `Utils/comparison.py` | Per-gran vs unified comparison figures and cross-paradigm comparison tables. |
+| `Utils/ocp_analysis.py` | Practical OCP diagnostics on completed experiment folders. |
+| `Utils/ocp_theory.py` | Deprecated theory-oriented experiments kept separate from the practical diagnostics path. |
+| `Bi_FAST/` | Deep-learning modules: trainer, IN-Flow, shadow model, meta-controller, losses, and DL data helpers. |
+| `Data_MLA/` | Meta-label conversion and Kronos-oriented dataset assets. |
+| `Data_TSC/` | Raw download and indicator-generation helpers. |
+
+---
+
+## Workflow A: Tree-Based M2 Analysis
+
+### Purpose
+
+`kronos_tree.py` is the main analysis script for the current tree-model pipeline:
+
+- load cached per-granularity or multi-granularity M2 datasets
+- train RF / XGBoost / AutoGluon classifiers
+- analyze engineered features
+- evaluate temporal train/val/test splits
+- optimize selective trading thresholds
+- optionally run SAOCP-based online conformal selection
+- backtest approved trades
+- compare separate vs unified paradigms
+
+### Main Modes
+
+| Mode | What it does |
+| --- | --- |
+| `--per-gran` | Train one model per granularity. |
+| `--all-grans` | Train one unified model across all granularities and evaluate each granularity separately. |
+| `--comparison PER_GRAN_DIR UNIFIED_DIR` | Build visual comparison tables from completed result folders. |
+| `--paradigm-comparison DIR...` | Compare multiple result paradigms side by side. |
+| `--thres utility` | Select trades using the validation-set utility threshold. |
+| `--thres OCP` | Select trades using SAOCP / online conformal thresholding. |
+
+### Typical Commands
+
+Run from `src/`:
+
+```bash
+python kronos_tree.py --per-gran --cache /path/to/multi_cache.pt
+python kronos_tree.py --all-grans --cache /path/to/multi_cache.pt
+python kronos_tree.py --per-gran --model autogluon --thres OCP --cache /path/to/multi_cache.pt
+python kronos_tree.py --comparison Output/Kronos/randforest Output/Kronos/randforest/unified_down_tp
+python kronos_tree.py --paradigm-comparison Output/Kronos/randforest Output/Kronos/xgboost Output/Kronos/autogluon
+```
+
+### Outputs
+
+Tree-based experiment artifacts are written under:
+
+```text
+src/Output/Kronos/
+```
+
+Typical contents include:
+
+- feature plots and CSV summaries
+- validation and test confusion matrices
+- risk-coverage figures
+- OCP threshold diagnostics
+- backtest equity curves and trade dumps
+- `analysis_summary.json`
+- `unified_summary.json`
+- comparison figures and CSV exports
+
+---
+
+## Workflow B: Bi-FAST Deep-Learning Path
+
+### Purpose
+
+`Bi_FAST/train.py` is the active entrypoint for the deep-learning branch. It implements:
+
+- `SecondaryModel` as the main predictive model
+- `INFlowModule` for input adaptation / normalization
+- `ShadowModel` for learnability-aware signals
+- `MetaController` for dual-gate sample weighting
+- bi-level optimization via the Bi-FAST trainer/system stack
+
+### Main Components
+
+| Component | File |
+| --- | --- |
+| Main model | `Bi_FAST/s2_model.py` |
+| IN-Flow module | `Bi_FAST/in_flow.py` |
+| Meta-controller | `Bi_FAST/meta_controller.py` |
+| Shadow model | `Bi_FAST/shadow_model.py` |
+| Trainer / orchestration | `Bi_FAST/bi_level_trainer.py` |
+| Train script | `Bi_FAST/train.py` |
+| Losses | `Bi_FAST/loss_functions.py` |
+
+### Typical Command
+
+Run from `src/`:
+
+```bash
+python Bi_FAST/train.py --config config.yaml
+```
+
+This path also uses the shared selective-classification utilities for risk-coverage curves and selective evaluation plots.
+
+---
+
+## Data and Split Logic
+
+The current data plumbing lives in `Utils/data_preprocessing.py`.
+
+### What it handles
+
+- loading datasets from the config-driven CSV layout
+- building multi-asset datasets
+- building multi-granularity datasets through `MultiGranDataset`
+- attaching window-level metadata such as labels, returns, dates, granularity IDs, and engineered features
+- performing chronological splitting with `split_by_global_time`
+
+### Important current behaviors
+
+- Multi-granularity mode uses a flat wrapper dataset with per-gran sub-datasets.
+- Dates are preserved and used for time-aware splitting and OCP delayed-feedback handling.
+- Engineered features are available to the tree-based M2 pipeline.
+- The active granularity-to-sequence mapping is defined in `GRAN_SEQ_LEN`.
+
+---
+
+## Configuration Guide
+
+The active config is `src/config.yaml`.
+
+### Key Sections
+
+| Section | Meaning |
+| --- | --- |
+| `paths.csv_dir` | Root folder of processed Kronos CSV data. |
+| `paths.output_root` | Root folder for generated outputs and caches. |
+| `data.load.target_col` | Current prediction target, usually `meta_label`. |
+| `data.load.meta_label_mode` | Label mode such as `tp`, `fp`, or `og`. |
+| `data.load.direction` | Trading direction: `up` or `down`. |
+| `data.load.granularity` | A single granularity or `all` for multi-gran runs. |
+| `data.split.start_date / train_end / val_end / end_date` | Chronological boundaries for dataset construction and evaluation. |
+| `data.split.context_length` | Context window length used during dataset preparation. |
+| `data.features.engineered_features.selected` | Hand-selected engineered window features exposed to M2. |
+| `main_model.forecast_horizon` | Forecast horizon, reused by backtesting and OCP delay logic. |
+| `evaluation.fee_per_trade` | Fee assumption used in financial evaluation. |
+
+### Current Shape
+
+At the time of writing, the active config is oriented around:
+
+- Kronos crypto TP data
+- `forecast_horizon: 7`
+- selective trading with explicit transaction fees
+- multi-granularity operation through `granularity: "all"`
+
+---
+
+## Reporting and Diagnostics
+
+### Comparison Tools
+
+`Utils/comparison.py` produces polished summary tables for:
+
+- separate vs unified models
+- cross-paradigm model comparisons
+- validation, test, and backtest panels in a single visual artifact
+
+### OCP Diagnostics
+
+`Utils/ocp_analysis.py` is the practical diagnostics entrypoint for finished OCP runs. It includes tests for:
+
+- fixed-threshold comparison
+- random baseline checks
+- shuffled-label sanity checks
+- rolling conformal coverage
+- trade overlap versus utility threshold
+- reliability / calibration inspection
+
+### Theory File Status
+
+`Utils/ocp_theory.py` is still present, but it is not the main path for current analysis work. The practical diagnostic workflow should go through `Utils/ocp_analysis.py`.
+
+---
+
+## Recommended Reading Order
+
+If you are new to the code, read in this order:
+
+1. `config.yaml`
+2. `kronos_tree.py`
+3. `Utils/data_preprocessing.py`
+4. `Utils/features.py`
+5. `Utils/selective_classification.py`
+6. `Utils/saocp.py`
+7. `Utils/backtest.py`
+8. `Utils/comparison.py`
+9. `Bi_FAST/train.py`
+
+---
+
+## Practical Notes
+
+- The `src/Analysis/` directory contains legacy generated figures, not the main source code.
+- The canonical output root for current experiments is `src/Output/`.
+- The tree-analysis stack has already been modularized: feature analysis, backtesting, OCP logic, and comparisons are no longer meant to live inline in `kronos_tree.py`.
+- If you are trying to understand current M2 behavior, focus on `kronos_tree.py` and `Utils/`, not the old HPO narrative from the previous README.
+
+---
+
+## One-Line Summary
+
+This `src/` folder is now a modular M2 research workspace: tree-based Kronos meta-labeling analysis, Bi-FAST deep-learning training, selective-classification tooling, OCP diagnostics, and reporting utilities, all driven by the current `config.yaml`.
