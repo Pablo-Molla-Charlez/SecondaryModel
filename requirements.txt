@@ -3,8 +3,8 @@
 # 1) Execute installer: bash Miniconda3-latest-Linux-x86_64.sh
 # 2) Initialize miniconda: ~/miniconda3/bin/conda init
 # 3) Restart Shell: source ~/.bashrc
-# 2) Create a conda environment in terminal: conda create -n CTTS python=3.11
-# 3) Activate the environment: conda activate CTTS
+# 2) Create a conda environment in terminal: conda create -n S2 python=3.11
+# 3) Activate the environment: conda activate S2
 # 4) Install all requirements (from right path) in such environment: pip install -r requirements.txt
 torch>=1.13.0
 torchinfo>=1.7.0
