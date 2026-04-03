@@ -48,7 +48,9 @@ flowchart LR
     class D model;
     class E select;
     class F,G,H,I,J report;
-    linkStyle default stroke:#0f172a,stroke-width:6px;
+    linkStyle 0,1,2 stroke:#0f766e,stroke-width:6px;
+    linkStyle 3 stroke:#2563eb,stroke-width:6px;
+    linkStyle 4,5,6,7,8 stroke:#f59e0b,stroke-width:6px;
 ```
 
 ```mermaid
@@ -66,7 +68,7 @@ flowchart TD
     class A root;
     class B,C,D,E group;
     class F,G detail;
-    linkStyle default stroke:#0f172a,stroke-width:6px;
+    linkStyle 0,1,2,3,4,5 stroke:#2563eb,stroke-width:6px;
 ```
 
 ---
