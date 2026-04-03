@@ -48,7 +48,7 @@ flowchart LR
     class D model;
     class E select;
     class F,G,H,I,J report;
-    linkStyle default stroke:#0f172a,stroke-width:4px;
+    linkStyle default stroke:#000000,stroke-width:6px;
 ```
 
 ```mermaid
@@ -66,12 +66,12 @@ flowchart TD
     class A root;
     class B,C,D,E group;
     class F,G detail;
-    linkStyle default stroke:#0f172a,stroke-width:4px;
+    linkStyle default stroke:#000000,stroke-width:6px;
 ```
 
 ---
 
-## What This Codebase Is Now
+## Codebase Description
 
 <p>
   <img src="https://img.shields.io/badge/Focus-Current%20Code%20Only-0f766e?style=flat-square" alt="Focus Current Code Only" />
