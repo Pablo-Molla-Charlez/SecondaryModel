@@ -2,17 +2,31 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Kronos-M2%20Tree%20Stack-0f766e?style=for-the-badge" alt="Kronos M2 Tree Stack" />
-  <img src="https://img.shields.io/badge/Outputs-Output%2FKronos-f59e0b?style=for-the-badge" alt="Outputs Output Kronos" />
   <img src="https://img.shields.io/badge/Config-config.yaml-2563eb?style=for-the-badge" alt="Config config yaml" />
   <img src="https://img.shields.io/badge/OCP-SAOCP%20Diagnostics-7c3aed?style=for-the-badge" alt="OCP SAOCP Diagnostics" />
 </p>
 
-> Current `src/` workspace for the M2 layer of the Kronos pipeline.
+> Current `src/` workspace for the Secondary Model of the Meta-Labelng architecture, on top of financial foundation models like Kronos or Fincast.
 > This README documents the code that is actually present today: the modular tree-based M2 stack around `kronos_tree.py` and `Utils/`.
+
+<table>
+  <tr>
+    <td bgcolor="#ccfbf1"><strong>Main Entry</strong><br /><code>kronos_tree.py</code></td>
+    <td bgcolor="#dbeafe"><strong>Primary Config</strong><br /><code>config.yaml</code></td>
+    <td bgcolor="#ede9fe"><strong>OCP Diagnostics</strong><br /><code>Utils/ocp_analysis.py</code></td>
+  </tr>
+</table>
 
 ---
 
 ## Visual Overview
+
+<p>
+  <img src="https://img.shields.io/badge/Data-Preprocessing-0f766e?style=flat-square" alt="Data Preprocessing" />
+  <img src="https://img.shields.io/badge/Models-RF%20%7C%20XGBoost%20%7C%20AutoGluon-2563eb?style=flat-square" alt="Models" />
+  <img src="https://img.shields.io/badge/Selection-Utility%20or%20SAOCP-f59e0b?style=flat-square" alt="Selection" />
+  <img src="https://img.shields.io/badge/Reports-Backtests%20%7C%20Comparisons%20%7C%20OCP-7c3aed?style=flat-square" alt="Reports" />
+</p>
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
@@ -26,6 +40,15 @@ flowchart LR
     E --> H[Backtests]
     E --> I[Comparison Tables]
     E --> J[OCP Diagnostics]
+    classDef input fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
+    classDef model fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
+    classDef select fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
+    classDef report fill:#7c3aed,stroke:#6d28d9,color:#ffffff,stroke-width:2px;
+    class A,B,C input;
+    class D model;
+    class E select;
+    class F,G,H,I,J report;
+    linkStyle default stroke:#0f172a,stroke-width:4px;
 ```
 
 ```mermaid
@@ -37,29 +60,44 @@ flowchart TD
     A --> E[data.features]
     A --> F[main_model.forecast_horizon]
     A --> G[evaluation.fee_per_trade]
+    classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
+    classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
+    classDef detail fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
+    class A root;
+    class B,C,D,E group;
+    class F,G detail;
+    linkStyle default stroke:#0f172a,stroke-width:4px;
 ```
 
 ---
 
 ## What This Codebase Is Now
 
-The active `src/` tree is centered on `kronos_tree.py`, which drives the current M2 research workflow for tree-based meta-label filtering on top of Kronos signals.
+<p>
+  <img src="https://img.shields.io/badge/Focus-Current%20Code%20Only-0f766e?style=flat-square" alt="Focus Current Code Only" />
+</p>
+
+The active `src/` tree is centered on `kronos_tree.py`, which drives the current M2 research workflow for tree-based meta-label filtering on top of Kronos/Fincast signals.
 
 It supports:
 
 - Random Forest, XGBoost, and AutoGluon classifiers
-- feature diagnostics and ranking
-- temporal validation and test evaluation
-- utility-threshold and SAOCP selection
-- backtests and equity curves
-- separate-vs-unified comparison tables
-- practical OCP diagnostics
-
-The old phase-based HPO narrative is not the right mental model for this folder anymore.
+- Feature diagnostics and ranking
+- Temporal validation and test evaluation
+- Utility-threshold and SAOCP selection
+- Backtests and equity curves
+- Separate-vs-unified (per-gran vs all-grans) comparison tables
+- Practical OCP diagnostics
 
 ---
 
 ## Current Project Map
+
+<p>
+  <img src="https://img.shields.io/badge/Core-kronos_tree.py-2563eb?style=flat-square" alt="Core kronos_tree py" />
+  <img src="https://img.shields.io/badge/Utilities-Utils%2F-0f766e?style=flat-square" alt="Utilities Utils" />
+  <img src="https://img.shields.io/badge/Data-Data_MLA-f59e0b?style=flat-square" alt="Data Data MLA" />
+</p>
 
 | Path | Role |
 | --- | --- |
@@ -67,18 +105,23 @@ The old phase-based HPO narrative is not the right mental model for this folder 
 | `kronos_tree.py` | Main M2 analysis entrypoint and the only primary CLI in this folder. |
 | `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, and feature plumbing. |
 | `Utils/features.py` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
-| `Utils/selective_classification.py` | Risk-coverage utilities, AURC, plotting, metrics export, and utility-threshold search. |
-| `Utils/saocp.py` | OCP / SAOCP logic, including delayed-feedback online helpers. |
+| `Utils/selective_classification.py` | Risk-coverage utilities, plotting, metrics export, and utility-threshold search. |
+| `Utils/saocp.py` | Online Conformal Prediction (OCP) / Strongly Adaptive Online Conformal Prediction (SAOCP) logic, including delayed-feedback online helpers. |
 | `Utils/backtest.py` | Backtest helpers, equity construction, Sharpe / drawdown, and reporting. |
 | `Utils/comparison.py` | Separate-vs-unified and cross-paradigm comparison builders. |
 | `Utils/ocp_analysis.py` | Practical OCP diagnostics for completed result folders. |
-| `Utils/ocp_theory.py` | Deprecated theory-oriented experiments kept separate from the main analysis path. |
-| `Data_MLA/` | Kronos-oriented dataset assets and meta-label conversion utilities. |
-| `Data_TSC/` | Raw download and indicator-generation helpers. |
+| `Utils/ocp_theory.py` | OCP theory-oriented experiments kept separate from the main analysis path. |
+| `Data_MLA/` | Kronos-oriented dataset assets, technical indicator computation, and meta-label conversion utilities. |
 
 ---
 
 ## Run Guide
+
+<p>
+  <img src="https://img.shields.io/badge/Run%20Modes-Single%20%7C%20Per--Gran%20%7C%20Unified-0f766e?style=flat-square" alt="Run Modes" />
+  <img src="https://img.shields.io/badge/Model%20Choice-rf%20%7C%20xgboost%20%7C%20autogluon-2563eb?style=flat-square" alt="Model Choice" />
+  <img src="https://img.shields.io/badge/Threshold-utility%20or%20OCP-f59e0b?style=flat-square" alt="Threshold" />
+</p>
 
 ### Working Directory
 
@@ -101,7 +144,7 @@ cd /home/pablo/M2_DS/Secondary-Model/src
 
 ### `kronos_tree.py`: Command Cookbook
 
-The current `config.yaml` uses `granularity: "all"`, so the normal choices for this repo right now are `--per-gran` and `--all-grans`.
+The current `config.yaml` uses `granularity: "all"`, so the normal choices for this repository right now are `--per-gran` and `--all-grans`.
 
 | Use case | Command |
 | --- | --- |
@@ -217,6 +260,11 @@ PY
 
 ## Outputs
 
+<p>
+  <img src="https://img.shields.io/badge/Artifact%20Root-src%2FOutput%2FKronos-f59e0b?style=flat-square" alt="Artifact Root" />
+  <img src="https://img.shields.io/badge/Includes-JSON%20CSV%20Plots%20Backtests-7c3aed?style=flat-square" alt="Includes" />
+</p>
+
 Current experiment artifacts are written under:
 
 ```text
@@ -238,6 +286,13 @@ Typical contents include:
 ---
 
 ## Exact Current `config.yaml`
+
+<p>
+  <img src="https://img.shields.io/badge/Config-Exact%20File%20Snapshot-2563eb?style=flat-square" alt="Config Exact File Snapshot" />
+  <img src="https://img.shields.io/badge/Current%20Direction-down-ef4444?style=flat-square" alt="Current Direction down" />
+  <img src="https://img.shields.io/badge/Granularity-all-0f766e?style=flat-square" alt="Granularity all" />
+  <img src="https://img.shields.io/badge/Horizon-7-f59e0b?style=flat-square" alt="Horizon 7" />
+</p>
 
 The block below is the current file exactly as it exists today.
 
@@ -289,6 +344,13 @@ evaluation:
 
 ## `config.yaml` Parameter Meanings
 
+<p>
+  <img src="https://img.shields.io/badge/paths-I%2FO-0f766e?style=flat-square" alt="paths IO" />
+  <img src="https://img.shields.io/badge/data.load-target%20setup-2563eb?style=flat-square" alt="data load target setup" />
+  <img src="https://img.shields.io/badge/data.split-time%20boundaries-f59e0b?style=flat-square" alt="data split time boundaries" />
+  <img src="https://img.shields.io/badge/data.features-feature%20surface-7c3aed?style=flat-square" alt="data features feature surface" />
+</p>
+
 ### `paths`
 
 | Key | Current value | Meaning |
@@ -339,6 +401,12 @@ evaluation:
 
 ## Reporting and Diagnostics
 
+<p>
+  <img src="https://img.shields.io/badge/Comparison-Separate%20vs%20Unified-2563eb?style=flat-square" alt="Comparison Separate vs Unified" />
+  <img src="https://img.shields.io/badge/OCP-Practical%20Diagnostics-7c3aed?style=flat-square" alt="OCP Practical Diagnostics" />
+  <img src="https://img.shields.io/badge/OCP-Theory-ef4444?style=flat-square" alt="OCP Theory" />
+</p>
+
 ### Comparison Utilities
 
 `Utils/comparison.py` builds the polished summary tables and CSV exports for:
@@ -376,8 +444,11 @@ It currently covers:
 
 ## Practical Notes
 
-- `src/Analysis/` contains legacy generated figures, not the current main output root.
-- The canonical output location for new runs is `src/Output/Kronos/`.
+<p>
+  <img src="https://img.shields.io/badge/Use-Current%20Code-0f766e?style=flat-square" alt="Use Current Code" />
+</p>
+
+- The canonical output location for run results is `src/Output/Kronos/`.
 - `kronos_tree.py` is the main CLI.
 - `Utils/features.py` and `Utils/comparison.py` are callable modules, not standalone command-line programs.
 - If you are trying to understand the current M2 stack, focus on `config.yaml`, `kronos_tree.py`, and `Utils/`.
@@ -386,4 +457,4 @@ It currently covers:
 
 ## One-Line Summary
 
-This `src/` folder is a modular M2 research workspace for Kronos tree-based meta-label filtering, selective-classification tooling, SAOCP diagnostics, backtesting, and comparison reporting, all driven by the current `config.yaml`.
+This repository is a modular M2 research workspace for tree-based meta-label filtering, selective-classification tooling, SAOCP diagnostics, backtesting, and comparison reporting, all driven by the current `config.yaml`.
