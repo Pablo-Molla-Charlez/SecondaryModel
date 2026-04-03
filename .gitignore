@@ -3,7 +3,17 @@ __pycache__/
 */__pycache__/
 *.py[cod]
 
-# Ignore all generated artifacts inside Data/Output/Statistical Studies
-CTTS/Data/**
-CTTS/Output/**
-CTTS/Statistical_Studies/**
+# Ignore generated analysis/output artifacts in the active src layout
+src/Analysis/**
+src/Output/**
+
+# Deep Learning isolate
+src/Bi_FAST/
+
+# Data folders (keep structure only)
+src/Data_MLA/Kronos/Crypto/*
+!src/Data_MLA/Kronos/Crypto/.gitkeep
+src/Data_MLA/Kronos/Stocks/*
+!src/Data_MLA/Kronos/Stocks/.gitkeep
+src/Data_MLA/Kronos/Commodities/*
+!src/Data_MLA/Kronos/Commodities/.gitkeep

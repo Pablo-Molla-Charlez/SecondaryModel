@@ -1,0 +1,1132 @@
+"""Feature analysis and plotting helpers extracted from kronos_tree.py."""
+
+import warnings
+import re
+import os
+import torch
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from pathlib import Path
+from scipy import stats
+from xgboost import XGBClassifier
+from typing import Dict, List, Optional, Any, Union
+
+
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score,
+                             precision_recall_fscore_support, confusion_matrix, 
+                             ConfusionMatrixDisplay, fbeta_score, matthews_corrcoef)
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+
+from Utils.utils import model_label
+from Utils.data_preprocessing import _get_from_dataset, get_dynamic_ret_limits, MultiGranDataset
+
+# ┏━━━━━━━━━━ Feature Correlation Heatmap ━━━━━━━━━━┓
+def plot_correlation_heatmap(df: pd.DataFrame, save_dir: Path):
+    """Plot correlation heatmap of features."""
+    # ┏━━━━━━━━━━ Correlation Matrix ━━━━━━━━━━┓
+    corr = df.corr()
+    n = len(corr)
+    
+    # ┏━━━━━━━━━━ Plot Heatmap ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(max(10, n * 0.55), max(8, n * 0.45)))
+    mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
+    sns.heatmap(corr,
+                mask       = mask,
+                annot      = True,
+                fmt        = ".2f",
+                cmap       = "RdBu_r",
+                center     = 0,
+                vmin       = -1,
+                vmax       = 1,
+                square     = True,
+                linewidths = 0.5,
+                cbar_kws   = {"shrink": 0.8},
+                ax         = ax,
+                annot_kws  = {"size": 7})
+    ax.set_title("Engineered Features — Correlation Matrix", fontsize=13, pad=12)
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Heatmap ━━━━━━━━━━┓
+    fig.savefig(save_dir / "1_feature_correlation_heatmap.png", dpi=200)
+    plt.close(fig)
+    print("  [1/9] Correlation heatmap saved")
+
+
+# ┏━━━━━━━━━━ Point-Biserial Correlation ━━━━━━━━━━┓
+def plot_pointbiserial(df: pd.DataFrame, labels: np.ndarray, class_names: list, save_dir: Path) -> dict:
+    """Returns {feature: abs_correlation}."""
+    
+    # ┏━━━━━━━━━━ Calculate Correlations ━━━━━━━━━━┓
+    results = []
+    for col in df.columns:
+        vals = df[col].values
+        valid = ~np.isnan(vals)
+        if valid.sum() < 10:
+            results.append({"feature": col, "correlation": 0.0, "p_value": 1.0})
+            continue
+        r, p = stats.pointbiserialr(labels[valid], vals[valid])
+        results.append({"feature": col, "correlation": r, "p_value": p})
+
+    # ┏━━━━━━━━━━ Sort Results ━━━━━━━━━━┓
+    res_df = pd.DataFrame(results).sort_values("correlation", key=abs, ascending=True)
+
+    # ┏━━━━━━━━━━ Plot Bar Chart ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(8, max(5, len(res_df) * 0.35)))
+    colors = ["#e74c3c" if r < 0 else "#2ecc71" for r in res_df["correlation"]]
+    bars = ax.barh(res_df["feature"],
+                   res_df["correlation"],
+                   color     = colors,
+                   edgecolor = "k",
+                   linewidth = 0.4)
+
+    # ┏━━━━━━━━━━ Add Significance Markers ━━━━━━━━━━┓
+    for bar, (_, row) in zip(bars, res_df.iterrows()):
+        if row["p_value"] < 0.001:
+            marker = "***"
+        elif row["p_value"] < 0.01:
+            marker = "**"
+        elif row["p_value"] < 0.05:
+            marker = "*"
+        else:
+            marker = ""
+        if marker:
+            x = bar.get_width()
+            ax.text(x + 0.005 * np.sign(x),
+                    bar.get_y() + bar.get_height() / 2,
+                    marker,
+                    va = "center",
+                    ha = "left" if x >= 0 else "right",
+                    fontsize = 8)
+
+    # ┏━━━━━━━━━━ Add Zero Line ━━━━━━━━━━┓
+    ax.axvline(0, color="k", linewidth=0.8)
+    ax.set_xlabel("Point-Biserial Correlation")
+    ax.set_title(f"Feature ↔ Target ({class_names[1]}) Correlation", fontsize=12, pad=10)
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Bar Chart ━━━━━━━━━━┓
+    fig.savefig(save_dir / "2_pointbiserial_correlation.png", dpi=200)
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Save Results ━━━━━━━━━━┓
+    res_df.to_csv(save_dir / "2_pointbiserial_correlation.csv", index=False, float_format="%.6f")
+    print("  [2/9] Point-biserial correlation saved")
+
+    return {row["feature"]: abs(row["correlation"]) for _, row in res_df.iterrows()}
+
+
+# ┏━━━━━━━━━━ Class Distributions ━━━━━━━━━━┓
+def plot_class_distributions(df: pd.DataFrame, labels: np.ndarray, class_names: list, save_dir: Path):
+    """Plot class distributions of features."""
+    # ┏━━━━━━━━━━ Copy Data ━━━━━━━━━━┓
+    plot_df = df.copy()
+    plot_df["class"] = [class_names[l] for l in labels]
+
+    # ┏━━━━━━━━━━ Calculate Dimensions ━━━━━━━━━━┓
+    n_features = len(df.columns)
+    n_cols = 4
+    n_rows = int(np.ceil(n_features / n_cols))
+
+    # ┏━━━━━━━━━━ Create Subplots ━━━━━━━━━━┓
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 3.5, n_rows * 3))
+    axes = axes.flatten()
+
+    # ┏━━━━━━━━━━ Plot Violin Plots ━━━━━━━━━━┓
+    for i, col in enumerate(df.columns):
+        ax = axes[i]
+        sns.violinplot(data      = plot_df,
+                       x         = "class",
+                       y         = col,
+                       hue       = "class",
+                       ax        = ax,
+                       inner     = "quartile",
+                       palette   = ["#3498db", "#e74c3c"],
+                       linewidth = 0.8,
+                       cut       = 0,
+                       legend    = False)
+        ax.set_title(col, fontsize=9, fontweight="bold")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(labelsize=7)
+
+    for j in range(n_features, len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle("Feature Distributions by Class", fontsize=13, y=1.01)
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Violin Plots ━━━━━━━━━━┓
+    fig.savefig(save_dir / "3_class_distributions_violin.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print("  [3/9] Class-conditional violin plots saved")
+
+
+# ┏━━━━━━━━━━ Mutual Information ━━━━━━━━━━┓
+def plot_mutual_information(df: pd.DataFrame, labels: np.ndarray, save_dir: Path) -> dict:
+    """Returns {feature: mi_score}."""
+    # ┏━━━━━━━━━━ Copy Data ━━━━━━━━━━┓
+    X = df.values.copy()
+
+    # ┏━━━━━━━━━━ Calculate Mutual Information ━━━━━━━━━━┓
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        mi = mutual_info_classif(X, labels, discrete_features=False, random_state=42, n_neighbors=5)
+
+    # ┏━━━━━━━━━━ Sort Results ━━━━━━━━━━┓
+    mi_df = pd.DataFrame({"feature": df.columns, "mutual_info": mi}).sort_values(
+        "mutual_info",
+        ascending=True,
+    )
+
+    # ┏━━━━━━━━━━ Plot Bar Chart ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(8, max(5, len(mi_df) * 0.35)))
+    ax.barh(mi_df["feature"], mi_df["mutual_info"], color="#9b59b6", edgecolor="k", linewidth=0.4)
+    ax.set_xlabel("Mutual Information (nats)")
+    ax.set_title("Feature → Target: Mutual Information", fontsize=12, pad=10)
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Bar Chart ━━━━━━━━━━┓
+    fig.savefig(save_dir / "4_mutual_information.png", dpi=200)
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Save Results ━━━━━━━━━━┓
+    mi_df.to_csv(save_dir / "4_mutual_information.csv", index=False, float_format="%.6f")
+    print("  [4/9] Mutual information saved")
+
+    return {row["feature"]: row["mutual_info"] for _, row in mi_df.iterrows()}
+
+
+# ┏━━━━━━━━━━ Tree Importance ━━━━━━━━━━┓
+def plot_tree_importance(df:           pd.DataFrame,
+                         labels:       np.ndarray,
+                         save_dir:     Path,
+                         model_name:   str = "rf",
+                         step_label:   str = "5/9",
+                         desc:         str = "all features",
+                         file_prefix:  str = "5_feature_importance",
+                         class_names:  list = None,
+                         meta_mode:    str = "tp",
+                         model_builder = None,
+                         model_labeler = None):
+    """Returns ({feature: importance}, cv_metrics)."""
+    # ┏━━━━━━━━━━ Build Model ━━━━━━━━━━┓
+    if model_builder is None:
+        raise ValueError("model_builder must be provided to plot_tree_importance")
+    builder = model_builder
+    labeler = model_labeler or model_label
+    mlabel = labeler(model_name)
+
+    # ┏━━━━━━━━━━ Copy Data ━━━━━━━━━━┓
+    X = df.values.copy()
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # ┏━━━━━━━━━━ Calculate Class Weights ━━━━━━━━━━┓
+    n_pos = int((labels == 1).sum())
+    n_neg = int((labels == 0).sum())
+    cw_ratio = n_neg / max(n_pos, 1)
+
+    # ┏━━━━━━━━━━ Initialize Model ━━━━━━━━━━┓
+    model = builder(model_name, len(labels), cw_ratio)
+    model.fit(X_scaled, labels)
+    importances = model.feature_importances_
+
+    # ┏━━━━━━━━━━ Sort Results ━━━━━━━━━━┓
+    imp_df = pd.DataFrame({"feature": df.columns, "importance": importances}).sort_values(
+        "importance",
+        ascending=True,
+    )
+
+    # ┏━━━━━━━━━━ Plot Bar Chart ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(8, max(5, len(imp_df) * 0.35)))
+    ax.barh(imp_df["feature"], imp_df["importance"], color="#e67e22", edgecolor="k", linewidth=0.4)
+    ax.set_xlabel("Feature Importance")
+    ax.set_title(f"{mlabel} Feature Importance ({desc})", fontsize=12, pad=10)
+    plt.tight_layout()
+    
+    # ┏━━━━━━━━━━ Save Bar Chart ━━━━━━━━━━┓
+    fig.savefig(save_dir / f"{file_prefix}.png", dpi=200)
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Save Results ━━━━━━━━━━┓
+    imp_df.to_csv(save_dir / f"{file_prefix}.csv", index=False, float_format="%.6f")
+
+    # ┏━━━━━━━━━━ Time Series Cross-Validation ━━━━━━━━━━┓
+    tscv = TimeSeriesSplit(n_splits=5)
+    cv_preds = np.full_like(labels, fill_value=-1)
+    for train_idx, val_idx in tscv.split(X_scaled):
+        m_cv = builder(model_name,
+                       len(train_idx),
+                       (labels[train_idx] == 0).sum() / max((labels[train_idx] == 1).sum(), 1))
+        m_cv.fit(X_scaled[train_idx], labels[train_idx])
+        cv_preds[val_idx] = m_cv.predict(X_scaled[val_idx])
+    scored_mask = cv_preds >= 0
+
+    # ┏━━━━━━━━━━ Calculate CV Metrics ━━━━━━━━━━┓
+    cv_metrics = {"accuracy":  round(float(accuracy_score(labels[scored_mask], cv_preds[scored_mask])), 4),
+                  "precision": round(float(precision_score(labels[scored_mask], cv_preds[scored_mask], zero_division=0)), 4),
+                  "recall":    round(float(recall_score(labels[scored_mask], cv_preds[scored_mask], zero_division=0)), 4),
+                  "f1_score":  round(float(f1_score(labels[scored_mask], cv_preds[scored_mask], zero_division=0)), 4)}
+    
+    # ┏━━━━━━━━━━ Print CV Metrics ━━━━━━━━━━┓
+    n_feats = df.shape[1]
+    print(f"  [{step_label}] {mlabel} ({desc}, {n_feats} feats) 5-fold chrono CV: "
+          f"acc={cv_metrics['accuracy']:.3f} prec={cv_metrics['precision']:.3f} "
+          f"rec={cv_metrics['recall']:.3f} f1={cv_metrics['f1_score']:.3f}")
+
+    # ┏━━━━━━━━━━ Plot Confusion Matrix ━━━━━━━━━━┓
+    if class_names is not None:
+        cm_path = save_dir / f"{file_prefix}_CM.png"
+        plot_confusion_matrix(labels[scored_mask],
+                              cv_preds[scored_mask],
+                              classes=class_names,
+                              save_path=str(cm_path),
+                              title=f"{mlabel} Confusion Matrix ({desc})",
+                              meta_mode=meta_mode)
+
+    return {row["feature"]: row["importance"] for _, row in imp_df.iterrows()}, cv_metrics
+
+
+# ┏━━━━━━━━━━ Plot Probability Distribution ━━━━━━━━━━┓
+def _plot_prob_distribution(y_true:      np.ndarray,
+                            probs:       np.ndarray,
+                            class_names: list,
+                            save_dir:    Path,
+                            file_prefix: str,
+                            title:       str):
+    """Plot histogram + KDE of predicted P(class=1) split by true label."""
+    
+    # ┏━━━━━━━━━━ Epsilon and Logit Difference ━━━━━━━━━━┓
+    eps = 1e-7
+    p_clipped = np.clip(probs, eps, 1 - eps)
+    logit_diff = np.log(p_clipped / (1 - p_clipped))
+
+    # ┏━━━━━━━━━━ Create DataFrame ━━━━━━━━━━┓
+    df_plot = pd.DataFrame({"prob": probs,
+                            "logit_diff": logit_diff,
+                            "class": [class_names[int(y)] for y in y_true]})
+    hue_order = [class_names[0], class_names[1]]
+
+    # ┏━━━━━━━━━━ Plot Histograms ━━━━━━━━━━┓
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # ┏━━━━━━━━━━ Plot Probability Distribution ━━━━━━━━━━┓
+    sns.histplot(data      = df_plot,
+                 x         = "prob",
+                 hue       = "class",
+                 hue_order = hue_order,
+                 bins      = 50,
+                 kde       = True,
+                 ax        = axes[0],
+                 palette   = "Set1",
+                 alpha     = 0.6)
+    axes[0].set_title(f"{title} — P(class 1)")
+    axes[0].set_xlabel("Probability of Class 1")
+    axes[0].set_ylabel("Count")
+    axes[0].set_xlim(0, 1)
+
+    # ┏━━━━━━━━━━ Plot Logit Difference ━━━━━━━━━━┓
+    sns.histplot(data      = df_plot,
+                 x         = "logit_diff",
+                 hue       = "class",
+                 hue_order = hue_order,
+                 bins      = 50,
+                 kde       = True,
+                 ax        = axes[1],
+                 palette   = "Set1",
+                 alpha     = 0.6)
+    axes[1].set_title(f"{title} — Logit Difference")
+    axes[1].set_xlabel("log(p / (1-p))")
+    axes[1].set_ylabel("Count")
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
+    fig.savefig(save_dir / f"{file_prefix}.png", dpi=200)
+    plt.close(fig)
+
+
+# ┏━━━━━━━━━━ Plot Class Distribution ━━━━━━━━━━┓
+def plot_class_distribution(dataset: Dict[str, torch.Tensor],
+                            idx_train: List[int],
+                            idx_meta: List[int],
+                            idx_val: List[int],
+                            idx_test: List[int],
+                            save_path: Optional[Union[str, Path]] = None,
+                            show: bool = False,
+                            title_suffix: str = "",
+                            meta_mode: str = None) -> None:
+    """
+    Plot meta-label class distribution across train/meta/val/test splits.
+    
+    Creates a grouped bar chart showing class balance.
+    
+    Parameters
+    ----------
+    dataset : Dict
+        Output from prepare_multi_asset_dataset
+    idx_train, idx_meta, idx_val, idx_test : List[int]
+        Split indices
+    save_path : Path, optional
+        If provided, save the figure
+    show : bool
+        Whether to display the plot
+    meta_mode : str, optional
+        The meta_label_mode used (e.g., 'og', 'fp', 'tp') to accurately label the x-axis.
+    """
+    print(f"\n┏━━━━━━━━━━ Plotting Class Distribution (Train/Val/Test) ━━━━━━━━━━┓")
+    # ┏━━━━━━━━━━ Import matplotlib ━━━━━━━━━━┓
+    import matplotlib.pyplot as plt
+    
+    # ┏━━━━━━━━━━ Extract labels ━━━━━━━━━━┓
+    from Utils.data_preprocessing import MultiGranDataset
+    labels = dataset.labels if isinstance(dataset, MultiGranDataset) else dataset['labels']
+    
+    # ┏━━━━━━━━━━ Get class counts ━━━━━━━━━━┓
+    def get_class_counts(indices):
+        split_labels = labels[indices].numpy()
+        unique = np.unique(split_labels[~np.isnan(split_labels)])
+        n_nan = int(np.isnan(split_labels).sum())
+        
+        # Check if 3-class (UP/FLAT/DN) - usually 0.0, 1.0, 2.0
+        # If max label is 2, treat as 3-class even if some are missing in this split
+        if (len(unique) > 0 and unique.max() > 1.0) or (len(unique) > 2):
+            # 3-Class Logic: 0=UP, 1=FLAT, 2=DN (as per ground_truth)
+            n_up   = int((split_labels == 0.0).sum())
+            n_flat = int((split_labels == 1.0).sum())
+            n_dn   = int((split_labels == 2.0).sum())
+            return {'UP': n_up, 'FLAT': n_flat, 'DN': n_dn, 'NaN': n_nan}
+        else:
+            if meta_mode:
+                m_mode = meta_mode.lower()
+                if m_mode == 'fp':
+                    lbl_1, lbl_0 = '1 (FP)', '0 (True/Neutral)'
+                elif m_mode == 'tp':
+                    lbl_1, lbl_0 = '1 (TP)', '0 (False/Neutral)'
+                else: # 'og'
+                    lbl_1, lbl_0 = '1 (Success)', '0 (Fail/Flat)'
+            else:
+                lbl_1, lbl_0 = '1', '0'
+                
+            n_pos = int((split_labels == 1.0).sum())
+            n_neg = int((split_labels == 0.0).sum())
+            return {lbl_1: n_pos, lbl_0: n_neg, 'NaN': n_nan}
+    
+    # ┏━━━━━━━━━━ Get class counts for each split ━━━━━━━━━━┓
+    train_counts = get_class_counts(idx_train)
+    val_counts   = get_class_counts(idx_val)
+    test_counts  = get_class_counts(idx_test)
+    
+    # ┏━━━━━━━━━━ Create figure ━━━━━━━━━━┓
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    splits = ['Train', 'Validation', 'Test']
+    all_counts = [train_counts, val_counts, test_counts]
+    colors_map = {'UP': '#4CAF50', 'FLAT': '#FFC107', 'DN': '#F44336', # Green, Amber, Red
+                  '1 (TP)': '#4CAF50', '0 (False/Neutral)': '#F44336',
+                  '1 (FP)': '#4CAF50', '0 (True/Neutral)': '#F44336',
+                  '1 (Success)': '#4CAF50', '0 (Fail/Flat)': '#F44336',
+                  '1': '#4CAF50', '0': '#F44336',
+                  'NaN': '#9E9E9E'}
+    
+    for ax, split_name, counts_dict in zip(axes, splits, all_counts):
+        total = sum(v for k, v in counts_dict.items() if k != 'NaN') + counts_dict['NaN']
+        
+        # Determine categories present
+        if 'UP' in counts_dict:
+            categories = ['UP', 'FLAT', 'DN', 'NaN']
+        else:
+            categories = [c for c in counts_dict.keys() if c != 'NaN'] + ['NaN']
+            
+        values = [counts_dict.get(c, 0) for c in categories]
+        bar_colors = [colors_map.get(c, '#9E9E9E') for c in categories]
+        
+        bars = ax.bar(categories, values, color=bar_colors)
+        ax.set_title(f'{split_name}')
+        ax.set_ylabel('Count')
+        
+        # ┏━━━━━━━━━━ Add total count ━━━━━━━━━━┓
+        ax.text(0.95, 0.95, f'Total: {total:,}', 
+                transform=ax.transAxes, 
+                ha='right', va='top', 
+                fontsize=10, fontweight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+        
+        # ┏━━━━━━━━━━ Add labels ━━━━━━━━━━┓
+        max_height = 0
+        for bar, count in zip(bars, values):
+            height = bar.get_height()
+            max_height = max(max_height, height)
+            if total > 0:
+                pct = 100 * count / total
+            else:
+                pct = 0
+            
+            # ┏━━━━━━━━━━ Label placement logic ━━━━━━━━━━┓
+            if height > (total * 0.05):
+                y_pos = height - (total * 0.01)
+                va = 'top'
+                color = 'white' if bar.get_facecolor() != (1.0, 1.0, 1.0, 1.0) else 'black'
+            else:
+                y_pos = height + (total * 0.01)
+                va = 'bottom'
+                color = 'black'
+                
+            ax.text(bar.get_x() + bar.get_width()/2., y_pos,
+                    f'{count:,}\n({pct:.1f}%)',
+                    ha='center', va=va, fontsize=9, color=color, fontweight='bold')
+
+        # ┏━━━━━━━━━━ Ensure upper bound is at least 1.0 to avoid singular transformation warning ━━━━━━━━━━┓
+        upper_limit = max(max_height, total) * 1.15
+        if upper_limit <= 0:
+            upper_limit = 1.0
+        ax.set_ylim(0, upper_limit)
+    
+    title = 'Meta-Label Class Distribution'
+    if title_suffix:
+        title += f": {title_suffix}"
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
+    
+    # ┏━━━━━━━━━━ Adjust layout to prevent overlap between suptitle and ax titles ━━━━━━━━━━┓
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.85)
+
+    # ┏━━━━━━━━━━ Save plot if save_path is provided ━━━━━━━━━━┓
+    if save_path:
+        save_path = Path(save_path)
+        if len(save_path.parts) == 1:
+            output_dir = Path("Output/Analysis")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            save_path = output_dir / save_path
+        else:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"[plot_class_distribution] Saved to {save_path}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+# ┏━━━━━━━━━━ Plot Meta-Label Returns Histogram ━━━━━━━━━━┓
+def plot_meta_label_returns_histogram(dataset: Dict[str, Any], 
+                                      indices: List[int], 
+                                      save_path: str,
+                                      title_suffix: str = "",
+                                      all_indices: Optional[List[int]] = None):
+    """
+    Plots a histogram of the actual continuous returns for the given indices,
+    separated by meta_label (0 vs 1). Analyzes what percentage increases
+    are captured by meta_label = 1.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    from typing import Any, Optional
+
+    returns_all = _get_from_dataset(dataset, 'returns')
+    labels_all  = _get_from_dataset(dataset, 'labels')
+
+    if returns_all is None:
+        print("[WARN] 'returns' not found in dataset. Cannot plot returns histogram.")
+        return
+
+    # ┏━━━━━━━━━━ Setup Data & Dynamic Limits ━━━━━━━━━━┓
+    fee = 0.20 # 0.2% round-trip fee
+    
+    # ┏━━━━━━━━━━ Foreground data ━━━━━━━━━━┓
+    labels = labels_all[indices].numpy()
+    returns = returns_all[indices].numpy() * 100.0
+    valid = ~np.isnan(returns)
+    labels = labels[valid]
+    returns = returns[valid]
+    ret_1 = returns[labels == 1]
+    ret_0 = returns[labels == 0]
+    
+    # ┏━━━━━━━━━━ Background data (if requested) ━━━━━━━━━━┓
+    all_valid = None
+    if all_indices is not None:
+        all_rets = returns_all[all_indices].numpy() * 100.0
+        all_valid = all_rets[~np.isnan(all_rets)]
+        
+    # ┏━━━━━━━━━━ Compute limits over ALL data to be plotted ━━━━━━━━━━┓
+    data_to_limit = [ret_0, ret_1]
+    if all_valid is not None:
+        data_to_limit.append(all_valid)
+        
+    low, high = get_dynamic_ret_limits(data_to_limit)
+    step = 0.1 if high <= 10 else 0.2
+    bins = np.arange(low, high + step, step)
+
+    # ┏━━━━━━━━━━ Setup Plot ━━━━━━━━━━┓
+    fig, ax1 = plt.subplots(figsize=(12, 7))
+    # ┏━━━━━━━━━━ Background (All Samples) ━━━━━━━━━━┓
+    if all_valid is not None:
+        ax2 = ax1.twinx()
+        ax2.hist(all_valid, bins=bins, alpha=0.2, color='black', label=f'Complete Dataset (N={len(all_valid):,})', zorder=1)
+        ax2.set_ylabel("Number of Windows (Full Dataset)", color='black', alpha=0.6)
+        ax2.tick_params(axis='y', labelcolor='black', colors='dimgrey')
+
+    # ┏━━━━━━━━━━ Foreground (Selective Indices) ━━━━━━━━━━┓
+    ax1.hist(ret_0, bins=bins, alpha=0.5, color='red', label=f'Meta-Label 0 (N={len(ret_0):,}, Mean={np.mean(ret_0):.2f}%)', zorder=2)
+    ax1.hist(ret_1, bins=bins, alpha=0.5, color='green', label=f'Meta-Label 1 (N={len(ret_1):,}, Mean={np.mean(ret_1):.2f}%)', zorder=3)
+    
+    ax1.axvline(x=0, color='black', linestyle='--', alpha=0.5)
+    ax1.axvline(x=fee, color='magenta', linestyle=':', alpha=0.7, label=f'Fee Break-Even (±{fee}%)')
+    ax1.axvline(x=-fee, color='magenta', linestyle=':', alpha=0.7)
+    
+    if len(ret_0) > 0:
+        ax1.axvline(x=np.mean(ret_0), color='firebrick', linestyle='-', alpha=0.8, label=f'Mean 0')
+    if len(ret_1) > 0:
+        ax1.axvline(x=np.mean(ret_1), color='darkgreen', linestyle='-', alpha=0.8, label=f'Mean 1')
+    
+    ax1.set_title(f"Ground Truth Returns Distribution by Meta-Label {title_suffix}")
+    ax1.set_xlabel("Ground Truth Return (%)")
+    ax1.set_ylabel("Number of Windows (Filtered)", color='black')
+    ax1.set_xlim(low, high)
+    
+    # ┏━━━━━━━━━━ Combine legends from both axes ━━━━━━━━━━┓
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    if all_indices is not None:
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_2 + lines_1, labels_2 + labels_1, loc='upper left')
+    else:
+        ax1.legend(loc='upper left')
+        
+    ax1.grid(True, alpha=0.3)
+    
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    print(f"[plot_meta_label_returns_histogram] Saved to {save_path}")
+
+
+# ┏━━━━━━━━━━ Plot Prediction Returns Histogram ━━━━━━━━━━┓
+def plot_prediction_returns_histogram(dataset: Dict[str, Any], 
+                                      indices: List[int], 
+                                      preds: np.ndarray,
+                                      interested_class: int,
+                                      save_path: str,
+                                      title_suffix: str = ""):
+    """
+    Plots a histogram comparing the actual returns of the model's positive predictions
+    against the ground-truth actual returns for the interested class.
+    Shows fee boundaries.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    from typing import Any
+
+    returns_all = _get_from_dataset(dataset, 'returns')
+    labels_all  = _get_from_dataset(dataset, 'labels')
+
+    if returns_all is None:
+        print("[WARN] 'returns' not found in dataset. Cannot plot prediction returns histogram.")
+        return
+
+    # ┏━━━━━━━━━━ Extract Data ━━━━━━━━━━┓
+    fee = 0.20 # 0.2% round-trip fee
+    returns = returns_all[indices].numpy() * 100.0
+    labels = labels_all[indices].numpy()
+    
+    # ┏━━━━━━━━━━ Filter NaNs ━━━━━━━━━━┓
+    valid = ~np.isnan(returns)
+    labels = labels[valid]
+    returns = returns[valid]
+    
+    # ┏━━━━━━━━━━ Ensure preds align with valid returns if dataset was filtered ━━━━━━━━━━┓
+    if len(preds) == len(indices):
+        preds = preds[valid]
+    else:
+        print("[WARN] Predictions length does not match indices length. Cannot plot prediction returns.")
+        return
+
+    # ┏━━━━━━━━━━ Segregate Returns ━━━━━━━━━━┓
+    # Ground Truth: Actual labels matching interested class
+    gt_returns = returns[labels == interested_class]
+    
+    # Predicted: Model predicted the interested class
+    pred_returns = returns[preds == interested_class]
+    
+    # ┏━━━━━━━━━━ Setup Plot ━━━━━━━━━━┓
+    fig, ax1 = plt.subplots(figsize=(12, 7))
+    ax2 = ax1.twinx()
+    
+    # ┏━━━━━━━━━━ Dynamic Limits & Binning ━━━━━━━━━━┓
+    low, high = get_dynamic_ret_limits([gt_returns, pred_returns])
+    step = 0.1 if high <= 10 else 0.2
+    bins = np.arange(low, high + step, step)
+    
+    # ┏━━━━━━━━━━ Plot Ground Truth (Background on Ax2 to avoid dwarfing predictions) ━━━━━━━━━━┓
+    ax2.hist(gt_returns, 
+             bins   = bins, 
+             alpha  = 0.15, 
+             color  = 'blue', 
+             label  = f'Ground Truth Class {interested_class} (N={len(gt_returns):,}, Mean={np.mean(gt_returns):.2f}%)', 
+             zorder = 1)
+    ax2.set_ylabel("Number of Windows (Ground Truth)", color='blue', alpha=0.6)
+    ax2.tick_params(axis='y', labelcolor='blue', colors='blue')
+    
+    # ┏━━━━━━━━━━ Plot Predictions (Foreground on Ax1) ━━━━━━━━━━┓
+    overlap = np.sum((preds == interested_class) & (labels == interested_class))
+    overlap_pct = (overlap / len(pred_returns) * 100.0) if len(pred_returns) > 0 else 0.0
+    label_text = f'Predicted Class {interested_class} (N={len(pred_returns):,}, Mean={np.mean(pred_returns) if len(pred_returns)>0 else 0:.2f}%)\nOverlap (True Positives): {overlap:,} ({overlap_pct:.1f}%)'
+    
+    ax1.hist(pred_returns, 
+             bins   = bins, 
+             alpha  = 0.6, 
+             color  = 'darkorange', 
+             label  = label_text, 
+             zorder = 2)
+    ax1.set_ylabel("Number of Windows (Predicted)", color='darkorange')
+    
+    ax1.axvline(x=0, color='black', linestyle='--', alpha=0.5)
+    ax1.axvline(x=fee, color='magenta', linestyle=':', alpha=0.7, label=f'Fee Break-Even (±{fee}%)')
+    ax1.axvline(x=-fee, color='magenta', linestyle=':', alpha=0.7)
+    
+    if len(gt_returns) > 0:
+        ax1.axvline(x=np.mean(gt_returns), color='navy', linestyle='-', alpha=0.8, label=f'Ground Truth Mean')
+    if len(pred_returns) > 0:
+        ax1.axvline(x=np.mean(pred_returns), color='orangered', linestyle='-', alpha=0.8, label=f'Predicted Mean')
+    
+    ax1.set_title(f"Prediction vs Ground-Truth Actual Returns {title_suffix}")
+    ax1.set_xlabel("Actual Return (%)")
+    ax1.set_xlim(low, high)
+    
+    # ┏━━━━━━━━━━ Combine legends ━━━━━━━━━━┓
+    lines_1, labels_1 = ax1.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines_2 + lines_1, labels_2 + labels_1, loc='upper left')
+    
+    ax1.grid(True, alpha=0.3)
+    
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    print(f"[plot_prediction_returns_histogram] Saved to {save_path}")
+
+
+# ┏━━━━━━━━━━ Time Features ━━━━━━━━━━┓
+def extract_time_features(timestamps: pd.DatetimeIndex) -> Dict[str, np.ndarray]:
+    """
+    Extract 5 temporal features from timestamps.
+    
+    Returns:
+        dict with keys: minute, hour, dow, dom, month
+    """
+    return {'minute': (timestamps.hour * 60 + timestamps.minute).values.astype(np.int64),
+            'hour': timestamps.hour.values.astype(np.int64),
+            'dow': timestamps.dayofweek.values.astype(np.int64),
+            'dom': (timestamps.day - 1).values.astype(np.int64),
+            'month': (timestamps.month - 1).values.astype(np.int64)}
+
+
+# ┏━━━━━━━━━━ Plot M1 Prediction Returns Histogram ━━━━━━━━━━┓
+def plot_m1_prediction_returns_histogram(dataset: Dict[str, Any], 
+                                         indices: List[int], 
+                                         interested_class: int,
+                                         save_path: str,
+                                         meta_label_mode: str = "OG",
+                                         split_name:      str = "val",
+                                         direction:       str = "up",
+                                         title_suffix:    str = ""):
+    """
+    Plots a two-subplot analysis for M1 predictions:
+    1. Signal Quality: M1's actual returns vs Ground Truth actual returns.
+    2. Calibration: Window-by-window scatter plot of M1's prediction vs Outcome.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import os
+    from typing import Any
+
+    returns_all = _get_from_dataset(dataset, 'returns')
+    labels_all  = _get_from_dataset(dataset, 'labels')
+    m1_pred_rets_all = _get_from_dataset(dataset, 'm1_pred_returns')
+    m1_pred_labs_all = _get_from_dataset(dataset, 'm1_pred_labels')
+
+    if returns_all is None or m1_pred_rets_all is None:
+        print("[WARN] Required keys missing in dataset for M1 returns histogram.")
+        return
+
+    # ┏━━━━━━━━━━ Extract Data ━━━━━━━━━━┓
+    fee = 0.20
+    returns = returns_all[indices].numpy() * 100.0
+    labels = labels_all[indices].numpy()
+    m1_pred_returns = m1_pred_rets_all[indices].numpy() * 100.0
+    m1_pred_labels = m1_pred_labs_all[indices].numpy()
+    
+    valid = ~np.isnan(returns) & ~np.isnan(m1_pred_returns)
+    labels, returns, m1_pred_returns, m1_pred_labels = labels[valid], returns[valid], m1_pred_returns[valid], m1_pred_labels[valid]
+
+    # ┏━━━━━━━━━━ Colors Setup ━━━━━━━━━━┓
+    gt_color = 'green'
+    if split_name.lower().startswith('val'):
+        pred_color = 'darkorange'
+    elif split_name.lower().startswith('test'):
+        pred_color = 'dodgerblue'
+    else:
+        pred_color = 'purple'
+
+    # ┏━━━━━━━━━━ Setup Data ━━━━━━━━━━┓
+    # Ground Truth Reference (Actual labels matching interested class)
+    gt_actual = returns[labels == interested_class]
+    
+    # M1 Signals (Actual returns when M1 signaled)
+    m1_actual = returns[m1_pred_labels == interested_class] 
+
+    # ┏━━━━━━━━━━ Plotting ━━━━━━━━━━┓
+    fig = plt.figure(figsize=(12, 16))
+    from matplotlib import gridspec
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], figure=fig)
+    
+    ax_b = fig.add_subplot(gs[0, 0])
+    ax_c = fig.add_subplot(gs[1, 0])
+    
+    # ┏━━━━━━━━━━ Dynamic Limits & Binning ━━━━━━━━━━┓
+    low, high = get_dynamic_ret_limits([gt_actual, m1_actual])
+    step = 0.1 if high <= 10 else 0.2
+    bins = np.arange(low, high + step, step)
+    
+    # ┏━━━━━━━━━━ Subplot 1: Signal Quality (Actual Returns) ━━━━━━━━━━┓
+    ax_b2 = ax_b.twinx()
+    ax_b2.hist(gt_actual, bins=bins, alpha=0.35, color=gt_color, label='Ground Truth Returns', zorder=1)
+    
+    # Calculate Hit Rates and Overlaps
+    overlap = np.sum((m1_pred_labels == interested_class) & (labels == interested_class))
+    overlap_pct = (overlap / len(m1_actual) * 100.0) if len(m1_actual) > 0 else 0.0
+    
+    if len(m1_actual) > 0:
+        hit_rate = (m1_actual > 0).mean() * 100.0
+        net_hit_rate = (m1_actual > fee).mean() * 100.0
+        m1_label = f'Distribution Returns of M1 Predictions (N={len(m1_actual):,})\n' + \
+                   f'Hit Rate (>0%): {hit_rate:.1f}% | Net Hit Rate (>{fee}%): {net_hit_rate:.1f}%\n' + \
+                   f'Overlap (True Positives): {overlap:,} ({overlap_pct:.1f}%)'
+    else:
+        m1_label = f'Distribution Returns of M1 Predictions (N=0)\nOverlap (True Positives): {overlap:,} (0.0%)'
+
+    ax_b.hist(m1_actual, bins=bins, alpha=0.6, color=pred_color, label=m1_label, zorder=2)
+    
+    ax_b.set_title(f"A: M1 {direction.upper()} Signal Realization | Predicted vs Ground Truth Returns Distribution ({meta_label_mode})")
+    ax_b.set_ylabel("Number of Windows (Predicted M1 Return)", color=pred_color)
+    ax_b2.set_ylabel("Number of Windows (Ground Truth)", color=gt_color, alpha=0.5)
+
+    # ┏━━━━━━━━━━ Subplot 2: Window-by-Window Scatter ━━━━━━━━━━┓
+    scatter_mask = (m1_pred_labels == interested_class)
+    x_scatter = m1_pred_returns[scatter_mask]
+    y_scatter = returns[scatter_mask]
+    
+    if len(x_scatter) > 1:
+        corr = np.corrcoef(x_scatter, y_scatter)[0, 1]
+        ax_c.scatter(x_scatter, y_scatter, alpha=0.3, color=pred_color, s=15, 
+                     label=f'Window Pearson Correlation (N={len(x_scatter):,}, R={corr:.3f})')
+        
+        # Add y=x line
+        lims = [
+            np.min([ax_c.get_xlim(), ax_c.get_ylim()]),
+            np.max([ax_c.get_xlim(), ax_c.get_ylim()]),
+        ]
+        ax_c.plot(lims, lims, 'k--', alpha=0.5, label='Perfect Calibration (y=x)')
+        
+        # Regression trendline
+        m, b = np.polyfit(x_scatter, y_scatter, 1)
+        ax_c.plot(x_scatter, m*x_scatter + b, color='red', alpha=0.8, linewidth=2, label=f'Trend (Slope={m:.2f})')
+
+    ax_c.set_title(f"B: M1 {direction.upper()} Magnitude Calibration | Predicted vs. Ground Truth Market Return")
+    ax_c.set_xlabel("M1 Predicted Return (%)")
+    ax_c.set_ylabel("Ground Truth Return (%)")
+    ax_c.legend(loc='upper left', fontsize='small')
+    ax_c.grid(True, alpha=0.3)
+
+    # ┏━━━━━━━━━━ Decorations & Fee Lines ━━━━━━━━━━┓
+    ax_b.axvline(x=0, color='black', linestyle='--', alpha=0.3)
+    ax_b.axvline(x=fee, color='magenta', linestyle=':', alpha=0.7, label=f'Fee (±{fee}%)')
+    ax_b.axvline(x=-fee, color='magenta', linestyle=':', alpha=0.7)
+    ax_b.set_xlabel("Return (%)")
+    ax_b.set_xlim(low, high)
+    ax_b.grid(True, alpha=0.2)
+    
+    # Scatter Axis limits zoom - dynamically centered around 0 with buffer
+    s_low, s_high = get_dynamic_ret_limits([x_scatter, y_scatter], min_buffer=5.0)
+    ax_c.set_xlim(s_low, s_high)
+    ax_c.set_ylim(s_low, s_high)
+
+    # Combine legends for neatness
+    h3, l3 = ax_b.get_legend_handles_labels()
+    h4, l4 = ax_b2.get_legend_handles_labels()
+    ax_b.legend(h4 + h3, l4 + l3, loc='upper left', fontsize='small')
+
+    fig.suptitle(f"M1 Performance Analysis & Calibration {title_suffix}", fontsize=18, fontweight='bold')
+    plt.tight_layout(rect=[0, 0.02, 1, 0.96])
+    
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    print(f"[plot_m1_prediction_returns_histogram] Saved Double-plot to {save_path}")
+
+
+# ┏━━━━━━━━━━ Classification Metrics ━━━━━━━━━━┓
+def compute_classification_metrics(targets: np.ndarray, preds: np.ndarray) -> dict:
+    """
+    Compute Accuracy, Precision, Recall, F1-Score, F-Beta(0.9), and MCC.
+    
+    Args:
+        targets: Ground truth labels (numpy array)
+        preds: Predicted labels (numpy array)
+        
+    Returns:
+        dict: Metrics dictionary
+    """
+    # ┏━━━━━━━━━━ Determine average mode ━━━━━━━━━━┓
+    unique_labels = np.unique(targets)
+    is_multiclass = len(unique_labels) > 2 or (len(unique_labels) == 2 and not np.array_equal(sorted(unique_labels), [0, 1]))
+    avg_mode = 'weighted' if is_multiclass else 'macro'
+    
+    accuracy = accuracy_score(targets, preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(targets, preds, average=avg_mode, zero_division=0)
+    
+    # Custom beta focus (for consistency, use same avg_mode)
+    fbeta = fbeta_score(targets, preds, beta=0.3, average=avg_mode, zero_division=0)
+    mcc = matthews_corrcoef(targets, preds)
+    
+    return {'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'fbeta': fbeta,
+            'mcc': mcc}
+
+
+# ┏━━━━━━━━━━ Plot Confusion Matrix ━━━━━━━━━━┓
+def plot_confusion_matrix(targets: np.ndarray,
+                          preds: np.ndarray,
+                          classes: list,
+                          save_path: str,
+                          title: str = "Confusion Matrix",
+                          meta_mode: str = "og",
+                          baseline_targets: Optional[np.ndarray] = None,
+                          m1_prec: Optional[float] = None,
+                          m1_acc: Optional[float] = None,
+                          is_selective: bool = False):
+    """
+    Plot and save confusion matrix with win-rate and baseline annotations.
+    
+    Args:
+        targets: Ground truth labels
+        preds: Predicted labels
+        classes: List of class names
+        save_path: Path to save the plot
+        title: Plot title
+        meta_mode: 'fp', 'tp', or 'og' — determines the "interested" class
+        baseline_targets: Full dataset labels for baseline win-rate
+        m1_prec: Optional explicit M1 precision
+        m1_acc: Optional explicit M1 accuracy
+        is_selective: Flag indicating this is a selective confusion matrix
+    """
+    cm = confusion_matrix(targets, preds, labels=list(range(len(classes))))
+    
+    # ┏━━━━━━━━━━ Calculate macro metrics ━━━━━━━━━━┓
+    metrics = compute_classification_metrics(targets, preds)
+
+    # ┏━━━━━━━━━━ Win-Rate (precision of the interested class) ━━━━━━━━━━┓
+    interested_class = 0 if meta_mode == 'fp' else 1
+    all_labels = list(range(len(classes)))
+    per_class_prec = precision_recall_fscore_support(targets, preds, labels=all_labels, average=None, zero_division=0)[0]
+    win_rate = per_class_prec[interested_class]
+
+    # ┏━━━━━━━━━━ Baseline win-rate ━━━━━━━━━━┓
+    base = baseline_targets if baseline_targets is not None else targets
+    baseline_wr = (base == interested_class).sum() / len(base) if len(base) > 0 else 0.0
+
+    # ┏━━━━━━━━━━ Coverage ━━━━━━━━━━┓
+    is_selective_plot = is_selective or (baseline_targets is not None)
+    if baseline_targets is not None and len(targets) < len(baseline_targets):
+        coverage = len(targets) / len(baseline_targets) if len(baseline_targets) > 0 else 0.0
+    else:
+        coverage = (preds == interested_class).sum() / len(preds) if len(preds) > 0 else 0.0
+
+    # ┏━━━━━━━━━━ Risk & Title ━━━━━━━━━━┓
+    risk = 1.0 - win_rate
+    
+    val_m1_prec = m1_prec if m1_prec is not None else baseline_wr
+    val_m1_acc = m1_acc if m1_acc is not None else baseline_wr
+
+    if is_selective_plot:
+        title_with_metrics = (f"{title}\n"
+                              f"M2 Acc: {metrics['accuracy']:.3f} | WinRate: {win_rate:.3f} | Risk: {risk:.3f} | Cov: {coverage:.1%}\n"
+                              f"M1 Acc: {val_m1_acc:.3f} | Prec: {val_m1_prec:.3f}")
+    else:
+        title_with_metrics = (f"{title}\n"
+                              f"Acc: {metrics['accuracy']:.3f} | Prec: {metrics['precision']:.3f} | Rec: {metrics['recall']:.3f} | F1: {metrics['f1']:.3f} | Cov: {coverage:.1%}\n"
+                              f"Risk: {risk:.3f} | WinRate: {win_rate:.3f} | M1 Prec: {val_m1_prec:.3f} | M1 Acc: {val_m1_acc:.3f}")
+
+    # ┏━━━━━━━━━━ Plot Confusion Matrix ━━━━━━━━━━┓
+    plt.figure(figsize=(8, 6))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes)
+    # Match color to split: "Val"/"Validation" as split indicator → Oranges, otherwise Blues
+    # Avoid false positives like "val-tuned" (threshold source)
+    is_val = bool(re.search(r'(?:^|[\s(])val(?:idation)?(?:[\s_)]|$)', title, re.IGNORECASE))
+    cmap = 'Oranges' if is_val else 'Blues'
+    disp.plot(cmap=cmap, values_format='d', ax=plt.gca())
+    plt.title(title_with_metrics)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+
+# ------------------------------------------------------------------------------
+# Rank Aggregation → Top-K feature selection
+# ------------------------------------------------------------------------------
+CORR_THRESHOLD = 0.85
+TOP_K = 5
+
+# ┏━━━━━━━━━━ Rank Features ━━━━━━━━━━┓
+def _rank_dict(scores: dict, higher_is_better: bool = True) -> dict:
+    """Rank features by score. Rank 1 = best."""
+    sorted_feats = sorted(scores.keys(), key=lambda f: scores[f], reverse=higher_is_better)
+    return {f: rank + 1 for rank, f in enumerate(sorted_feats)}
+
+
+# ┏━━━━━━━━━━ Dominant Metric ━━━━━━━━━━┓
+def _dominant_metric(feat: str, ranks: dict) -> str:
+    """Return which metric this feature ranks best in."""
+    best_metric = min(ranks, key=lambda m: ranks[m].get(feat, 999))
+    return best_metric
+
+
+# ┏━━━━━━━━━━ Compute Top Features ━━━━━━━━━━┓
+def compute_top_features(pb_scores: dict, mi_scores: dict, rf_scores: dict,
+                         corr_matrix: pd.DataFrame, save_dir: Path) -> dict:
+    """
+    Rank aggregation across metrics + correlation-aware deduplication.
+    Returns the top-K dict for inclusion in analysis_summary.json.
+    """
+    features = list(pb_scores.keys())
+
+    # ┏━━━━━━━━━━ Rank Features ━━━━━━━━━━┓
+    ranks = {"point_biserial": _rank_dict(pb_scores, higher_is_better=True),
+             "mutual_info":    _rank_dict(mi_scores, higher_is_better=True),
+             "rf_importance":  _rank_dict(rf_scores, higher_is_better=True)}
+
+    # ┏━━━━━━━━━━ Average Rank per Feature ━━━━━━━━━━┓
+    avg_ranks = {}
+    for f in features:
+        r_pb = ranks["point_biserial"].get(f, len(features))
+        r_mi = ranks["mutual_info"].get(f, len(features))
+        r_rf = ranks["rf_importance"].get(f, len(features))
+        avg_ranks[f] = (r_pb + r_mi + r_rf) / 3.0
+
+    # ┏━━━━━━━━━━ Sort by Avg Rank ━━━━━━━━━━┓
+    sorted_features = sorted(features, key=lambda f: (avg_ranks[f], ranks["mutual_info"].get(f, 999)))
+
+    # ┏━━━━━━━━━━ Greedy Selection with Correlation Check ━━━━━━━━━━┓
+    selected = []
+    correlation_warnings = []
+
+    # ┏━━━━━━━━━━ Iterate through sorted features ━━━━━━━━━━┓
+    for feat in sorted_features:
+        if len(selected) >= TOP_K:
+            break
+
+        # ┏━━━━━━━━━━ Check Correlation with Already-Selected Features ━━━━━━━━━━┓
+        highly_correlated_with = None
+        for sel in selected:
+            if feat in corr_matrix.index and sel in corr_matrix.columns:
+                r = abs(corr_matrix.loc[feat, sel])
+                if r >= CORR_THRESHOLD:
+                    highly_correlated_with = (sel, r)
+                    break
+        
+        # ┏━━━━━━━━━━ Check if they bring different strengths ━━━━━━━━━━┓
+        if highly_correlated_with:
+            sel_feat, r_val = highly_correlated_with
+            feat_best = _dominant_metric(feat, ranks)
+            sel_best = _dominant_metric(sel_feat, ranks)
+
+            # ┏━━━━━━━━━━ Different Strengths — Keep Both ━━━━━━━━━━┓
+            if feat_best != sel_best:
+                selected.append(feat)
+                correlation_warnings.append({"pair": [sel_feat, feat],
+                                             "pearson_r": round(float(r_val), 3),
+                                             "action": "kept_both",
+                                             "reason": f"{sel_feat} dominates {sel_best}, {feat} dominates {feat_best}"})
+            else:
+                # ┏━━━━━━━━━━ Same Dominant Metric — Skip, Try Next ━━━━━━━━━━┓
+                correlation_warnings.append({"pair": [sel_feat, feat],
+                                             "pearson_r": round(float(r_val), 3),
+                                             "action": "skipped",
+                                             "reason": f"both dominate {feat_best}, kept {sel_feat} (better avg rank)"})
+        else:
+            selected.append(feat)
+
+    # ┏━━━━━━━━━━ Build Detailed Output ━━━━━━━━━━┓
+    top_details = []
+    for f in selected:
+        top_details.append({
+            "feature": f,
+            "avg_rank": round(avg_ranks[f], 2),
+            "pb_rank": ranks["point_biserial"].get(f),
+            "mi_rank": ranks["mutual_info"].get(f),
+            "rf_rank": ranks["rf_importance"].get(f),
+            "pb_score": round(pb_scores.get(f, 0), 6),
+            "mi_score": round(mi_scores.get(f, 0), 6),
+            "rf_score": round(rf_scores.get(f, 0), 6),
+            "dominant_metric": _dominant_metric(f, ranks),
+        })
+
+    result = {
+        "top_5_features": selected,
+        "top_5_details": top_details,
+        "correlation_warnings": correlation_warnings,
+    }
+
+    # ┏━━━━━━━━━━ Print to Terminal ━━━━━━━━━━┓
+    print(f"  [6/9] Top-{TOP_K} features (rank aggregation + correlation check):")
+    for d in top_details:
+        print(f"    {d['feature']:20s}  avg_rank={d['avg_rank']:.1f}  "
+              f"PB={d['pb_rank']}  MI={d['mi_rank']}  RF={d['rf_rank']}  "
+              f"dominant={d['dominant_metric']}")
+    if correlation_warnings:
+        print(f"  Correlation warnings:")
+        for w in correlation_warnings:
+            print(f"    {w['pair'][0]} <-> {w['pair'][1]}  |r|={w['pearson_r']}  → {w['action']} ({w['reason']})")
+
+    # ┏━━━━━━━━━━ Save standalone CSV of full ranking ━━━━━━━━━━┓
+    full_rank_rows = []
+    for f in sorted_features:
+        full_rank_rows.append({
+            "feature": f,
+            "avg_rank": round(avg_ranks[f], 2),
+            "pb_rank": ranks["point_biserial"].get(f),
+            "mi_rank": ranks["mutual_info"].get(f),
+            "rf_rank": ranks["rf_importance"].get(f),
+            "selected": f in selected,
+        })
+    pd.DataFrame(full_rank_rows).to_csv(save_dir / "6_rank_aggregation.csv", index=False)
+
+    return result
+
+
+__all__ = [
+    "plot_correlation_heatmap",
+    "plot_pointbiserial",
+    "plot_class_distributions",
+    "plot_mutual_information",
+    "plot_tree_importance",
+    "_plot_prob_distribution",
+    "plot_class_distribution",
+    "plot_meta_label_returns_histogram",
+    "plot_prediction_returns_histogram",
+    "plot_m1_prediction_returns_histogram",
+    "compute_classification_metrics",
+    "plot_confusion_matrix",
+    "extract_time_features",
+    "compute_top_features",
+]
