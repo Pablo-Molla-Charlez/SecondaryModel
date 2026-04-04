@@ -405,11 +405,11 @@ def plot_class_distribution(dataset: Dict[str, torch.Tensor],
             if meta_mode:
                 m_mode = meta_mode.lower()
                 if m_mode == 'fp':
-                    lbl_1, lbl_0 = '1 (FP)', '0 (True/Neutral)'
+                    lbl_1, lbl_0 = '1 (FP)', '0 (TP)'
                 elif m_mode == 'tp':
-                    lbl_1, lbl_0 = '1 (TP)', '0 (False/Neutral)'
+                    lbl_1, lbl_0 = '1 (TP)', '0 (FP)'
                 else: # 'og'
-                    lbl_1, lbl_0 = '1 (Success)', '0 (Fail/Flat)'
+                    lbl_1, lbl_0 = '1 (Success)', '0 (Fail)'
             else:
                 lbl_1, lbl_0 = '1', '0'
                 
@@ -427,9 +427,9 @@ def plot_class_distribution(dataset: Dict[str, torch.Tensor],
     splits = ['Train', 'Validation', 'Test']
     all_counts = [train_counts, val_counts, test_counts]
     colors_map = {'UP': '#4CAF50', 'FLAT': '#FFC107', 'DN': '#F44336', # Green, Amber, Red
-                  '1 (TP)': '#4CAF50', '0 (False/Neutral)': '#F44336',
-                  '1 (FP)': '#4CAF50', '0 (True/Neutral)': '#F44336',
-                  '1 (Success)': '#4CAF50', '0 (Fail/Flat)': '#F44336',
+                  '1 (TP)': '#4CAF50', '0 (FP)': '#F44336',
+                  '1 (FP)': '#4CAF50', '0 (TP)': '#F44336',
+                  '1 (Success)': '#4CAF50', '0 (Fail)': '#F44336',
                   '1': '#4CAF50', '0': '#F44336',
                   'NaN': '#9E9E9E'}
     

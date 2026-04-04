@@ -18,17 +18,15 @@ Usage:
 
 import argparse, hashlib, sys, json, pickle
 from pathlib import Path
-
+import yaml
 import numpy as np
 import pandas as pd
 import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -58,7 +56,8 @@ from Utils.features import (_plot_prob_distribution,
                             plot_mutual_information,
                             plot_confusion_matrix, 
                             plot_pointbiserial,
-                            plot_tree_importance)
+                            plot_tree_importance,
+                            compute_top_features)
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
 from Utils.saocp import (_ocp_threshold_to_op, 
@@ -78,180 +77,11 @@ from Utils.utils import (NumpyJSONEncoder,
                          _class_names,
                          _infer_direction,
                          _load_multi_cache)
-
-
-import yaml
-
-# ┏━━━━━━━━━━ Model choices ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon")
-
-# ┏━━━━━━━━━━ AutoGluon parameters ━━━━━━━━━━┓
-_AG_TIME_LIMIT = 300          # overridden by --ag-time-limit
-_AG_PRESETS = "best_quality"  # overridden by --ag-presets
-
-
-# ┏━━━━━━━━━━ AutoGluon wrapper ━━━━━━━━━━┓
-class _AutoGluonWrapper:
-    """Sklearn-compatible wrapper around AutoGluon TabularPredictor."""
-
-    def __init__(self, feature_names=None, time_limit=300, presets="best_quality", class_weight_ratio=1.0):
-        self.feature_names = feature_names
-        self.time_limit = time_limit
-        self.presets = presets
-        self.class_weight_ratio = class_weight_ratio
-        self._predictor = None
-        self._label_col = "__target__"
-        self._weight_col = "__sample_weight__"
-
-    def _to_df(self, X):
-        cols = self.feature_names if self.feature_names else [f"f{i}" for i in range(X.shape[1])]
-        return pd.DataFrame(X, columns=cols)
-
-    def fit(self, X, y, sample_weight=None):
-        from autogluon.tabular import TabularPredictor
-        import tempfile
-
-        df = self._to_df(X)
-        df[self._label_col] = y
-
-        ag_ctor_kwargs = {}
-        if sample_weight is not None:
-            df[self._weight_col] = sample_weight
-            ag_ctor_kwargs["sample_weight"] = self._weight_col
-
-        save_dir = tempfile.mkdtemp(prefix="ag_model_")
-        self._predictor = TabularPredictor(
-            label=self._label_col,
-            path=save_dir,
-            eval_metric="f1",
-            verbosity=1,
-            **ag_ctor_kwargs,
-        ).fit(
-            train_data=df,
-            time_limit=self.time_limit,
-            presets=self.presets,
-        )
-        self._train_df = df  # kept for feature_importance
-        return self
-
-    def predict(self, X):
-        df = self._to_df(X)
-        return self._predictor.predict(df).values.astype(int)
-
-    def predict_proba(self, X):
-        df = self._to_df(X)
-        proba = self._predictor.predict_proba(df)
-        return proba.values
-
-    @property
-    def feature_importances_(self):
-        imp = self._predictor.feature_importance(data=self._train_df, silent=True)
-        return imp["importance"].values
-
-    def leaderboard(self):
-        """Print and return the AutoGluon model leaderboard."""
-        return self._predictor.leaderboard(silent=False)
-
-    def model_info(self, save_dir):
-        """Save detailed model info (leaderboard + per-model hyperparams) to files."""
-        save_dir = Path(save_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        # 1. Leaderboard CSV
-        lb = self._predictor.leaderboard(silent=True)
-        lb_path = save_dir / "ag_leaderboard.csv"
-        lb.to_csv(lb_path, index=False)
-        print(f"  AutoGluon leaderboard saved to {lb_path}")
-
-        # 2. Per-model detailed info JSON
-        full_info = self._predictor.info()
-        model_info_dict = full_info.get("model_info", {})
-
-        export = {
-            "presets": self.presets,
-            "time_limit": self.time_limit,
-            "eval_metric": "f1",
-            "num_models_trained": len(model_info_dict),
-            "models": {},
-        }
-        for name, info in model_info_dict.items():
-            export["models"][name] = {
-                "model_type": str(info.get("model_type", "N/A")),
-                "hyperparameters": {k: _safe_json(v) for k, v in info.get("hyperparameters", {}).items()},
-                "num_features": info.get("num_features", None),
-                "stack_level": info.get("stacker_info", {}).get("stacker_level", 0)
-                               if isinstance(info.get("stacker_info"), dict) else 0,
-                "fit_time": round(info.get("fit_time", 0), 2),
-                "pred_time_val": round(info.get("pred_time_val", 0), 4),
-                "val_score": round(info.get("val_score", 0), 4),
-                "children": info.get("children_info", {}).get("children", [])
-                            if isinstance(info.get("children_info"), dict) else [],
-            }
-
-        info_path = save_dir / "ag_model_info.json"
-        with open(info_path, "w") as f:
-            json.dump(export, f, indent=2, default=str)
-        print(f"  AutoGluon model info saved to {info_path}")
-        return export
-
-    def save_to(self, path):
-        """Persist the AutoGluon predictor to a permanent directory."""
-        import shutil
-        dest = Path(path) / "ag_model"
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(self._predictor.path, str(dest))
-        print(f"  AutoGluon model saved to {dest}")
-        return dest
-
-
-# ┏━━━━━━━━━━ Build Tree Model [Random Forest, XGBoost, AutoGluon] ━━━━━━━━━━┓
-def _build_tree_model(model_name: str, n_samples: int, class_weight_ratio: float = 1.0,
-                      feature_names=None, time_limit=None, presets="best_quality"):
-    """Return a scikit-learn-compatible classifier.
-
-    Args:
-        model_name: 'rf', 'xgboost', or 'autogluon'
-        n_samples: number of training samples (used to calibrate XGB)
-        class_weight_ratio: n_neg / n_pos for scale_pos_weight in XGB
-        feature_names: list of feature names (required for autogluon)
-        time_limit: training time limit in seconds (autogluon only)
-        presets: autogluon model preset
-    """
-    # ┏━━━━━━━━━━ Random Forest ━━━━━━━━━━┓
-    if model_name == "rf":
-        return RandomForestClassifier(n_estimators     = 500, 
-                                      max_depth        = 6, 
-                                      min_samples_leaf = 20, 
-                                      random_state     = 42, 
-                                      n_jobs           = -1, 
-                                      class_weight     = "balanced")
-    
-    # ┏━━━━━━━━━━ XGBoost ━━━━━━━━━━┓
-    elif model_name == "xgboost":
-        return XGBClassifier(n_estimators       = 300,
-                             max_depth        = 4,
-                             learning_rate    = 0.05,
-                             min_child_weight = 20,
-                             subsample        = 0.8,
-                             colsample_bytree = 0.8,
-                             gamma            = 1.0,
-                             reg_alpha        = 0.1,
-                             reg_lambda       = 1.0,
-                             scale_pos_weight = class_weight_ratio,
-                             random_state     = 42,
-                             n_jobs           = -1,
-                             eval_metric      = "logloss",
-                             verbosity        = 0)
-
-    # ┏━━━━━━━━━━ AutoGluon ━━━━━━━━━━┓
-    elif model_name == "autogluon":
-        return _AutoGluonWrapper(feature_names      = feature_names,
-                                 time_limit         = time_limit if time_limit is not None else _AG_TIME_LIMIT,
-                                 presets            = presets,
-                                 class_weight_ratio = class_weight_ratio)
-    else:
-        raise ValueError(f"Unknown model: {model_name}. Choose from {MODEL_CHOICES}")
+# ┏━━━━━━━━━━ Models ━━━━━━━━━━┓
+from Utils.models import (MODEL_CHOICES, 
+                          _AG_TIME_LIMIT, 
+                          _AG_PRESETS, 
+                          _build_tree_model)
 
 
 def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
@@ -930,7 +760,7 @@ def temporal_eval(dataset: dict,
 
 
 # ------------------------------------------------------------------------------
-# Run analysis for a single direction
+# Run analysis for a Single M2 (each granularity independently)
 # ------------------------------------------------------------------------------
 def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, output_root: Path,
                   train_end: str = None, val_end: str = None, model_name: str = "rf",
@@ -943,12 +773,18 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         dataset_override: if provided, use this dict instead of loading cache_path.
                           Used when iterating sub-granularities from a multi cache.
     """
+
+    # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
-    class_names = _class_names(direction, mode)
+    class_names  = _class_names(direction, mode)
     model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    save_dir = output_root / "Kronos" / model_folder / f"{granularity}_{direction}_{mode}"
+    thres_folder = "OCP" if thres_mode == "OCP" else "Utility_Score"
+
+    # ┏━━━━━━━━━━ Create save directory ━━━━━━━━━━┓
+    save_dir     = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
     print(f"\n{'='*60}")
     print(f"[kronos_tree] Direction: {direction} | Mode: {mode} | Granularity: {granularity}")
     print(f"[kronos_tree] Model: {mlabel} | Classes: {class_names}")
@@ -956,71 +792,111 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     print(f"[kronos_tree] Output: {save_dir}")
     print(f"{'='*60}\n")
 
+    # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     dataset = dataset_override if dataset_override is not None else torch.load(cache_path, weights_only=False)
 
+    # ┏━━━━━━━━━━ Check if cache contains eng_features (engineered features) ━━━━━━━━━━┓
     if "eng_features" not in dataset or dataset["eng_features"] is None:
         print("ERROR: Cache does not contain 'eng_features'. Rebuild cache with engineered features enabled.")
         return
 
+    # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
     df_all, labels_all = _build_dataframe(dataset)
 
-    # Get train-only subset for feature analysis (no val/test leakage in feature selection)
+    # ┏━━━━━━━━━━ Get train-only subset for feature analysis (no val/test leakage in feature selection) ━━━━━━━━━━┓
     if train_end and val_end:
+        # ┏━━━━━━━━━━ Split by global time ━━━━━━━━━━┓
         idx_train, _, _, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
+        
+        # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
         eng_raw = dataset["eng_features"].numpy() if isinstance(dataset["eng_features"], torch.Tensor) else dataset["eng_features"]
         labels_raw = dataset["labels"].numpy() if isinstance(dataset["labels"], torch.Tensor) else dataset["labels"]
+        
+        # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
         df_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
         labels_train = labels_raw[idx_train].astype(int)
         print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}")
     else:
+        # ┏━━━━━━━━━━ No temporal split dates, using all data ━━━━━━━━━━┓
         df_train = df_all
         labels_train = labels_all
         print(f"[kronos_tree] Samples: {len(df_all)} (no temporal split dates, using all data)")
 
+    # ┏━━━━━━━━━━ Print train statistics ━━━━━━━━━━┓
     print(f"[kronos_tree] Train: {len(df_train)} (class 0: {(labels_train==0).sum()}, class 1: {(labels_train==1).sum()})")
     print(f"[kronos_tree] Features: {len(df_train.columns)}\n")
 
-    # Drop features that are all-NaN or zero-variance (based on train)
+    # ┏━━━━━━━━━━ Drop features that are all-NaN or zero-variance (based on train) ━━━━━━━━━━┓
     to_drop = [c for c in df_train.columns if df_train[c].isna().all() or df_train[c].std() == 0]
     if to_drop:
         print(f"[kronos_tree] Dropping zero-variance/all-NaN features: {to_drop}\n")
         df_train = df_train.drop(columns=to_drop)
 
-    # Steps 1-6: feature analysis (correlation, MI, importance, rank aggregation)
+    # ┏━━━━━━━━━━ Steps 1-6: feature analysis (correlation, MI, importance, rank aggregation) ━━━━━━━━━━┓
     tree_metrics = {}
     tree_top5_metrics = {}
     top_result = {}
     top5 = []
 
     if run_features:
-        plot_correlation_heatmap(df_train, save_dir)
-        pb_scores = plot_pointbiserial(df_train, labels_train, class_names, save_dir)
-        plot_class_distributions(df_train, labels_train, class_names, save_dir)
-        mi_scores = plot_mutual_information(df_train, labels_train, save_dir)
+        # ┏━━━━━━━━━━ Create features analysis directory ━━━━━━━━━━┓
+        features_dir = save_dir / "Features_Analysis"
+        features_dir.mkdir(parents=True, exist_ok=True)
 
-        tree_scores, tree_metrics = plot_tree_importance(
-            df_train, labels_train, save_dir, model_name=model_name,
-            class_names=class_names, meta_mode=mode,
-            model_builder=lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
-            model_labeler=_model_label)
+        # ┏━━━━━━━━━━ Plot correlation heatmap ━━━━━━━━━━┓
+        plot_correlation_heatmap(df_train, features_dir)
 
+        # ┏━━━━━━━━━━ Plot pointbiserial ━━━━━━━━━━┓
+        pb_scores = plot_pointbiserial(df_train, labels_train, class_names, features_dir)
+
+        # ┏━━━━━━━━━━ Plot class distributions ━━━━━━━━━━┓
+        plot_class_distributions(df_train, labels_train, class_names, features_dir)
+
+        # ┏━━━━━━━━━━ Plot mutual information ━━━━━━━━━━┓
+        mi_scores = plot_mutual_information(df_train, labels_train, features_dir)
+
+        # ┏━━━━━━━━━━ Plot tree importance ━━━━━━━━━━┓
+        tree_scores, tree_metrics = plot_tree_importance(df_train, 
+                                                         labels_train, 
+                                                         features_dir, 
+                                                         model_name    = model_name,
+                                                         class_names   = class_names, 
+                                                         meta_mode     = mode,
+                                                         model_builder = lambda name, 
+                                                         n_samples, 
+                                                         ratio: _build_tree_model(name, n_samples, ratio),
+                                                         model_labeler = _model_label)
+
+        # ┏━━━━━━━━━━ Compute top features ━━━━━━━━━━┓
         corr_matrix = df_train.corr()
-        top_result = compute_top_features(pb_scores, mi_scores, tree_scores, corr_matrix, save_dir)
+        top_result = compute_top_features(pb_scores, mi_scores, tree_scores, corr_matrix, features_dir)
         top5 = top_result["top_5_features"]
 
-        # Step 7: tree-model on top-5 only (train only)
+        # ┏━━━━━━━━━━ Tree-model on top-5 only (train only) ━━━━━━━━━━┓
         if run_top5:
+            # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
+            top_features_dir = save_dir / "Top_Features"
+            top_features_dir.mkdir(parents=True, exist_ok=True)
+
+            # ┏━━━━━━━━━━ Build dataframe with top-5 features ━━━━━━━━━━┓
             df_top5 = df_train[top5]
-            _, tree_top5_metrics = plot_tree_importance(
-                df_top5, labels_train, save_dir, model_name=model_name,
-                step_label="7/9", desc="top-5 only", file_prefix="7_top5_feature_importance",
-                class_names=class_names, meta_mode=mode,
-                model_builder=lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
-                model_labeler=_model_label)
+            
+            # ┏━━━━━━━━━━ Plot tree importance on top-5 features ━━━━━━━━━━┓
+            _, tree_top5_metrics = plot_tree_importance(df_top5, 
+                                                         labels_train, 
+                                                         top_features_dir, 
+                                                         model_name    = model_name,
+                                                         step_label    = "7/9", 
+                                                         desc          = "top-5 only", 
+                                                         file_prefix   = "7_top5_feature_importance",
+                                                         class_names   = class_names, 
+                                                         meta_mode     = mode,
+                                                         model_builder = lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
+                                                         model_labeler = _model_label)
     else:
         print(f"  [--features=false] Skipping feature analysis (steps 1-7)")
 
-    # Steps 8-9: temporal train/val/test evaluation
+    # ┏━━━━━━━━━━ Steps 8-9: temporal train/val/test evaluation ━━━━━━━━━━┓
     temporal_all = {}
     temporal_top5 = {}
     backtest_all = {}
@@ -1029,27 +905,49 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         ((idx_train_t, idx_train_raw), 
          (idx_meta_t, idx_meta_raw), 
          (idx_val_t, idx_val_raw), 
-         (idx_test_t, idx_test_raw)) = split_by_global_time(
-            dataset, train_end=train_end, val_end=val_end, return_raw=True)
+         (idx_test_t, idx_test_raw)) = split_by_global_time(dataset, 
+                                                            train_end  = train_end, 
+                                                            val_end    = val_end, 
+                                                            return_raw = True)
             
+        # ┏━━━━━━━━━━ Split indices ━━━━━━━━━━┓
         split_indices = (idx_train_t, idx_val_t, idx_test_t)
         split_indices_raw = (idx_train_raw, idx_val_raw, idx_test_raw)
+        
+        # ┏━━━━━━━━━━ Fee per trade ━━━━━━━━━━┓
         fee = cfg.get("evaluation", {}).get("fee_per_trade", 0.0) if cfg is not None else 0.0
 
+        # ┏━━━━━━━━━━ Forecast horizon ━━━━━━━━━━┓
         fh = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7)) if cfg else 7
+        
+        # ┏━━━━━━━━━━ Active features ━━━━━━━━━━┓
         active_features = list(df_train.columns)
         print(f"\n  [8/9] {mlabel} temporal split ({len(active_features)} feats, train<={train_end}, val<={val_end}):")
-        temporal_all, artifacts_all = temporal_eval(dataset, active_features, save_dir,
-                                                    class_names=class_names, meta_mode=mode,
-                                                    split_indices=split_indices,
-                                                    direction=direction, fee=fee,
-                                                    model_name=model_name,
-                                                    desc="all features", file_prefix="8_temporal_all",
-                                                    thres_mode=thres_mode, ocp_alpha=ocp_alpha,
-                                                    forecast_horizon=fh, split_indices_raw=split_indices_raw)
+
+        # ┏━━━━━━━━━━ Temporal evaluation on all features ━━━━━━━━━━┓
+        temporal_all, artifacts_all = temporal_eval(dataset, 
+                                                    active_features, 
+                                                    save_dir,
+                                                    class_names       = class_names, 
+                                                    meta_mode         = mode,
+                                                    split_indices     = split_indices,
+                                                    direction         = direction, 
+                                                    fee               = fee,
+                                                    model_name        = model_name,
+                                                    desc              = "all features", 
+                                                    file_prefix       = "8_temporal_all",
+                                                    thres_mode        = thres_mode, 
+                                                    ocp_alpha         = ocp_alpha,
+                                                    forecast_horizon  = fh, 
+                                                    split_indices_raw = split_indices_raw)
         if run_top5:
+            # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
+            top_features_dir = save_dir / "Top_Features"
+            top_features_dir.mkdir(parents=True, exist_ok=True)
             print(f"  [9/9] {mlabel} temporal split (top-5, train<={train_end}, val<={val_end}):")
-            temporal_top5, artifacts_top5 = temporal_eval(dataset, top5, save_dir,
+
+            # ┏━━━━━━━━━━ Temporal evaluation on top-5 features ━━━━━━━━━━┓
+            temporal_top5, artifacts_top5 = temporal_eval(dataset, top5, top_features_dir,
                                                           class_names=class_names, meta_mode=mode,
                                                           split_indices=split_indices,
                                                           direction=direction, fee=fee,
@@ -1058,66 +956,96 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                           thres_mode=thres_mode, ocp_alpha=ocp_alpha,
                                                           forecast_horizon=fh, split_indices_raw=split_indices_raw)
 
-        # Steps 10-11: financial backtest (equity curves + ROI reports)
+        # ┏━━━━━━━━━━ Financial Backtest (Equity Curves + ROI Reports) ━━━━━━━━━━┓
         if cfg is not None:
-
             print(f"\n  [10/11] {mlabel} financial backtest (all features):")
-            backtest_all = run_feature_backtest(
-                dataset, split_indices, artifacts_all, cfg, save_dir,
-                class_names=class_names, meta_mode=mode, granularity=granularity,
-                direction=direction, model_name=model_name, desc="all features",
-                file_prefix="10_backtest_all", fee=fee,
-                thres_mode=thres_mode, ocp_alpha=ocp_alpha)
+
+            # ┏━━━━━━━━━━ Financial backtest on all features ━━━━━━━━━━┓
+            backtest_all = run_feature_backtest(dataset, 
+                                                split_indices, 
+                                                artifacts_all, 
+                                                cfg, 
+                                                save_dir,
+                                                class_names = class_names, 
+                                                meta_mode   = mode, 
+                                                granularity = granularity,
+                                                direction   = direction, 
+                                                model_name  = model_name, 
+                                                desc        = "all features",
+                                                file_prefix = "10_backtest_all", 
+                                                fee         = fee,
+                                                thres_mode  = thres_mode, 
+                                                ocp_alpha   = ocp_alpha)
 
             if run_top5:
                 print(f"\n  [11/11] {mlabel} financial backtest (top-5):")
-                backtest_top5 = run_feature_backtest(
-                    dataset, split_indices, artifacts_top5, cfg, save_dir,
-                    class_names=class_names, meta_mode=mode, granularity=granularity,
-                    direction=direction, model_name=model_name, desc="top-5 only",
-                    file_prefix="11_backtest_top5", fee=fee,
-                    thres_mode=thres_mode, ocp_alpha=ocp_alpha)
 
-    # Save summary JSON
-    summary = {
-        "cache": str(cache_path),
-        "granularity": granularity,
-        "direction": direction,
-        "meta_label_mode": mode,
-        "model": model_name,
-        "n_samples_total": len(df_all),
-        "n_samples_train": len(df_train),
-        "n_features": len(df_train.columns),
-        "class_distribution_train": {class_names[0]: int((labels_train == 0).sum()), class_names[1]: int((labels_train == 1).sum())},
-        "features_used": list(df_train.columns),
-        "dropped_features": to_drop,
-        f"{model_name}_all_features_5fold_cv": tree_metrics,
-        f"{model_name}_top5_features_5fold_cv": tree_top5_metrics,
-        f"{model_name}_temporal_all_features": temporal_all,
-        f"{model_name}_temporal_top5_features": temporal_top5,
-        f"{model_name}_backtest_all_features": backtest_all,
-        f"{model_name}_backtest_top5_features": backtest_top5,
-        **top_result,
-    }
+                # ┏━━━━━━━━━━ Financial backtest on top-5 features ━━━━━━━━━━┓
+                backtest_top5 = run_feature_backtest(dataset, 
+                                                    split_indices, 
+                                                    artifacts_top5, 
+                                                    cfg, 
+                                                    top_features_dir,
+                                                    class_names = class_names, 
+                                                    meta_mode   = mode, 
+                                                    granularity = granularity,
+                                                    direction   = direction, 
+                                                    model_name  = model_name, 
+                                                    desc        = "top-5 only",
+                                                    file_prefix = "11_backtest_top5", 
+                                                    fee         = fee,
+                                                    thres_mode  = thres_mode, 
+                                                    ocp_alpha   = ocp_alpha)
+
+    # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
+    summary = {"cache": str(cache_path),
+               "granularity": granularity,
+               "direction": direction,
+               "meta_label_mode": mode,
+               "model": model_name,
+               "n_samples_total": len(df_all),
+               "n_samples_train": len(df_train),
+               "n_features": len(df_train.columns),
+               "class_distribution_train": {class_names[0]: int((labels_train == 0).sum()), class_names[1]: int((labels_train == 1).sum())},
+               "features_used": list(df_train.columns),
+               "dropped_features": to_drop,
+               f"{model_name}_all_features_5fold_cv": tree_metrics,
+               f"{model_name}_top5_features_5fold_cv": tree_top5_metrics,
+               f"{model_name}_temporal_all_features": temporal_all,
+               f"{model_name}_temporal_top5_features": temporal_top5,
+               f"{model_name}_backtest_all_features": backtest_all,
+               f"{model_name}_backtest_top5_features": backtest_top5,
+               **top_result}
+
+    # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     with open(save_dir / "analysis_summary.json", "w") as f:
         json.dump(summary, f, indent=2, cls=NumpyJSONEncoder)
 
     print(f"\nDone ({direction}). Outputs in: {save_dir}")
 
 
+
+# ------------------------------------------------------------------------------
+# Run analysis for Unified M2 (all granularities together but separate evaluation)
+# ------------------------------------------------------------------------------
 def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, output_root: Path,
                          train_end: str, val_end: str, model_name: str = "rf", cfg: dict = None,
                          thres_mode: str = "utility", ocp_alpha: float = 0.10):
     """Train ONE model on all granularities (with gran-balancing weights), evaluate per-gran."""
+
+    # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
     model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    save_dir = output_root / "Kronos" / model_folder / f"unified_{direction}_{mode}"
+    thres_folder = "OCP" if thres_mode == "OCP" else "Utility_Score"
+    save_dir = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    # ┏━━━━━━━━━━ Fee and Horizon ━━━━━━━━━━┓
     fee = cfg.get("evaluation", {}).get("fee_per_trade", 0.0) if cfg else 0.0
     horizon = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7))
 
+    # ┏━━━━━━━━━━ Print Info ━━━━━━━━━━┓
     print(f"\n{'='*60}")
     print(f"[kronos_tree] UNIFIED MODEL — Direction: {direction} | Mode: {mode}")
     print(f"[kronos_tree] Granularities: {multi.grans}")
@@ -1125,60 +1053,61 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
     print(f"[kronos_tree] Output: {save_dir}")
     print(f"{'='*60}\n")
 
-    # ------------------------------------------------------------------
-    # 1. Collect data from all granularities with one-hot encoding
-    # ------------------------------------------------------------------
+    # ┏━━━━━━━━━━ Collect data from all granularities with one-hot encoding ━━━━━━━━━━┓
     gran_list = list(multi.grans)
     gran_onehot_names = [f"is_{g}" for g in gran_list]
 
+    # ┏━━━━━━━━━━ Initialize lists ━━━━━━━━━━┓
     all_X_train, all_y_train, all_w_train = [], [], []
     per_gran_data = {}  # for per-gran evaluation later
-
+    
+    # ┏━━━━━━━━━━ Loop through granularities ━━━━━━━━━━┓
     for gi, gran in enumerate(gran_list):
-        sub = multi.sub[gran]
-        eng = sub["eng_features"].numpy() if isinstance(sub["eng_features"], torch.Tensor) else sub["eng_features"]
-        labels = sub["labels"].numpy() if isinstance(sub["labels"], torch.Tensor) else sub["labels"]
-        returns = sub["returns"].numpy() if isinstance(sub["returns"], torch.Tensor) else sub["returns"]
+        # ┏━━━━━━━━━━ Get data for this granularity ━━━━━━━━━━┓
+        sub       = multi.sub[gran]
+        eng       = sub["eng_features"].numpy() if isinstance(sub["eng_features"], torch.Tensor) else sub["eng_features"]
+        labels    = sub["labels"].numpy() if isinstance(sub["labels"], torch.Tensor) else sub["labels"]
+        returns   = sub["returns"].numpy() if isinstance(sub["returns"], torch.Tensor) else sub["returns"]
         asset_ids = sub["asset_ids"].numpy() if isinstance(sub["asset_ids"], torch.Tensor) else sub["asset_ids"]
 
-        idx_train, _, idx_val, idx_test = split_by_global_time(sub, train_end=train_end, val_end=val_end)
+        # ┏━━━━━━━━━━ Split data into train, val, test ━━━━━━━━━━┓
+        idx_train, _, idx_val, idx_test = split_by_global_time(sub, train_end = train_end, val_end = val_end)
 
-        # One-hot for this granularity
+        # ┏━━━━━━━━━━ One-hot for this granularity ━━━━━━━━━━┓
         onehot = np.zeros((len(eng), len(gran_list)), dtype=np.float32)
         onehot[:, gi] = 1.0
         X_full = np.hstack([eng, onehot])
 
-        # Train data
+        # ┏━━━━━━━━━━ Train data ━━━━━━━━━━┓
         X_tr = X_full[idx_train]
         y_tr = labels[idx_train].astype(int)
-        valid_tr = ~np.isnan(y_tr)
+        valid_tr = ~np.isnan(y_tr) # Remove NaN values
         X_tr, y_tr = X_tr[valid_tr], y_tr[valid_tr]
 
-        # Granularity-balancing weight: 1/N_gran so each gran contributes equally
+        # ┏━━━━━━━━━━ Granularity-balancing weight: 1/N_gran so each gran contributes equally ━━━━━━━━━━┓
         n_gran_train = len(y_tr)
         w_tr = np.full(n_gran_train, 1.0 / max(n_gran_train, 1), dtype=np.float64)
 
+        # ┏━━━━━━━━━━ Append to lists ━━━━━━━━━━┓
         all_X_train.append(X_tr)
         all_y_train.append(y_tr)
         all_w_train.append(w_tr)
 
-        # Store per-gran splits for evaluation
-        per_gran_data[gran] = {
-            "X_full": X_full,
-            "labels": labels,
-            "returns": returns,
-            "asset_ids": asset_ids,
-            "dates": sub["dates"],
-            "asset_map": sub.get("asset_map", {}),
-            "idx_train": idx_train,
-            "idx_val": idx_val,
-            "idx_test": idx_test,
-            "n_train": n_gran_train,
-        }
+        # ┏━━━━━━━━━━ Store per-gran splits for evaluation ━━━━━━━━━━┓
+        per_gran_data[gran] = {"X_full": X_full,
+                               "labels": labels,
+                               "returns": returns,
+                               "asset_ids": asset_ids,
+                               "dates": sub["dates"],
+                               "asset_map": sub.get("asset_map", {}),
+                               "idx_train": idx_train,
+                               "idx_val": idx_val,
+                               "idx_test": idx_test,
+                               "n_train": n_gran_train}
 
-        print(f"  {gran}: train={n_gran_train}  val={len(idx_val)}  test={len(idx_test)}")
+        print(f"  {gran}: Train={n_gran_train}  Val={len(idx_val)}  Test={len(idx_test)}")
 
-    # Concatenate all granularities
+    # ┏━━━━━━━━━━ Concatenate all granularities ━━━━━━━━━━┓
     X_train_all = np.vstack(all_X_train)
     y_train_all = np.concatenate(all_y_train)
     w_train_all = np.concatenate(all_w_train)
@@ -1186,53 +1115,48 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
     print(f"\n  Unified train set: {len(y_train_all)} samples "
           f"(class 0: {(y_train_all==0).sum()}, class 1: {(y_train_all==1).sum()})")
 
-    # Feature names: 23 eng features + one-hot gran columns
+    # ┏━━━━━━━━━━ Feature names: 23 eng features + one-hot gran columns ━━━━━━━━━━┓
     feature_names = list(ENG_FEATURE_NAMES) + gran_onehot_names
 
-    # ------------------------------------------------------------------
-    # 2. Drop zero-variance / all-NaN features, impute, scale
-    # ------------------------------------------------------------------
+    # ┏━━━━━━━━━━ Drop zero-variance / all-NaN features, impute, scale ━━━━━━━━━━┓
     n_eng = len(ENG_FEATURE_NAMES)
-
     scaler = StandardScaler()
-    # Only scale the 23 eng features, not the one-hot columns
     X_train_all[:, :n_eng] = scaler.fit_transform(X_train_all[:, :n_eng])
 
-    # ------------------------------------------------------------------
-    # 3. Train unified model
-    # ------------------------------------------------------------------
+    # ┏━━━━━━━━━━ Train unified model ━━━━━━━━━━┓
     n_pos = int((y_train_all == 1).sum())
     n_neg = int((y_train_all == 0).sum())
-    cw_ratio = n_neg / max(n_pos, 1)
+    cw_ratio = n_neg / max(n_pos, 1) # Class weight ratio
 
     print(f"\n  Training unified {mlabel} ({len(feature_names)} features)...")
-    model = _build_tree_model(model_name, len(y_train_all), cw_ratio,
-                              feature_names=feature_names,
-                              presets=_AG_PRESETS)
+    model = _build_tree_model(model_name, 
+                              len(y_train_all), 
+                              cw_ratio,
+                              feature_names = feature_names,
+                              presets = _AG_PRESETS)
     model.fit(X_train_all, y_train_all, sample_weight=w_train_all)
     print(f"  Training complete.\n")
 
+    # ┏━━━━━━━━━━ Save AutoGluon model ━━━━━━━━━━┓
     if model_name == "autogluon":
         model.leaderboard()
         model.model_info(save_dir)
         model.save_to(save_dir)
 
-    # ------------------------------------------------------------------
-    # 4. Per-granularity evaluation: threshold on val, backtest on test
-    # ------------------------------------------------------------------
-    summary = {
-        "cache": str(cache_path),
-        "direction": direction,
-        "meta_label_mode": mode,
-        "model": model_name,
-        "mode": "unified",
-        "granularities": gran_list,
-        "n_train_total": len(y_train_all),
-        "feature_names": feature_names,
-        "per_gran": {},
-    }
+    # ┏━━━━━━━━━━ Summary of per-granularity evaluation ━━━━━━━━━━┓
+    summary = {"cache": str(cache_path),
+               "direction": direction,
+               "meta_label_mode": mode,
+               "model": model_name,
+               "mode": "unified",
+               "granularities": gran_list,
+               "n_train_total": len(y_train_all),
+               "feature_names": feature_names,
+               "per_gran": {}}
 
+    # ┏━━━━━━━━━━ Loop through granularities ━━━━━━━━━━┓
     for gran in gran_list:
+        # ┏━━━━━━━━━━ Get data for this granularity ━━━━━━━━━━┓
         gd = per_gran_data[gran]
         gran_dir = save_dir / gran
         gran_dir.mkdir(parents=True, exist_ok=True)
@@ -1240,155 +1164,176 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         print(f"  {'─'*50}")
         print(f"  Evaluating {gran}...")
 
-        # Prepare val/test data
+        # ┏━━━━━━━━━━ Prepare validation data ━━━━━━━━━━┓
         X_val_raw = gd["X_full"][gd["idx_val"]].copy()
         y_val = gd["labels"][gd["idx_val"]].astype(int)
         val_returns = gd["returns"][gd["idx_val"]].copy()
-
+        val_dates_raw  = [gd["dates"][i] for i in gd["idx_val"]]
+        
+        # ┏━━━━━━━━━━ Prepare test data ━━━━━━━━━━┓
         X_test_raw = gd["X_full"][gd["idx_test"]].copy()
         y_test = gd["labels"][gd["idx_test"]].astype(int)
         test_returns = gd["returns"][gd["idx_test"]].copy()
         test_asset_ids = gd["asset_ids"][gd["idx_test"]]
-        val_dates_raw  = [gd["dates"][i] for i in gd["idx_val"]]
         test_dates_raw = [gd["dates"][i] for i in gd["idx_test"]]
         test_assets = [gd["asset_map"].get(int(aid), str(aid)) for aid in test_asset_ids]
 
-        # Direction-aware returns
+        # ┏━━━━━━━━━━ Direction-aware returns ━━━━━━━━━━┓
         if direction.lower() == "down":
             val_returns = -val_returns
             test_returns = -test_returns
 
-        # Impute + scale (eng features only, one-hot stays as-is)
+        # ┏━━━━━━━━━━ Impute + scale (eng features only, one-hot stays as-is) ━━━━━━━━━━┓
         for X in [X_val_raw, X_test_raw]:
             X[:, :n_eng] = scaler.transform(X[:, :n_eng])
 
-        # Predict
+        # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
         val_preds = model.predict(X_val_raw)
         val_probs = model.predict_proba(X_val_raw)[:, 1]
         test_preds = model.predict(X_test_raw)
         test_probs = model.predict_proba(X_test_raw)[:, 1]
 
-        # ── Pre-selective confusion matrices + metrics (Val & Test) ──
+        # ┏━━━━━━━━━━ Pre-selective confusion matrices + metrics (Val & Test) ━━━━━━━━━━┓
         presel_metrics = {}
-        for split_name, y_split, preds, probs in [("Val", y_val, val_preds, val_probs),
-                                                    ("Test", y_test, test_preds, test_probs)]:
+        for split_name, y_split, preds, probs in [("Val", y_val, val_preds, val_probs), ("Test", y_test, test_preds, test_probs)]:
+            # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
             cm_path = gran_dir / f"{split_name}_CM.png"
-            plot_confusion_matrix(y_split, preds, classes=class_names, save_path=str(cm_path),
-                                  title=f"Unified {mlabel} {gran} {split_name}", meta_mode=mode)
+            plot_confusion_matrix(y_split, 
+                                  preds, 
+                                  classes   = class_names, 
+                                  save_path = str(cm_path),
+                                  title     = f"Unified {mlabel} {gran} {split_name}", 
+                                  meta_mode = mode)
+
+            # ┏━━━━━━━━━━ Calculate metrics ━━━━━━━━━━┓
             prec_val = float(precision_score(y_split, preds, zero_division=0))
             n_pred_pos = int((preds == 1).sum())
-            presel_metrics[split_name] = {
-                "accuracy": round(float(accuracy_score(y_split, preds)), 4),
-                "precision": round(prec_val, 4),
-                "recall": round(float(recall_score(y_split, preds, zero_division=0)), 4),
-                "f1_score": round(float(f1_score(y_split, preds, zero_division=0)), 4),
-                "coverage": round(n_pred_pos / len(y_split), 4) if len(y_split) > 0 else 0,
-                "risk": round(1 - prec_val, 4),
-                "baseline": round(int((y_split == 1).sum()) / len(y_split), 4) if len(y_split) > 0 else 0,
-            }
+            presel_metrics[split_name] = {"accuracy":  round(float(accuracy_score(y_split, preds)), 4),
+                                          "precision": round(prec_val, 4),
+                                          "recall":    round(float(recall_score(y_split, preds, zero_division=0)), 4),
+                                          "f1_score":  round(float(f1_score(y_split, preds, zero_division=0)), 4),
+                                          "coverage":  round(n_pred_pos / len(y_split), 4) if len(y_split) > 0 else 0,
+                                          "risk":      round(1 - prec_val, 4),
+                                          "baseline":  round(int((y_split == 1).sum()) / len(y_split), 4) if len(y_split) > 0 else 0}
 
-        # Threshold optimization on val (always computed)
+        # ┏━━━━━━━━━━ Threshold optimization on val (always computed) ━━━━━━━━━━┓
         val_op = _find_best_utility_threshold(val_probs, val_returns, fee=fee)
         sel_val = val_probs >= val_op["threshold"]
         n_sel_val = int(sel_val.sum())
         err_val = int((y_val[sel_val] == 0).sum()) if n_sel_val > 0 else 0
         val_op["risk"] = err_val / max(n_sel_val, 1)
-
         threshold = val_op["threshold"]
 
-        # OCP: run SAOCP warm-up on val, adapt on test (delayed feedback)
+        # ┏━━━━━━━━━━ OCP: run SAOCP warm-up on val, adapt on test (delayed feedback) ━━━━━━━━━━┓
         if thres_mode == "OCP":
-            test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(
-                val_probs, y_val, test_probs, y_test, alpha=ocp_alpha,
-                test_dates=test_dates_raw, forecast_horizon=horizon,
-                val_dates=val_dates_raw)
-            ocp_op = _ocp_threshold_to_op(test_probs, y_test, test_returns,
-                                          test_approved_ocp, test_s_hats, fee,
-                                          conformal_stats=conf_stats)
+            (test_s_hats, test_approved_ocp, 
+             val_s_hats, conf_stats) = _run_saocp_online(val_probs, 
+                                                         y_val, 
+                                                         test_probs, 
+                                                         y_test, 
+                                                         alpha = ocp_alpha,
+                                                         test_dates = test_dates_raw, 
+                                                         forecast_horizon = horizon,
+                                                         val_dates = val_dates_raw)
+
+            ocp_op = _ocp_threshold_to_op(test_probs, 
+                                          y_test, 
+                                          test_returns,
+                                          test_approved_ocp, 
+                                          test_s_hats, 
+                                          fee,
+                                          conformal_stats = conf_stats)
             cc = conf_stats["conformal_coverage"]
+
+            # ┏━━━━━━━━━━ Print OCP results ━━━━━━━━━━┓
             print(f"    OCP ({gran}): α={ocp_alpha}, median τ={ocp_op['threshold']:.3f}, "
                   f"cov={ocp_op['coverage']:.1%}, μ={ocp_op['mean_ret']*100:+.3f}% | "
                   f"Conformal cov={cc:.1%} (target≥{1-ocp_alpha:.0%}) | "
                   f"Sets: {{1}}={conf_stats['n_set_1']} {{0}}={conf_stats['n_set_0']} "
                   f"{{0,1}}={conf_stats['n_set_both']} {{}}={conf_stats['n_set_empty']}")
 
-        # ── Post-selective confusion matrices (Val & Test) ──
-        for split_name, y_split, probs in [("Val", y_val, val_probs),
-                                            ("Test", y_test, test_probs)]:
+        # ┏━━━━━━━━━━ Post-selective confusion matrices (Val & Test) ━━━━━━━━━━┓
+        for split_name, y_split, probs in [("Val", y_val, val_probs), ("Test", y_test, test_probs)]:
+            # ┏━━━━━━━━━━ Determine selection method ━━━━━━━━━━┓
             if split_name == "Test" and thres_mode == "OCP":
                 sel = test_approved_ocp
                 thr_source = "OCP-SAOCP"
             else:
                 sel = probs >= threshold
                 thr_source = "Utility-Opt" if split_name == "Val" else "Val-Utility"
+            
+            # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
             sel_true = y_split
             sel_preds = sel.astype(int)
             sel_cm_path = gran_dir / f"{split_name}_Selective_CM.png"
             thr_display = ocp_op["threshold"] if (split_name == "Test" and thres_mode == "OCP") else threshold
+            
+            # ┏━━━━━━━━━━ Determine title ━━━━━━━━━━┓
             if thres_mode == "OCP" and split_name == "Test":
                 cc = ocp_op.get("conformal_coverage", 0)
                 sel_title = (f"Unified {mlabel} {gran} {split_name} selective @thr={thr_display:.3f} (OCP Median-Adaptive)\n"
                              f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})")
             else:
                 sel_title = f"Unified {mlabel} {gran} {split_name} selective @thr={thr_display:.3f} ({thr_source})"
-            plot_confusion_matrix(sel_true, sel_preds, classes=class_names,
-                                  save_path=str(sel_cm_path),
-                                  title=sel_title,
-                                  meta_mode=mode,
-                                  is_selective=True)
+            
+            # ┏━━━━━━━━━━ Plot confusion matrix ━━━━━━━━━━┓
+            plot_confusion_matrix(sel_true, 
+                                  sel_preds, 
+                                  classes      = class_names,
+                                  save_path    = str(sel_cm_path),
+                                  title        = sel_title,
+                                  meta_mode    = mode,
+                                  is_selective = True)
 
-        # Apply threshold on test
+        # ┏━━━━━━━━━━ Apply threshold on test ━━━━━━━━━━┓
         if thres_mode == "OCP":
             m2_approved = test_approved_ocp
         else:
             m2_approved = test_probs >= threshold
         net_returns = test_returns - fee
 
-        # Trade DataFrame
-        df_trades = pd.DataFrame({
-            "date": pd.to_datetime(test_dates_raw),
-            "asset": test_assets,
-            "return": net_returns,
-            "label": y_test,
-            "m2_approved": m2_approved,
-            "m2_prob": test_probs,
-        })
-        df_trades = df_trades.dropna(subset=["return"]).reset_index(drop=True)
-        m2_approved = df_trades["m2_approved"].values
-        test_probs = df_trades["m2_prob"].values
-        test_returns = df_trades["return"].values + fee
-        y_test = df_trades["label"].values
+        # ┏━━━━━━━━━━ Trade DataFrame ━━━━━━━━━━┓
+        df_trades = pd.DataFrame({"date": pd.to_datetime(test_dates_raw),
+                                  "asset": test_assets,
+                                  "return": net_returns,
+                                  "label": y_test,
+                                  "m2_approved": m2_approved,
+                                  "m2_prob": test_probs})
 
-        # Save trades CSV for diagnostics
+        df_trades    = df_trades.dropna(subset=["return"]).reset_index(drop=True)
+        m2_approved  = df_trades["m2_approved"].values
+        test_probs   = df_trades["m2_prob"].values
+        test_returns = df_trades["return"].values + fee
+        y_test       = df_trades["label"].values
+
+        # ┏━━━━━━━━━━ Save trades CSV for diagnostics ━━━━━━━━━━┓
         trades_dump_u = df_trades.copy()
         trades_dump_u["direction"] = direction
         trades_dump_u["return_pct"] = trades_dump_u["return"] * 100
-        trades_dump_u.to_csv(gran_dir / "backtest_trades.csv",
-                             index=False, float_format="%.6f")
+        trades_dump_u.to_csv(gran_dir / "backtest_trades.csv", 
+                             index = False, 
+                             float_format = "%.6f")
 
-        # Save OCP diagnostics npz (thresholds + val probs for re-run)
+        # ┏━━━━━━━━━━ Save OCP diagnostics npz (thresholds + val probs for re-run) ━━━━━━━━━━┓
         if thres_mode == "OCP":
-            np.savez_compressed(
-                gran_dir / "ocp_diagnostics.npz",
-                test_s_hats=test_s_hats,
-                val_s_hats=val_s_hats,
-                val_probs=val_probs,
-                val_labels=y_val.astype(int),
-                alpha=np.array([ocp_alpha]),
-            )
+            np.savez_compressed(gran_dir / "ocp_diagnostics.npz",
+                                test_s_hats = test_s_hats,
+                                val_s_hats  = val_s_hats,
+                                val_probs   = val_probs,
+                                val_labels  = y_val.astype(int),
+                                alpha       = np.array([ocp_alpha]))
 
         m2_df = df_trades[df_trades["m2_approved"]]
         test_start = df_trades["date"].min()
         test_end = df_trades["date"].max()
 
-        # OCP threshold evolution plot
+        # ┏━━━━━━━━━━ OCP threshold evolution plot ━━━━━━━━━━┓
         if thres_mode == "OCP":
             fig_thr, ax_thr = plt.subplots(figsize=(10, 4), facecolor="white")
             ax_thr.set_facecolor("#FAFAFA")
             eff_tau = np.maximum(test_s_hats, 1.0 - test_s_hats)
             ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label="τ_t (OCP)")
-            ax_thr.axhline(y=threshold, color="#34495E", linestyle="--",
-                           linewidth=1.2, alpha=0.7, label=f"τ Utility = {threshold:.3f}")
+            ax_thr.axhline(y=threshold, color="#34495E", linestyle="--", linewidth=1.2, alpha=0.7, label=f"τ Utility = {threshold:.3f}")
             ax_thr.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
             ax_thr.set_xlabel("Test sample index", fontsize=10)
             ax_thr.set_ylabel("Threshold τ_t", fontsize=10)
@@ -1397,11 +1342,12 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
             n0 = ocp_op.get("n_set_0", 0)
             nb = ocp_op.get("n_set_both", 0)
             ne = ocp_op.get("n_set_empty", 0)
-            ax_thr.set_title(
-                f"OCP Threshold Evolution  |  Unified {gran}  |  {mlabel}  (α={ocp_alpha})\n"
-                f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})  |  "
-                f"{{1}}={n1}  {{0}}={n0}  {{0,1}}={nb}  {{}}={ne}",
-                fontsize=11, fontweight="bold", color="#2C3E50")
+            ax_thr.set_title(f"OCP Threshold Evolution  |  Unified {gran}  |  {mlabel}  (α={ocp_alpha})\n"
+                             f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})  |  "
+                             f"{{1}}={n1}  {{0}}={n0}  {{0,1}}={nb}  {{}}={ne}",
+                             fontsize=11, 
+                             fontweight="bold", 
+                             color="#2C3E50")
             ax_thr.legend(fontsize=8, loc="upper right")
             ax_thr.set_ylim(0.4, 1.0)
             ax_thr.grid(True, alpha=0.3)
@@ -1410,7 +1356,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
             fig_thr.savefig(str(thr_evo_path), dpi=200, facecolor="white")
             plt.close(fig_thr)
 
-        # Stats
+        # ┏━━━━━━━━━━ Statistics of SAOCP ━━━━━━━━━━┓
         n_total = len(y_test)
         n_approved = int(m2_approved.sum())
         n_m2_good = int(((m2_approved) & (y_test == 1)).sum())
@@ -1419,19 +1365,19 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         m1_wr = m1_good / n_total * 100 if n_total > 0 else 0
         execution_rate = n_approved / n_total * 100 if n_total > 0 else 0
 
-        # Test selective metrics (use OCP mask when applicable)
+        # ┏━━━━━━━━━━ Test selective metrics (use OCP mask when applicable) ━━━━━━━━━━┓
         if thres_mode == "OCP":
             sel_test = m2_approved
         else:
             sel_test = test_probs >= threshold
-        n_sel_test = int(sel_test.sum())
-        err_test = int((y_test[sel_test] == 0).sum()) if n_sel_test > 0 else 0
+        n_sel_test    = int(sel_test.sum())
+        err_test      = int((y_test[sel_test] == 0).sum()) if n_sel_test > 0 else 0
         net_rets_test = test_returns[sel_test] - fee if n_sel_test > 0 else np.array([0.0])
-        mu_test = float(np.nanmean(net_rets_test))
-        sigma_test = float(np.nanstd(net_rets_test, ddof=1)) if n_sel_test > 1 else 0.0
-        t_test = mu_test / sigma_test * np.sqrt(n_sel_test) if sigma_test > 0 else 0.0
+        mu_test       = float(np.nanmean(net_rets_test))
+        sigma_test    = float(np.nanstd(net_rets_test, ddof=1)) if n_sel_test > 1 else 0.0
+        t_test        = mu_test / sigma_test * np.sqrt(n_sel_test) if sigma_test > 0 else 0.0
 
-        # Equity curves
+        # ┏━━━━━━━━━━ Equity curves ━━━━━━━━━━┓
         raw_close = _load_raw_close_prices(cfg, gran, direction=direction)
         has_bh = len(raw_close) > 0
         if has_bh:
@@ -1443,10 +1389,11 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         else:
             full_idx = pd.DatetimeIndex(sorted(df_trades["date"].unique()))
 
+        # ┏━━━━━━━━━━ Equity curves for M1 & M2 ━━━━━━━━━━┓
         m1_equity, _ = _build_spread_equity(df_trades, full_idx, horizon)
         m2_equity, _ = _build_spread_equity(m2_df, full_idx, horizon)
 
-        # Sharpe: horizon-length non-overlapping returns from equity curve
+        # ┏━━━━━━━━━━ Sharpe: horizon-length non-overlapping returns from equity curve ━━━━━━━━━━┓
         ann_bar = _annualization_factor(gran)
         ann_horizon = np.sqrt(ann_bar ** 2 / horizon)
 
@@ -1454,23 +1401,20 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         m1_name = "M1 Kronos (all trades)"
         bh_name = "Buy & Hold"
 
+        # ┏━━━━━━━━━━ Results from Backtest: Sharpe Ratio, Max Drawdown, Total Return ━━━━━━━━━━┓
         strats = {}
         for name, eq, tdf in [(m2_name, m2_equity, m2_df), (m1_name, m1_equity, df_trades)]:
             h_rets = _equity_horizon_returns(eq, horizon) if len(eq) > horizon else np.array([])
-            strats[name] = {
-                "total_ret": (eq.iloc[-1] - 1) * 100 if len(eq) > 0 else 0,
-                "mdd": _calc_drawdown(eq.values) * 100 if len(eq) > 0 else 0,
-                "sharpe": _calc_sharpe(h_rets, ann_horizon),
-            }
+            strats[name] = {"total_ret": (eq.iloc[-1] - 1) * 100 if len(eq) > 0 else 0,
+                            "mdd": _calc_drawdown(eq.values) * 100 if len(eq) > 0 else 0,
+                            "sharpe": _calc_sharpe(h_rets, ann_horizon)}
         if has_bh:
             bh_h_rets = _equity_horizon_returns(bh_equity, horizon) if len(bh_equity) > horizon else np.array([])
-            strats[bh_name] = {
-                "total_ret": (bh_equity.iloc[-1] - 1) * 100,
-                "mdd": _calc_drawdown(bh_equity.values) * 100,
-                "sharpe": _calc_sharpe(bh_h_rets, ann_horizon),
-            }
+            strats[bh_name] = {"total_ret": (bh_equity.iloc[-1] - 1) * 100,
+                               "mdd": _calc_drawdown(bh_equity.values) * 100,
+                               "sharpe": _calc_sharpe(bh_h_rets, ann_horizon)}
 
-        # ── Plot equity curve ──
+        # ┏━━━━━━━━━━ Plot equity curve ━━━━━━━━━━┓
         if thres_mode == "OCP":
             ocp_median_tau = float(np.median(np.maximum(test_s_hats, 1.0 - test_s_hats)))
             constraint_tag = "OCP Adaptive"
@@ -1482,16 +1426,10 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         direction_label = direction.upper()
 
         fig, ax = plt.subplots(figsize=(14, 6))
-        ax.plot((m2_equity - 1) * 100,
-                label=f"{m2_name} (SR: {strats[m2_name]['sharpe']:.2f}, Exec: {execution_rate:.1f}%)",
-                color="green", linewidth=3.0)
-        ax.plot((m1_equity - 1) * 100,
-                label=f"{m1_name} (SR: {strats[m1_name]['sharpe']:.2f})",
-                color="blue", alpha=0.6, linewidth=2.0)
+        ax.plot((m2_equity - 1) * 100, label=f"{m2_name} (SR: {strats[m2_name]['sharpe']:.2f}, Exec: {execution_rate:.1f}%)", color="green", linewidth=3.0)
+        ax.plot((m1_equity - 1) * 100, label=f"{m1_name} (SR: {strats[m1_name]['sharpe']:.2f})", color="blue", alpha=0.6, linewidth=2.0)
         if has_bh:
-            ax.plot((bh_equity - 1) * 100,
-                    label=f"{bh_name} (SR: {strats[bh_name]['sharpe']:.2f})",
-                    color="gray", linestyle="--", linewidth=1.5)
+            ax.plot((bh_equity - 1) * 100, label=f"{bh_name} (SR: {strats[bh_name]['sharpe']:.2f})", color="gray", linestyle="--", linewidth=1.5)
         ax.axhline(0, color="black", linewidth=0.5)
         ax.set_title(f"UNIFIED {mlabel} {gran.upper()}+{direction_label}+{mode.upper()} "
                      f"thr={thr_display_eq:.3f} ({constraint_tag}){fee_tag}", fontsize=12)
@@ -1502,7 +1440,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         fig.savefig(gran_dir / f"backtest_equity_curve.png", dpi=200)
         plt.close(fig)
 
-        # ── ROI report ──
+        # ┏━━━━━━━━━━ ROI report ━━━━━━━━━━┓
         avg_ret_approved = m2_df["return"].mean() * 100 if len(m2_df) > 0 else 0
         avg_ret_rejected = df_trades[~df_trades["m2_approved"]]["return"].mean() * 100 if n_total > n_approved else 0
         edge = avg_ret_approved - avg_ret_rejected
@@ -1527,18 +1465,21 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
             f"{'Strategy':<27} {'Total Ret':>10} {'MaxDD':>8} {'Sharpe':>8}",
             "-" * 60,
         ]
+
+        # ┏━━━━━━━━━━ Add strategy results to ROI report ━━━━━━━━━━┓
         for sname in [m2_name, m1_name, bh_name]:
             if sname in strats:
                 s = strats[sname]
                 roi_lines.append(f"{sname:<27} {s['total_ret']:>+9.2f}% {s['mdd']:>+7.2f}% {s['sharpe']:>7.2f}")
         roi_lines.append("=" * 60)
 
+        # ┏━━━━━━━━━━ Save ROI report to file ━━━━━━━━━━┓
         roi_text = "\n".join(roi_lines)
         with open(gran_dir / "backtest_ROI.txt", "w") as f:
             f.write(roi_text)
         print(roi_text)
 
-        # Store per-gran summary
+        # ┏━━━━━━━━━━ Store per-gran summary ━━━━━━━━━━┓
         summary["per_gran"][gran] = {
             "n_train": gd["n_train"],
             "n_val": len(gd["idx_val"]),
@@ -1547,73 +1488,64 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
             "constraint_satisfied": val_op["constraint_satisfied"],
             "Val": presel_metrics.get("Val", {}),
             "Test": presel_metrics.get("Test", {}),
-            "val_selective": {
-                "coverage": val_op["coverage"],
-                "risk": val_op["risk"],
-                "precision": 1 - val_op["risk"],
-                "mean_ret": val_op["mean_ret"],
-                "t_stat": val_op["t_stat"],
-                "selected_count": val_op["selected_count"],
-            },
-            "test_selective": {
-                "coverage": n_sel_test / n_total if n_total > 0 else 0,
-                "risk": err_test / max(n_sel_test, 1),
-                "precision": 1 - err_test / max(n_sel_test, 1),
-                "mean_ret": mu_test,
-                "t_stat": t_test,
-                "selected_count": n_sel_test,
-                **({"ocp": {
-                    "alpha": ocp_alpha,
-                    "conformal_coverage": round(ocp_op.get("conformal_coverage", 0), 4),
-                    "target_coverage": round(1 - ocp_alpha, 4),
-                    "guarantee_met": ocp_op.get("conformal_coverage", 0) >= (1 - ocp_alpha),
-                    "n_set_1_trade": ocp_op.get("n_set_1", 0),
-                    "n_set_0_dont_trade": ocp_op.get("n_set_0", 0),
-                    "n_set_both_abstain": ocp_op.get("n_set_both", 0),
-                    "n_set_empty_abstain": ocp_op.get("n_set_empty", 0),
-                }} if thres_mode == "OCP" else {}),
-            },
-            "backtest": {
-                "execution_rate": execution_rate,
-                "n_total_trades": n_total,
-                "n_m2_trades": n_approved,
-                "m1_win_rate": m1_wr,
-                "m2_win_rate": m2_wr,
-                "m2_total_return": strats[m2_name]["total_ret"],
-                "m1_total_return": strats[m1_name]["total_ret"],
-                "bh_total_return": strats.get(bh_name, {}).get("total_ret", None),
-                "m2_sharpe": strats[m2_name]["sharpe"],
-                "m1_sharpe": strats[m1_name]["sharpe"],
-                "bh_sharpe": strats.get(bh_name, {}).get("sharpe", None),
-                "m2_max_drawdown": strats[m2_name]["mdd"],
-                "m1_max_drawdown": strats[m1_name]["mdd"],
-                "bh_max_drawdown": strats.get(bh_name, {}).get("mdd", None),
-                "fee": fee,
-            },
+            "val_selective": {"coverage": val_op["coverage"],
+                              "risk": val_op["risk"],
+                              "precision": 1 - val_op["risk"],
+                              "mean_ret": val_op["mean_ret"],
+                              "t_stat": val_op["t_stat"],
+                              "selected_count": val_op["selected_count"]},
+            "test_selective": {"coverage": n_sel_test / n_total if n_total > 0 else 0,
+                               "risk": err_test / max(n_sel_test, 1),
+                               "precision": 1 - err_test / max(n_sel_test, 1),
+                               "mean_ret": mu_test,
+                               "t_stat": t_test,
+                               "selected_count": n_sel_test,
+                               **({"ocp": {
+                                   "alpha": ocp_alpha,
+                                   "conformal_coverage": round(ocp_op.get("conformal_coverage", 0), 4),
+                                   "target_coverage": round(1 - ocp_alpha, 4),
+                                   "guarantee_met": ocp_op.get("conformal_coverage", 0) >= (1 - ocp_alpha),
+                                   "n_set_1_trade": ocp_op.get("n_set_1", 0),
+                                   "n_set_0_dont_trade": ocp_op.get("n_set_0", 0),
+                                   "n_set_both_abstain": ocp_op.get("n_set_both", 0),
+                                   "n_set_empty_abstain": ocp_op.get("n_set_empty", 0)}} if thres_mode == "OCP" else {})},
+            "backtest": {"execution_rate": execution_rate,
+                         "n_total_trades": n_total,
+                         "n_m2_trades": n_approved,
+                         "m1_win_rate": m1_wr,
+                         "m2_win_rate": m2_wr,
+                         "m2_total_return": strats[m2_name]["total_ret"],
+                         "m1_total_return": strats[m1_name]["total_ret"],
+                         "bh_total_return": strats.get(bh_name, {}).get("total_ret", None),
+                         "m2_sharpe": strats[m2_name]["sharpe"],
+                         "m1_sharpe": strats[m1_name]["sharpe"],
+                         "bh_sharpe": strats.get(bh_name, {}).get("sharpe", None),
+                         "m2_max_drawdown": strats[m2_name]["mdd"],
+                         "m1_max_drawdown": strats[m1_name]["mdd"],
+                         "bh_max_drawdown": strats.get(bh_name, {}).get("mdd", None),
+                         "fee": fee,
+                    },
         }
 
-    # ------------------------------------------------------------------
-    # 5. Save unified summary
-    # ------------------------------------------------------------------
+    # ┏━━━━━━━━━━ Save unified summary ━━━━━━━━━━┓
     with open(save_dir / "unified_summary.json", "w") as f:
         json.dump(summary, f, indent=2, cls=NumpyJSONEncoder)
 
-    # Save model artifacts
-    artifacts = {
-        "model": model,
-        "scaler": scaler,
-        "feature_names": feature_names,
-        "gran_list": gran_list,
-        "thresholds": {g: summary["per_gran"][g]["threshold"] for g in gran_list},
-        "direction": direction,
-        "mode": mode,
-        "train_end": train_end,
-        "val_end": val_end,
-    }
+    # ┏━━━━━━━━━━ Save model artifacts ━━━━━━━━━━┓
+    artifacts = {"model": model,
+                 "scaler": scaler,
+                 "feature_names": feature_names,
+                 "gran_list": gran_list,
+                 "thresholds": {g: summary["per_gran"][g]["threshold"] for g in gran_list},
+                 "direction": direction,
+                 "mode": mode,
+                 "train_end": train_end,
+                 "val_end": val_end}
+    
+    # ┏━━━━━━━━━━ Save unified model ━━━━━━━━━━┓
     with open(save_dir / "unified_model.pkl", "wb") as f:
         pickle.dump(artifacts, f)
     print(f"\n  Model saved to {save_dir / 'unified_model.pkl'}")
-
     print(f"\nDone (unified {direction}). Outputs in: {save_dir}")
 
 

@@ -31,7 +31,7 @@ def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = Non
     uni_mode = unified_data.get("meta_label_mode", "tp")
 
     per_gran_results = {}
-    for summary_path in sorted(per_gran_dir.glob("*_*_*/analysis_summary.json")):
+    for summary_path in sorted(per_gran_dir.glob("*/analysis_summary.json")):
         with open(summary_path) as f:
             data = json.load(f)
         if data.get("direction") != uni_direction or data.get("meta_label_mode") != uni_mode:
@@ -480,7 +480,7 @@ def run_paradigm_comparison(dirs: list):
     unified_data = {}
 
     for p_idx, d in enumerate(dirs):
-        for sp in sorted(d.glob("*_*_*/analysis_summary.json")):
+        for sp in sorted(d.glob("*/analysis_summary.json")):
             with open(sp) as f:
                 data = json.load(f)
             direction = data.get("direction", "up")

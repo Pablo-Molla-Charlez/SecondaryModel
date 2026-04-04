@@ -2,17 +2,21 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Kronos-M2%20Tree%20Stack-0f766e?style=for-the-badge" alt="Kronos M2 Tree Stack" />
+  <img src="https://img.shields.io/badge/Models-Utils%2Fmodels.py-1d4ed8?style=for-the-badge" alt="Models Utils models py" />
   <img src="https://img.shields.io/badge/Config-config.yaml-2563eb?style=for-the-badge" alt="Config config yaml" />
+  <img src="https://img.shields.io/badge/Outputs-src%2FOutput-f59e0b?style=for-the-badge" alt="Outputs src Output" />
   <img src="https://img.shields.io/badge/OCP-SAOCP%20Diagnostics-7c3aed?style=for-the-badge" alt="OCP SAOCP Diagnostics" />
 </p>
 
-> Current `src/` workspace for the Secondary Model of the Meta-Labelng architecture, on top of financial foundation models like Kronos or Fincast.
+> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, on top of financial foundation models like Kronos or Fincast.
 > This README documents the code that is actually present today: the modular tree-based M2 stack around `kronos_tree.py` and `Utils/`.
 
 <table>
   <tr>
     <td bgcolor="#ccfbf1"><strong>Main Entry</strong><br /><code>kronos_tree.py</code></td>
+    <td bgcolor="#dbeafe"><strong>Model Registry</strong><br /><code>Utils/models.py</code></td>
     <td bgcolor="#dbeafe"><strong>Primary Config</strong><br /><code>config.yaml</code></td>
+    <td bgcolor="#fef3c7"><strong>Outputs</strong><br /><code>src/Output/</code></td>
     <td bgcolor="#ede9fe"><strong>OCP Diagnostics</strong><br /><code>Utils/ocp_analysis.py</code></td>
   </tr>
 </table>
@@ -24,6 +28,7 @@
 <p>
   <img src="https://img.shields.io/badge/Data-Preprocessing-0f766e?style=flat-square" alt="Data Preprocessing" />
   <img src="https://img.shields.io/badge/Models-RF%20%7C%20XGBoost%20%7C%20AutoGluon-2563eb?style=flat-square" alt="Models" />
+  <img src="https://img.shields.io/badge/Factory-Utils%2Fmodels.py-1d4ed8?style=flat-square" alt="Factory Utils models py" />
   <img src="https://img.shields.io/badge/Selection-Utility%20or%20SAOCP-f59e0b?style=flat-square" alt="Selection" />
   <img src="https://img.shields.io/badge/Reports-Backtests%20%7C%20Comparisons%20%7C%20OCP-7c3aed?style=flat-square" alt="Reports" />
 </p>
@@ -33,8 +38,9 @@
 flowchart LR
     A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data_preprocessing.py]
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
-    C --> D[kronos_tree.py<br/>RF / XGBoost / AutoGluon]
-    D --> E[Selective Classification<br/>utility threshold or SAOCP]
+    C --> D[kronos_tree.py<br/>pipeline orchestration]
+    D --> K[Utils/models.py<br/>model factory and AutoGluon wrapper]
+    K --> E[Selective Classification<br/>utility threshold or SAOCP]
     E --> F[Feature Plots]
     E --> G[Temporal Evaluation]
     E --> H[Backtests]
@@ -45,12 +51,10 @@ flowchart LR
     classDef select fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
     classDef report fill:#7c3aed,stroke:#6d28d9,color:#ffffff,stroke-width:2px;
     class A,B,C input;
-    class D model;
+    class D,K model;
     class E select;
     class F,G,H,I,J report;
-    linkStyle 0,1,2 stroke:#0f766e,stroke-width:6px;
-    linkStyle 3 stroke:#2563eb,stroke-width:6px;
-    linkStyle 4,5,6,7,8 stroke:#f59e0b,stroke-width:6px;
+    linkStyle default stroke:#0f172a,stroke-width:5px;
 ```
 
 ```mermaid
@@ -81,9 +85,12 @@ flowchart TD
 
 The active `src/` tree is centered on `kronos_tree.py`, which drives the current M2 research workflow for tree-based meta-label filtering on top of Kronos/Fincast signals.
 
+The latest refactor also split model-definition logic into `Utils/models.py`, so model construction is no longer described as living inside `kronos_tree.py`.
+
 It supports:
 
 - Random Forest, XGBoost, and AutoGluon classifiers
+- Centralized model construction through `Utils/models.py`
 - Feature diagnostics and ranking
 - Temporal validation and test evaluation
 - Utility-threshold and SAOCP selection
@@ -97,6 +104,7 @@ It supports:
 
 <p>
   <img src="https://img.shields.io/badge/Core-kronos_tree.py-2563eb?style=flat-square" alt="Core kronos_tree py" />
+  <img src="https://img.shields.io/badge/Models-Utils%2Fmodels.py-1d4ed8?style=flat-square" alt="Models Utils models py" />
   <img src="https://img.shields.io/badge/Utilities-Utils%2F-0f766e?style=flat-square" alt="Utilities Utils" />
   <img src="https://img.shields.io/badge/Data-Data_MLA-f59e0b?style=flat-square" alt="Data Data MLA" />
 </p>
@@ -104,7 +112,8 @@ It supports:
 | Path | Role |
 | --- | --- |
 | `config.yaml` | Main runtime configuration for paths, dates, selected engineered features, forecast horizon, and fees. |
-| `kronos_tree.py` | Main M2 analysis entrypoint and the only primary CLI in this folder. |
+| `kronos_tree.py` | Main M2 analysis entrypoint and the only primary CLI in this folder; orchestrates training, evaluation, selection, backtesting, and reporting. |
+| `Utils/models.py` | Central model factory for `rf`, `xgboost`, and `autogluon`, including the sklearn-compatible AutoGluon wrapper and model-info export helpers. |
 | `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, and feature plumbing. |
 | `Utils/features.py` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
 | `Utils/selective_classification.py` | Risk-coverage utilities, plotting, metrics export, and utility-threshold search. |
@@ -185,47 +194,11 @@ The current `config.yaml` uses `granularity: "all"`, so the normal choices for t
 Important constraint:
 
 - `--top5 true` requires `--features true`
+- The actual model objects used by `--model` are now built in `Utils/models.py`
 
 ### `features.py`: No Standalone CLI
 
-`Utils/features.py` is a library module, not a script with `argparse`. In normal usage it is triggered indirectly by `kronos_tree.py` when `--features true`.
-
-There is no supported command of the form:
-
-- `python Utils/features.py ...`
-
-If you want to call it directly, use a Python snippet:
-
-```bash
-python - <<'PY'
-from pathlib import Path
-import pandas as pd
-from Utils.features import (
-    plot_correlation_heatmap,
-    plot_mutual_information,
-    plot_pointbiserial,
-)
-
-df = pd.read_csv("your_feature_frame.csv")
-labels = df.pop("label").to_numpy()
-save_dir = Path("Output/Kronos/manual_feature_checks")
-save_dir.mkdir(parents=True, exist_ok=True)
-
-plot_correlation_heatmap(df, save_dir)
-plot_mutual_information(df, labels, save_dir)
-plot_pointbiserial(df, labels, ["negative", "positive"], save_dir)
-PY
-```
-
-Common exported functions include:
-
-- `plot_correlation_heatmap`
-- `plot_pointbiserial`
-- `plot_class_distributions`
-- `plot_mutual_information`
-- `plot_tree_importance`
-- `plot_confusion_matrix`
-- `compute_top_features`
+`Utils/features.py` is a support module, not a script with its own CLI. In normal usage it is reached indirectly through `kronos_tree.py` when feature analysis is enabled.
 
 ### `comparison.py`: No Standalone CLI
 
@@ -234,56 +207,60 @@ Common exported functions include:
 - `python kronos_tree.py --comparison ...`
 - `python kronos_tree.py --paradigm-comparison ...`
 
-There is no supported command of the form:
-
-- `python Utils/comparison.py ...`
-
-If you want to call the module directly, use:
-
-```bash
-python - <<'PY'
-from pathlib import Path
-from Utils.comparison import run_comparison, run_paradigm_comparison
-
-run_comparison(
-    Path("Output/Kronos/randforest"),
-    Path("Output/Kronos/randforest/unified_down_tp"),
-)
-
-run_paradigm_comparison([
-    "Output/Kronos/randforest",
-    "Output/Kronos/xgboost",
-    "Output/Kronos/autogluon",
-])
-PY
-```
+There is no standalone `python Utils/comparison.py ...` workflow documented for normal use.
 
 ---
 
 ## Outputs
 
 <p>
-  <img src="https://img.shields.io/badge/Artifact%20Root-src%2FOutput%2FKronos-f59e0b?style=flat-square" alt="Artifact Root" />
-  <img src="https://img.shields.io/badge/Includes-JSON%20CSV%20Plots%20Backtests-7c3aed?style=flat-square" alt="Includes" />
+  <img src="https://img.shields.io/badge/Artifact%20Root-src%2FOutput-f59e0b?style=flat-square" alt="Artifact Root" />
+  <img src="https://img.shields.io/badge/Active-Kronos-0f766e?style=flat-square" alt="Active Kronos" />
+  <img src="https://img.shields.io/badge/Legacy-Analysis-64748b?style=flat-square" alt="Legacy Analysis" />
 </p>
 
-Current experiment artifacts are written under:
+Current output root:
 
 ```text
-src/Output/Kronos/
+src/Output/
 ```
 
-Typical contents include:
+Current on-disk hierarchy:
 
-- feature plots and feature-ranking summaries
-- confusion matrices and classification metrics
-- risk-coverage curves
-- OCP / SAOCP diagnostics
-- trade logs and backtest CSVs
-- equity curves
-- `analysis_summary.json`
-- `unified_summary.json`
-- comparison figures and CSV exports
+```text
+src/Output/
+├── Analysis/
+│   ├── Theory/
+│   │   ├── ExperimentA/
+│   │   ├── ExperimentB/
+│   │   ├── ExperimentC/
+│   │   ├── ExperimentD/
+│   │   ├── ExperimentE/
+│   │   ├── ExperimentF/
+│   │   ├── ExperimentG/
+│   │   ├── ExperimentH/
+│   │   └── ExperimentI/
+│   └── Uncertainty/
+│       ├── All/
+│       ├── Per_Granularity/
+│       └── Probe/
+└── Kronos/
+    ├── autogluon/
+    │   ├── DOWN/
+    │   └── UP/
+    ├── cache/
+    └── randforest/
+        ├── DOWN/
+        └── UP/
+```
+
+How to read this structure:
+
+- `src/Output/Kronos/` is the active result tree for the current M2 workflow.
+- `src/Output/Kronos/cache/` stores dataset caches used by `kronos_tree.py`.
+- `src/Output/Kronos/autogluon/` and `src/Output/Kronos/randforest/` currently hold model-family result folders split by `UP` and `DOWN`.
+- `src/Output/Analysis/` keeps older theory and uncertainty-study outputs that are still present on disk but are not the main target of the current Kronos tree workflow.
+- Additional model-family folders, such as `xgboost/`, appear here when those runs are generated.
 
 ---
 

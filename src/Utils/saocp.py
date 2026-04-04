@@ -1,9 +1,8 @@
 """Reusable OCP and SAOCP helpers for Kronos M2 analyses."""
-
-from collections import deque
-
 import numpy as np
 import pandas as pd
+from collections import deque
+from Utils.utils import seed_everything
 
 
 # ┏━━━━━━━━━━ OCP Conformity Score ━━━━━━━━━━┓
@@ -22,6 +21,7 @@ def _run_saocp_online(val_probs,
                       forecast_horizon: int = 1,
                       val_dates             = None):
     """Run SAOCP with validation warm-up followed by test-time adaptation."""
+    seed_everything(42)
     from online_conformal.saocp import SAOCP
 
     # ┏━━━━━━━━━━ SAOCP Initialization ━━━━━━━━━━┓
