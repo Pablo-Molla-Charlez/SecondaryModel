@@ -8,12 +8,12 @@ Modes:
   --all-grans  Unified model trained on all granularities, evaluated per-gran
 
 Usage:
-  python Utils/kronos_tree.py --per-gran --cache path/to/multi.pt            # per-gran models (default)
+  python Utils/kronos_tree.py --per-gran --cache path/to/multi.pt                                # per-gran models (default)
   python Utils/kronos_tree.py --per-gran --cache path/to/multi.pt --features false --top5 false  # skip feature analysis
-  python Utils/kronos_tree.py --all-grans --cache path/to/multi.pt           # unified multi-gran model
-  python Utils/kronos_tree.py --cache path/to/cache.pt                       # single-gran auto-detect
-  python Utils/kronos_tree.py --model xgboost --cache path/to/cache.pt       # use XGBoost
-  python Utils/kronos_tree.py --model autogluon --cache path/to/cache.pt     # use AutoGluon ensemble
+  python Utils/kronos_tree.py --all-grans --cache path/to/multi.pt                               # unified multi-gran model
+  python Utils/kronos_tree.py --cache path/to/cache.pt                                           # single-gran auto-detect
+  python Utils/kronos_tree.py --model xgboost --cache path/to/cache.pt                           # use XGBoost
+  python Utils/kronos_tree.py --model autogluon --cache path/to/cache.pt                         # use AutoGluon ensemble
 """
 
 import argparse, hashlib, sys, json, pickle
@@ -55,13 +55,17 @@ from Utils.features import (_plot_prob_distribution,
                             plot_correlation_heatmap,
                             plot_mutual_information,
                             plot_confusion_matrix, 
+                            plot_ocp_threshold_evolution,
                             plot_pointbiserial,
+                            plot_temporal_risk_coverage_curve,
                             plot_tree_importance,
                             compute_top_features)
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
-from Utils.saocp import (_ocp_threshold_to_op, 
-                         _run_saocp_online)
+from Utils.saocp import (_ocp_threshold_to_op,
+                         _run_saocp_online,
+                         _run_cost_deferral_online,
+                         calib_window_for_gran)
 
 # ┏━━━━━━━━━━ Utility-based Selective Classification [risk-coverage analysis] ━━━━━━━━━━┓   
 from Utils.selective_classification import (_find_best_utility_threshold, 
@@ -104,11 +108,13 @@ def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
     df = pd.DataFrame(eng, columns=ENG_FEATURE_NAMES)
     return df, labels
 
-
-def temporal_eval(dataset: dict, 
-                  feature_cols: list, 
+# ------------------------------------------------------------------------------
+# Run analysis for a Single M2 (each granularity independently)
+# ------------------------------------------------------------------------------
+def temporal_eval(dataset: dict,
+                  feature_cols: list,
                   save_dir: Path,
-                  class_names: list, 
+                  class_names: list,
                   meta_mode: str,
                   split_indices: tuple,
                   direction: str = "up",
@@ -116,8 +122,11 @@ def temporal_eval(dataset: dict,
                   model_name: str = "rf",
                   desc: str = "all features", file_prefix: str = "8_temporal_all",
                   thres_mode: str = "utility", ocp_alpha: float = 0.10,
-                  forecast_horizon: int = 1,      
-                  split_indices_raw: tuple = None) -> dict:
+                  forecast_horizon: int = 1,
+                  split_indices_raw: tuple = None,
+                  granularity: str = "1d",
+                  ocp_costs: tuple = (0.0, 10.0, 2.0),
+                  ocp_window_days: int = 25) -> dict:
     """Train model on train split, evaluate on val and test. Plot confusion matrices.
 
     Threshold selection uses financial utility (t-statistic of net returns)
@@ -128,8 +137,8 @@ def temporal_eval(dataset: dict,
         direction: 'up' or 'down' — used to flip returns for short strategies.
         fee: per-trade fee (decimal, e.g. 0.002 for 0.2%).
     """
+    # ┏━━━━━━━━━━ Load Data ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
-
     eng = dataset["eng_features"]
     if isinstance(eng, torch.Tensor):
         eng = eng.numpy()
@@ -140,10 +149,14 @@ def temporal_eval(dataset: dict,
     if isinstance(returns_all, torch.Tensor):
         returns_all = returns_all.numpy()
 
+    # ┏━━━━━━━━━━ Split Data ━━━━━━━━━━┓
     idx_train, idx_val, idx_test = split_indices
 
+    # ┏━━━━━━━━━━ M1 Metrics ━━━━━━━━━━┓
     m1_acc_val, m1_prec_val = None, None
     m1_acc_test, m1_prec_test = None, None
+
+    # ┏━━━━━━━━━━ M1 Predictions and True Labels ━━━━━━━━━━┓
     if split_indices_raw is not None:
         from sklearn.metrics import accuracy_score, precision_score
         idx_train_raw, idx_val_raw, idx_test_raw = split_indices_raw
@@ -155,6 +168,7 @@ def temporal_eval(dataset: dict,
             if isinstance(m1_pred_all, torch.Tensor): m1_pred_all = m1_pred_all.numpy()
             if isinstance(m1_true_all, torch.Tensor): m1_true_all = m1_true_all.numpy()
 
+            # ┏━━━━━━━━━━ Calculate M1 Precision and Accuracy ━━━━━━━━━━┓
             def _calc_m1(idx_raw):
                 p, t = m1_pred_all[idx_raw], m1_true_all[idx_raw]
                 valid = frozenset(np.where(~np.isnan(p) & ~np.isnan(t))[0])
@@ -166,9 +180,11 @@ def temporal_eval(dataset: dict,
             m1_acc_val, m1_prec_val = _calc_m1(idx_val_raw)
             m1_acc_test, m1_prec_test = _calc_m1(idx_test_raw)
 
+    # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
     all_names = list(ENG_FEATURE_NAMES)
     col_indices = [all_names.index(c) for c in feature_cols]
 
+    # ┏━━━━━━━━━━ Train, Validation, and Test Sets ━━━━━━━━━━┓
     X_train = eng[idx_train][:, col_indices]
     y_train = labels[idx_train].astype(int)
     X_val   = eng[idx_val][:, col_indices]
@@ -176,27 +192,33 @@ def temporal_eval(dataset: dict,
     X_test  = eng[idx_test][:, col_indices]
     y_test  = labels[idx_test].astype(int)
 
-    # Direction-aware returns for utility calculation
+    # ┏━━━━━━━━━━ Direction-aware returns for utility calculation ━━━━━━━━━━┓
     val_returns = returns_all[idx_val].copy()
     test_returns = returns_all[idx_test].copy()
     if direction.lower() == "down":
         val_returns = -val_returns
         test_returns = -test_returns
 
+    # ┏━━━━━━━━━━ Standardize Features ━━━━━━━━━━┓
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_val   = scaler.transform(X_val)
     X_test  = scaler.transform(X_test)
 
+    # ┏━━━━━━━━━━ Class Weights ━━━━━━━━━━┓
     n_pos = int((y_train == 1).sum())
     n_neg = int((y_train == 0).sum())
     cw_ratio = n_neg / max(n_pos, 1)
 
-    model = _build_tree_model(model_name, len(y_train), cw_ratio,
-                              feature_names=feature_cols,
-                              presets=_AG_PRESETS)
+    # ┏━━━━━━━━━━ Build Tree Model ━━━━━━━━━━┓
+    model = _build_tree_model(model_name, 
+                              len(y_train), 
+                              cw_ratio,
+                              feature_names = feature_cols,
+                              presets       = _AG_PRESETS)
     model.fit(X_train, y_train)
 
+    # ┏━━━━━━━━━━ Autogluon Leaderboard and Model Info ━━━━━━━━━━┓
     if model_name == "autogluon":
         model.leaderboard()
         model.model_info(save_dir)
@@ -206,48 +228,63 @@ def temporal_eval(dataset: dict,
     val_thresholds = {}
     val_op = None
 
-    # Pre-compute val probs for OCP warm-up (needed before test loop)
-    _val_probs_ocp = model.predict_proba(X_val)[:, 1] if thres_mode == "OCP" else None
-    # Extract dates for delayed feedback in SAOCP (both val and test)
-    _val_dates_ocp  = [dataset["dates"][j] for j in idx_val]  if thres_mode == "OCP" else None
-    _test_dates_ocp = [dataset["dates"][j] for j in idx_test] if thres_mode == "OCP" else None
+    # ┏━━━━━━━━━━ Pre-compute val probs for OCP warm-up (needed before test loop) ━━━━━━━━━━┓
+    _is_ocp = thres_mode.startswith("OCP")
+    _val_probs_ocp = model.predict_proba(X_val)[:, 1] if _is_ocp else None
+    
+    # ┏━━━━━━━━━━ Extract dates for delayed feedback in SAOCP (both val and test) ━━━━━━━━━━┓
+    _val_dates_ocp  = [dataset["dates"][j] for j in idx_val]  if _is_ocp else None
+    _test_dates_ocp = [dataset["dates"][j] for j in idx_test] if _is_ocp else None
 
-    for split_name, X_split, y_split, split_rets in [("Val", X_val, y_val, val_returns),
-                                                       ("Test", X_test, y_test, test_returns)]:
+    # ┏━━━━━━━━━━ Loop through splits ━━━━━━━━━━┓
+    for split_name, X_split, y_split, split_rets in [("Val", X_val, y_val, val_returns), ("Test", X_test, y_test, test_returns)]:
+        
+        # ┏━━━━━━━━━━ Predictions and Probabilities ━━━━━━━━━━┓
         preds = model.predict(X_split)
         probs = model.predict_proba(X_split)[:, 1]  # P(class=1)
         prec_val = round(float(precision_score(y_split, preds, zero_division=0)), 4)
         n_pred_pos = int((preds == 1).sum())
-        metrics = {
-            "accuracy":  round(float(accuracy_score(y_split, preds)), 4),
-            "precision": prec_val,
-            "recall":    round(float(recall_score(y_split, preds, zero_division=0)), 4),
-            "f1_score":  round(float(f1_score(y_split, preds, zero_division=0)), 4),
-            "coverage":  round(n_pred_pos / len(y_split), 4) if len(y_split) > 0 else 0,
-            "risk":      round(1 - prec_val, 4),
-            "baseline":  round(int((y_split == 1).sum()) / len(y_split), 4) if len(y_split) > 0 else 0,
-        }
+        
+        # ┏━━━━━━━━━━ Metrics ━━━━━━━━━━┓
+        metrics = {"accuracy":  round(float(accuracy_score(y_split, preds)), 4),
+                   "precision": prec_val,
+                   "recall":    round(float(recall_score(y_split, preds, zero_division=0)), 4),
+                   "f1_score":  round(float(f1_score(y_split, preds, zero_division=0)), 4),
+                   "coverage":  round(n_pred_pos / len(y_split), 4) if len(y_split) > 0 else 0,
+                   "risk":      round(1 - prec_val, 4),
+                   "baseline":  round(int((y_split == 1).sum()) / len(y_split), 4) if len(y_split) > 0 else 0}
         results[split_name] = metrics
 
+        # ┏━━━━━━━━━━ M1 Metrics ━━━━━━━━━━┓
         m1_a = m1_acc_test if split_name == "Test" else m1_acc_val
         m1_p = m1_prec_test if split_name == "Test" else m1_prec_val
 
+        # ┏━━━━━━━━━━ Confusion Matrix ━━━━━━━━━━┓
         cm_path = save_dir / f"{file_prefix}_{split_name}_CM.png"
-        plot_confusion_matrix(y_split, preds, classes=class_names,
-                              save_path=str(cm_path),
-                              title=f"{mlabel} {split_name} (@thr=0.5) | {desc}",
-                              meta_mode=meta_mode,
-                              m1_acc=m1_a, m1_prec=m1_p)
+        plot_confusion_matrix(y_split, 
+                              preds, 
+                              classes   = class_names,
+                              save_path = str(cm_path),
+                              title     = f"{mlabel} {split_name} (@thr=0.5) | {desc}",
+                              meta_mode = meta_mode,
+                              m1_acc    = m1_a, 
+                              m1_prec   = m1_p)
 
-        _plot_prob_distribution(y_split, probs, class_names, save_dir,
-                                file_prefix=f"{file_prefix}_{split_name}_Prob_Dist",
-                                title=f"{mlabel} {split_name} ({desc})")
+        # ┏━━━━━━━━━━ Probability Distribution ━━━━━━━━━━┓
+        _plot_prob_distribution(y_split, 
+                                probs, 
+                                class_names, 
+                                save_dir,
+                                file_prefix = f"{file_prefix}_{split_name}_Prob_Dist",
+                                title       = f"{mlabel} {split_name} ({desc})")
 
-        # Risk-coverage curve (always computed on own data for visualization)
-        curve = collect_risk_coverage_curve(y_true=y_split, y_score=probs)
+        # ┏━━━━━━━━━━ Risk-coverage curve ━━━━━━━━━━┓
+        curve = collect_risk_coverage_curve(y_true  = y_split, 
+                                            y_score = probs)
 
+        # ┏━━━━━━━━━━ Utility Threshold Optimization in Validation ━━━━━━━━━━┓
         if split_name == "Val":
-            # Financial utility threshold optimization on Val (always computed)
+            # ┏━━━━━━━━━━ Financial utility threshold optimization ━━━━━━━━━━┓
             op = _find_best_utility_threshold(probs, split_rets, fee=fee)
             sel_val = probs >= op["threshold"]
             n_sel_val = int(sel_val.sum())
@@ -256,37 +293,81 @@ def temporal_eval(dataset: dict,
             val_thresholds["thr"] = op["threshold"]
             val_op = op
         else:
-            if thres_mode == "OCP":
-                # OCP: warm up on val, adapt on test (delayed feedback)
-                test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(
-                    _val_probs_ocp, y_val, probs, y_split, alpha=ocp_alpha,
-                    test_dates=_test_dates_ocp,
-                    forecast_horizon=forecast_horizon,
-                    val_dates=_val_dates_ocp)
+            if _is_ocp:
+                # ┏━━━━━━━━━━ OCP dispatch: choose variant ━━━━━━━━━━┓
+                _cw = calib_window_for_gran(granularity, ocp_window_days)
+                c_FN, c_FP, c_DEF = ocp_costs
+
+                # ┏━━━━━━━━━━ Cost-aware deferral (vanilla or Mondrian) ━━━━━━━━━━┓
+                if thres_mode in ("OCP-cost", "OCP-cost-mondrian"):
+                    test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_cost_deferral_online(_val_probs_ocp, 
+                                                                                                       y_val, 
+                                                                                                       probs, 
+                                                                                                       y_split, 
+                                                                                                       alpha            = ocp_alpha,
+                                                                                                       test_dates       = _test_dates_ocp,
+                                                                                                       forecast_horizon = forecast_horizon,
+                                                                                                       val_dates        = _val_dates_ocp,
+                                                                                                       calib_window     = _cw,
+                                                                                                       c_FP             = c_FP, 
+                                                                                                       c_FN             = c_FN, 
+                                                                                                       c_DEF            = c_DEF,
+                                                                                                       mondrian         = (thres_mode == "OCP-cost-mondrian"),
+                                                                                                       test_returns     = split_rets)
+
+                # ┏━━━━━━━━━━ Windowed SAOCP ━━━━━━━━━━┓
+                elif thres_mode == "OCP-W":
+                    test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(_val_probs_ocp,
+                                                                                               y_val, 
+                                                                                               probs, 
+                                                                                               y_split, 
+                                                                                               alpha            = ocp_alpha,
+                                                                                               test_dates       = _test_dates_ocp,
+                                                                                               forecast_horizon = forecast_horizon,
+                                                                                               val_dates        = _val_dates_ocp,
+                                                                                               calib_window     = _cw)
+                # ┏━━━━━━━━━━ Original OCP (unbounded history) ━━━━━━━━━━┓
+                else:
+                    test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(_val_probs_ocp,
+                                                                                               y_val, 
+                                                                                               probs, 
+                                                                                               y_split, 
+                                                                                               alpha            = ocp_alpha,
+                                                                                               test_dates       = _test_dates_ocp,
+                                                                                               forecast_horizon = forecast_horizon,
+                                                                                               val_dates        = _val_dates_ocp)
+                # ┏━━━━━━━━━━ Convert OCP thresholds to operating point ━━━━━━━━━━┓
                 op = _ocp_threshold_to_op(probs, y_split, split_rets,
                                           test_approved_ocp, test_s_hats, fee,
                                           conformal_stats=conf_stats)
-                # Store for backtest
+                op["threshold_source"] = thres_mode  # e.g. OCP, OCP-W, OCP-cost, OCP-cost-mondrian
+                
+                # ┏━━━━━━━━━━ Store for backtest ━━━━━━━━━━┓    
                 val_op["_ocp_test_approved"] = test_approved_ocp
                 val_op["_ocp_test_thresholds"] = test_s_hats
                 val_op["_ocp_val_thresholds"] = val_s_hats
                 cc = conf_stats["conformal_coverage"]
-                print(f"    OCP: α={ocp_alpha}, median τ={op['threshold']:.3f}, "
+                mode_tag = thres_mode
+                print(f"    {mode_tag}: α={ocp_alpha}, median τ={op['threshold']:.3f}, "
                       f"cov={op['coverage']:.1%}, μ={op['mean_ret']*100:+.3f}% | "
                       f"Conformal cov={cc:.1%} (target≥{1-ocp_alpha:.0%}) | "
                       f"Sets: {{1}}={conf_stats['n_set_1']} {{0}}={conf_stats['n_set_0']} "
                       f"{{0,1}}={conf_stats['n_set_both']} {{}}={conf_stats['n_set_empty']}")
-                # Save OCP diagnostics npz for offline analysis
-                np.savez_compressed(
-                    save_dir / f"{file_prefix}_{split_name}_ocp_diagnostics.npz",
-                    test_s_hats=test_s_hats,
-                    val_s_hats=val_s_hats,
-                    val_probs=_val_probs_ocp,
-                    val_labels=y_val.astype(int),
-                    alpha=np.array([ocp_alpha]),
-                )
+                if "tau_trajectory" in conf_stats:
+                    tau_std = float(np.std(conf_stats["tau_trajectory"]))
+                    print(f"    Cost params: c_FN={c_FN}, c_FP={c_FP}, c_DEF={c_DEF} | "
+                          f"τ* std={tau_std:.4f}")
+                
+                # ┏━━━━━━━━━━ Save OCP diagnostics npz for offline analysis ━━━━━━━━━━┓
+                np.savez_compressed(save_dir / f"{file_prefix}_{split_name}_ocp_diagnostics.npz",
+                                    test_s_hats = test_s_hats,
+                                    val_s_hats  = val_s_hats,
+                                    val_probs   = _val_probs_ocp,
+                                    val_labels  = y_val.astype(int),
+                                    alpha       = np.array([ocp_alpha]),
+                                    **({"tau_trajectory": conf_stats["tau_trajectory"]} if "tau_trajectory" in conf_stats else {}))
             else:
-                # Utility: apply fixed Val threshold to test
+                # ┏━━━━━━━━━━ Utility: apply fixed Val threshold to test ━━━━━━━━━━┓
                 thr = val_thresholds["thr"]
                 sel = probs >= thr
                 n_sel = int(sel.sum())
@@ -295,467 +376,116 @@ def temporal_eval(dataset: dict,
                 mu_test = float(np.nanmean(net_rets_test))
                 sigma_test = float(np.nanstd(net_rets_test, ddof=1)) if n_sel > 1 else 0.0
                 t_test = mu_test / sigma_test * np.sqrt(n_sel) if sigma_test > 0 else 0.0
-                op = {"threshold": thr, "coverage": n_sel / len(y_split),
-                      "risk": err / max(n_sel, 1), "selected_count": n_sel,
+                
+                # ┏━━━━━━━━━━ Operating Threshold ━━━━━━━━━━┓
+                op = {"threshold": thr, 
+                      "coverage": n_sel / len(y_split),
+                      "risk": err / max(n_sel, 1), 
+                      "selected_count": n_sel,
                       "constraint_satisfied": True,
-                      "mean_ret": mu_test, "t_stat": t_test}
+                      "mean_ret": mu_test, 
+                      "t_stat": t_test}
 
-        # ── Plot risk-coverage with return overlay (business-level) ──
+        # ┏━━━━━━━━━━ Plot risk-coverage with return overlay (business-level) ━━━━━━━━━━┓
         rc_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage.png"
+        plot_temporal_risk_coverage_curve(save_path = rc_path,
+                                          curve = curve,
+                                          probs = probs,
+                                          y_true = y_split,
+                                          split_rets = split_rets,
+                                          fee = fee,
+                                          op = op,
+                                          split_name = split_name,
+                                          model_label = mlabel,
+                                          thres_mode = thres_mode,
+                                          ocp_alpha = ocp_alpha,
+                                          val_threshold = val_thresholds.get("thr"),
+                                          val_op = val_op,
+                                          is_ocp = _is_ocp,
+                                          test_approved_ocp = test_approved_ocp if (split_name == "Test" and _is_ocp) else None)
 
-        # Colors
-        C_RISK   = "#1B4F72"   # deep navy for risk curve
-        C_RET    = "#1E8449"   # forest green for positive mean return
-        C_RET_N  = "#8B0000"   # dark red for negative mean return
-        C_WIN    = "#1E8449"   # lighter green for mean win
-        C_LOSS   = "#8B0000"   # burgundy for mean loss
-        C_FILL   = "#E8F8F5"   # very light teal for win/loss gap fill
-        C_FILLR  = "#FADBD8"   # very light pink for loss side
-        C_OP     = "#8B008B"   # dark magenta for operating point
-        C_GRID   = "#D5D8DC"   # subtle grey for grid
-        C_THR05  = "#34495E"   # darker grey for thr=0.5 line
-
-        fig_rc, ax_rc = plt.subplots(figsize=(10, 6.5), facecolor="white")
-        ax_rc.set_facecolor("#FAFAFA")
-
-        # ── Smooth risk curve via PCHIP ──
-        thrs = curve["thresholds"]
-        covs = curve["coverage"]
-        risks_raw = curve["risk"]
-        order = np.argsort(covs)
-        covs_s, risks_s = covs[order], risks_raw[order]
-        umask = np.concatenate(([True], np.diff(covs_s) != 0))
-        cov_u, risk_u = covs_s[umask], risks_s[umask]
-        fmask = np.isfinite(risk_u)
-        cov_u, risk_u = cov_u[fmask], risk_u[fmask]
-        if cov_u.size >= 2:
-            from scipy.interpolate import PchipInterpolator
-            grid_cov = np.linspace(cov_u.min(), cov_u.max(), 300)
-            risk_smooth = PchipInterpolator(cov_u, risk_u, extrapolate=False)(grid_cov)
-            valid_r = np.isfinite(risk_smooth)
-            grid_cov, risk_smooth = grid_cov[valid_r], risk_smooth[valid_r]
-        else:
-            grid_cov, risk_smooth = cov_u, risk_u
-
-        ax_rc.plot(grid_cov, risk_smooth, color=C_RISK, linewidth=2.2, label="Risk (Error Rate)", zorder=3)
-        ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=8)
-        ax_rc.set_ylabel("Risk (Error Rate)", fontsize=11, fontweight="bold", color="black", labelpad=8)
-        ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=9, width=1.5)
-        ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
-        
-        for spine in ax_rc.spines.values():
-            spine.set_color("black")
-            spine.set_linewidth(1.5)
-        
-        plt.setp(ax_rc.get_xticklabels(), fontweight="bold")
-        plt.setp(ax_rc.get_yticklabels(), fontweight="bold")
-
-        ax_rc.set_xlim(-0.02, 1.02)
-        ax_rc.grid(True, which="major", color=C_GRID, linewidth=0.6, alpha=0.7)
-        ax_rc.set_axisbelow(True)
-
-        # ── Compute mean return curves at each threshold ──
-        mean_rets = np.full_like(thrs, np.nan)
-        mean_win_rets = np.full_like(thrs, np.nan)
-        mean_lose_rets = np.full_like(thrs, np.nan)
-        for _i, _thr in enumerate(thrs):
-            _sel = probs >= _thr
-            _n = int(_sel.sum())
-            if _n >= 2:
-                _net = split_rets[_sel] - fee
-                _labels = y_split[_sel]
-                mean_rets[_i] = float(np.nanmean(_net))
-                _winners = _net[_labels == 1]
-                _losers = _net[_labels == 0]
-                if len(_winners) >= 1:
-                    mean_win_rets[_i] = float(np.nanmean(_winners))
-                if len(_losers) >= 1:
-                    mean_lose_rets[_i] = float(np.nanmean(_losers))
-
-        ax_ret = ax_rc.twinx()
-        valid   = ~np.isnan(mean_rets)
-        valid_w = ~np.isnan(mean_win_rets)
-        valid_l = ~np.isnan(mean_lose_rets)
-
-        # Shaded fill between mean win and mean loss
-        both_valid = valid_w & valid_l
-        if both_valid.any():
-            ax_ret.fill_between(covs[both_valid],
-                                mean_win_rets[both_valid] * 100,
-                                mean_lose_rets[both_valid] * 100,
-                                alpha=0.06, color=C_WIN, zorder=1, label="_nolegend_")
-
-        # Dynamically colored return curves
-        def plot_dynamic_return(ax, x, y, lw, ls, alpha, label, zorder):
-            if len(x) > 1:
-                from matplotlib.collections import LineCollection
-                points = np.array([x, y]).T.reshape(-1, 1, 2)
-                segments = np.concatenate([points[:-1], points[1:]], axis=1)
-                y_mids = segments[:, :, 1].mean(axis=1)
-                seg_colors = [C_RET if ym >= 0 else C_RET_N for ym in y_mids]
-                lc = LineCollection(segments, colors=seg_colors, linewidth=lw, linestyles=ls, alpha=alpha, zorder=zorder)
-                ax.add_collection(lc)
-                if label and label != "_nolegend_":
-                    ax.plot([], [], color=C_RET, linewidth=lw, linestyle=ls, label=label)
-            else:
-                c = C_RET if y[0] >= 0 else C_RET_N
-                ax.plot(x, y, color=c, linewidth=lw, linestyle=ls, alpha=alpha, label=label, zorder=zorder)
-
-        plot_dynamic_return(ax_ret, covs[valid], mean_rets[valid] * 100, 2.0, "-", 0.9, "Mean Return", 3)
-        plot_dynamic_return(ax_ret, covs[valid_w], mean_win_rets[valid_w] * 100, 1.0, ":", 0.8, "_nolegend_", 2)
-        plot_dynamic_return(ax_ret, covs[valid_l], mean_lose_rets[valid_l] * 100, 1.0, ":", 0.8, "_nolegend_", 2)
-        ax_ret.axhline(y=0, color=C_RET, linestyle=":", alpha=0.35, linewidth=1.0)
-        ax_ret.set_ylabel("Return (%)", fontsize=11, fontweight="bold", color="black", labelpad=8)
-        ax_ret.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
-        
-        for spine in ax_ret.spines.values():
-            spine.set_color("black")
-            spine.set_linewidth(1.5)
-            
-        plt.setp(ax_ret.get_yticklabels(), fontweight="bold")
-
-        # ── τ = 0.5 vertical line + label at intersection ──
-        idx_05 = np.argmin(np.abs(thrs - 0.5))
-        cov_05 = covs[idx_05]
-        risk_05 = risks_raw[idx_05]
-
-        # ── Operating point ──
-        thr_source = op.get("threshold_source", "OCP-SAOCP" if thres_mode == "OCP" else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
-        op_cov = op["coverage"]
-        op_risk = op.get("risk", 0)
-
-        # Do not show baseline if it physically overlaps the operating point on the plot
-        show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
-
-        if show_baseline:
-            ax_rc.axvline(x=cov_05, color=C_THR05, linestyle='--', alpha=0.7, linewidth=1.8)
-            ax_rc.scatter([cov_05], [risk_05], color=C_THR05, marker="o", s=40,
-                          edgecolors="white", linewidths=1.0, zorder=5)
-            ax_rc.annotate(f"τ=0.50", xy=(cov_05, risk_05), xytext=(3, 5),
-                           textcoords="offset points", fontsize=7, color=C_THR05,
-                           fontweight="bold", zorder=10,
-                           bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=C_THR05,
-                                     alpha=0.8, lw=0.6))
-
-        # Vertical line at operating point
-        ax_rc.axvline(x=op_cov, color=C_OP, linestyle='--', alpha=0.7, linewidth=1.8)
-
-        # Diamond marker on risk curve + τ̂ label
-        ax_rc.scatter([op_cov], [op_risk], color=C_OP, marker="D", s=40,
-                      edgecolors="white", linewidths=1.0, zorder=6)
-        ax_rc.annotate(f"$\\hat{{\\tau}}$={op['threshold']:.3f}",
-                       xy=(op_cov, op_risk), xytext=(3, 6),
-                       textcoords="offset points", fontsize=7.5, color=C_OP,
-                       fontweight="bold", zorder=10,
-                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=C_OP,
-                                 alpha=0.85, lw=0.6))
-
-        # Intersections at operating point — use actual selection mask
-        mr_val = op["mean_ret"] * 100
-        if split_name == "Test" and thres_mode == "OCP":
-            _sel_op = test_approved_ocp
-        else:
-            _sel_op = probs >= op["threshold"]
-        _n_op = int(_sel_op.sum())
-        if _n_op >= 2:
-            _net_op = split_rets[_sel_op] - fee
-            _lab_op = y_split[_sel_op]
-            _w_op = _net_op[_lab_op == 1]
-            _l_op = _net_op[_lab_op == 0]
-            mw_val = float(np.nanmean(_w_op)) * 100 if len(_w_op) >= 1 else None
-            ml_val = float(np.nanmean(_l_op)) * 100 if len(_l_op) >= 1 else None
-        else:
-            mw_val, ml_val = None, None
-
-        # Intersections at baseline (τ=0.50)
-        mr_05 = mean_rets[idx_05] * 100 if not np.isnan(mean_rets[idx_05]) else None
-        mw_05 = mean_win_rets[idx_05] * 100 if not np.isnan(mean_win_rets[idx_05]) else None
-        ml_05 = mean_lose_rets[idx_05] * 100 if not np.isnan(mean_lose_rets[idx_05]) else None
-
-        # Function to space out text properly based on value ranking
-        def _get_staggered_offsets(val_dict):
-            valid = {k: v for k, v in val_dict.items() if v is not None}
-            s_keys = sorted(valid.keys(), key=lambda k: valid[k])
-            if len(s_keys) == 3: return {s_keys[0]: (3, -8), s_keys[1]: (3, 0), s_keys[2]: (3, 8)}
-            elif len(s_keys) == 2: return {s_keys[0]: (3, -5), s_keys[1]: (3, 5)}
-            elif len(s_keys) == 1: return {s_keys[0]: (3, 0)}
-            return {}
-
-        # Plot baseline (τ=0.50) intersections
-        if show_baseline:
-            offs_05 = _get_staggered_offsets({"mw": mw_05, "ml": ml_05, "mr": mr_05})
-            if mw_05 is not None:
-                c_mw = C_RET if mw_05 >= 0 else C_RET_N
-                ax_ret.scatter([cov_05], [mw_05], color=c_mw, marker="o", s=25,
-                               edgecolors="white", linewidths=0.6, zorder=5, alpha=0.9)
-                ax_ret.annotate(f"{mw_05:+.2f}%", xy=(cov_05, mw_05), xytext=offs_05["mw"],
-                                textcoords="offset points", fontsize=7.5, color=c_mw,
-                                fontweight="bold", zorder=10)
-            if ml_05 is not None:
-                c_ml = C_RET if ml_05 >= 0 else C_RET_N
-                ax_ret.scatter([cov_05], [ml_05], color=c_ml, marker="o", s=25,
-                               edgecolors="white", linewidths=0.6, zorder=5, alpha=0.9)
-                ax_ret.annotate(f"{ml_05:+.2f}%", xy=(cov_05, ml_05), xytext=offs_05["ml"],
-                                textcoords="offset points", fontsize=7.5, color=c_ml,
-                                fontweight="bold", zorder=10)
-            if mr_05 is not None:
-                mc_05 = C_RET if mr_05 >= 0 else C_RET_N
-                ax_ret.scatter([cov_05], [mr_05], color=mc_05, marker="o", s=35,
-                               edgecolors="white", linewidths=0.8, zorder=5)
-                ax_ret.annotate(f"{mr_05:+.2f}%", xy=(cov_05, mr_05), xytext=offs_05["mr"],
-                                textcoords="offset points", fontsize=7.5, color=mc_05,
-                                fontweight="bold", zorder=10)
-
-        # Plot operating point (τ̂) intersections
-        offs_op = _get_staggered_offsets({"mw": mw_val, "ml": ml_val, "mr": mr_val})
-        if mr_val is not None:
-            mc_val = C_RET if mr_val >= 0 else C_RET_N
-            ax_ret.scatter([op_cov], [mr_val], color=mc_val, marker="D", s=40,
-                           edgecolors="white", linewidths=1.0, zorder=7)
-            ax_ret.annotate(f"{mr_val:+.2f}%", xy=(op_cov, mr_val), xytext=offs_op["mr"],
-                            textcoords="offset points", fontsize=7.5, color=mc_val,
-                            fontweight="bold", zorder=10)
-        if mw_val is not None:
-            c_mw = C_RET if mw_val >= 0 else C_RET_N
-            ax_ret.scatter([op_cov], [mw_val], color=c_mw, marker="o", s=35,
-                           edgecolors="white", linewidths=0.8, zorder=6)
-            ax_ret.annotate(f"{mw_val:+.2f}%", xy=(op_cov, mw_val), xytext=offs_op["mw"],
-                            textcoords="offset points", fontsize=7.5, color=c_mw,
-                            fontweight="bold", zorder=10)
-        if ml_val is not None:
-            c_ml = C_RET if ml_val >= 0 else C_RET_N
-            ax_ret.scatter([op_cov], [ml_val], color=c_ml, marker="o", s=35,
-                           edgecolors="white", linewidths=0.8, zorder=6)
-            ax_ret.annotate(f"{ml_val:+.2f}%", xy=(op_cov, ml_val), xytext=offs_op["ml"],
-                            textcoords="offset points", fontsize=7.5, color=c_ml,
-                            fontweight="bold", zorder=10)
-
-        # ── Utility reference point on Test when using OCP ──
-        C_UTIL_REF = "#E67E22"  # bold orange for utility reference
-        _util_ref_plotted = False
-        if split_name == "Test" and thres_mode == "OCP" and val_op.get("constraint_satisfied", False):
-            _util_thr = val_thresholds["thr"]
-            _util_sel = probs >= _util_thr
-            _util_n = int(_util_sel.sum())
-            _util_cov = _util_n / len(y_split) if len(y_split) > 0 else 0
-            _util_risk = int((y_split[_util_sel] == 0).sum()) / max(_util_n, 1) if _util_n > 0 else 0
-            # Return metrics at utility threshold
-            if _util_n >= 2:
-                _util_net = split_rets[_util_sel] - fee
-                _util_lab = y_split[_util_sel]
-                _util_mr = float(np.nanmean(_util_net)) * 100
-                _util_w = _util_net[_util_lab == 1]
-                _util_l = _util_net[_util_lab == 0]
-                _util_mw = float(np.nanmean(_util_w)) * 100 if len(_util_w) >= 1 else None
-                _util_ml = float(np.nanmean(_util_l)) * 100 if len(_util_l) >= 1 else None
-            else:
-                _util_mr, _util_mw, _util_ml = 0, None, None
-
-            # Vertical line
-            ax_rc.axvline(x=_util_cov, color=C_UTIL_REF, linestyle='--', alpha=0.7, linewidth=1.5)
-            # Diamond on risk curve
-            ax_rc.scatter([_util_cov], [_util_risk], color=C_UTIL_REF, marker="D", s=45,
-                          edgecolors="white", linewidths=1.0, zorder=6)
-            ax_rc.annotate(f"τ_util={_util_thr:.3f}",
-                           xy=(_util_cov, _util_risk), xytext=(5, -12),
-                           textcoords="offset points", fontsize=7.5, color=C_UTIL_REF,
-                           fontweight="bold", zorder=10,
-                           bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=C_UTIL_REF,
-                                     alpha=0.85, lw=0.6))
-            # Return intersections
-            _util_offs = _get_staggered_offsets({"mw": _util_mw, "ml": _util_ml, "mr": _util_mr})
-            if _util_mr is not None:
-                _mc = C_RET if _util_mr >= 0 else C_RET_N
-                ax_ret.scatter([_util_cov], [_util_mr], color=C_UTIL_REF, marker="s", s=35,
-                               edgecolors="white", linewidths=0.8, zorder=6)
-                ax_ret.annotate(f"{_util_mr:+.2f}%", xy=(_util_cov, _util_mr),
-                                xytext=_util_offs.get("mr", (6, 8)),
-                                textcoords="offset points", fontsize=7.5, color=C_UTIL_REF,
-                                fontweight="bold", zorder=10)
-            if _util_mw is not None:
-                ax_ret.scatter([_util_cov], [_util_mw], color=C_UTIL_REF, marker="o", s=25,
-                               edgecolors="white", linewidths=0.6, zorder=5, alpha=0.9)
-                ax_ret.annotate(f"{_util_mw:+.2f}%", xy=(_util_cov, _util_mw),
-                                xytext=_util_offs.get("mw", (6, -6)),
-                                textcoords="offset points", fontsize=7.5, color=C_UTIL_REF,
-                                fontweight="bold", zorder=10)
-            if _util_ml is not None:
-                ax_ret.scatter([_util_cov], [_util_ml], color=C_UTIL_REF, marker="o", s=25,
-                               edgecolors="white", linewidths=0.6, zorder=5, alpha=0.9)
-                ax_ret.annotate(f"{_util_ml:+.2f}%", xy=(_util_cov, _util_ml),
-                                xytext=_util_offs.get("ml", (6, -6)),
-                                textcoords="offset points", fontsize=7.5, color=C_UTIL_REF,
-                                fontweight="bold", zorder=10)
-            _util_ref_plotted = True
-
-        # ── Title ──
-        ax_rc.set_title(f"Coverage-Risk  |  {split_name}  |  {mlabel}",
-                        fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
-
-        # ── Layout ──
-        fig_rc.tight_layout()
-        n_legend_rows = 3 if _util_ref_plotted else 2
-        fig_rc.subplots_adjust(bottom=0.22 + (0.05 if _util_ref_plotted else 0.0))
-
-        # ── Unified legend ──
-        from matplotlib.lines import Line2D
-
-        card_edge = C_RET if op["constraint_satisfied"] else C_OP
-        legend_prop = {"size": 8}
-
-        # Row 1 (TOP): Avg Win, Avg Loss, τ̂ (OCP or utility)
-        row1_handles, row1_labels = [], []
-        if mw_val is not None:
-            c_mw = C_RET if mw_val >= 0 else C_RET_N
-            row1_handles.append(Line2D([], [], color=c_mw, linewidth=1.0,
-                                       linestyle=":", marker="o", markersize=4,
-                                       markeredgecolor="white", markeredgewidth=0.6))
-            row1_labels.append(f"Avg Win = {mw_val:+.2f}%")
-        if ml_val is not None:
-            c_ml = C_RET if ml_val >= 0 else C_RET_N
-            row1_handles.append(Line2D([], [], color=c_ml, linewidth=1.0,
-                                       linestyle=":", marker="o", markersize=4,
-                                       markeredgecolor="white", markeredgewidth=0.6))
-            row1_labels.append(f"Avg Loss = {ml_val:+.2f}%")
-        row1_handles.append(Line2D([], [], color=C_OP, marker="D", markersize=5,
-                                   linestyle="--", linewidth=1.5, alpha=0.8,
-                                   markeredgecolor="white", markeredgewidth=0.8))
-        row1_labels.append(f"τ̂ = {op['threshold']:.3f}  ({thr_source})   "
-                           f"Cov = {op['coverage']:.1%}   N = {op['selected_count']}   "
-                           f"t = {op['t_stat']:.1f}")
-
-        leg_top = fig_rc.legend(row1_handles, row1_labels,
-                                loc="lower center", ncol=len(row1_handles), prop=legend_prop,
-                                frameon=True, framealpha=0.92, edgecolor="none",
-                                fancybox=True,
-                                bbox_to_anchor=(0.5, 0.065 + (0.05 if _util_ref_plotted else 0.0)),
-                                handlelength=2.5, handletextpad=0.8)
-
-        # Row 2: Risk, Mean Return
-        row2_handles, row2_labels = [], []
-        op_risk_val = op.get("risk", 0)
-        row2_handles.append(Line2D([], [], color=C_RISK, linewidth=2.2))
-        row2_labels.append(f"Risk = {op_risk_val:.1%}")
-        mr_legend_color = C_RET if op['mean_ret'] >= 0 else C_RET_N
-        row2_handles.append(Line2D([], [], color=mr_legend_color, linewidth=2.0))
-        row2_labels.append(f"Mean Ret = {op['mean_ret']*100:+.2f}%")
-
-        fig_rc.legend(row2_handles, row2_labels,
-                      loc="lower center", ncol=2, prop=legend_prop,
-                      frameon=True, framealpha=0.92, edgecolor="none",
-                      fancybox=True,
-                      bbox_to_anchor=(0.5, 0.015 + (0.05 if _util_ref_plotted else 0.0)),
-                      handlelength=2.5, handletextpad=0.8)
-
-        # Row 3 (only OCP): Utility reference
-        if _util_ref_plotted:
-            row3_handles, row3_labels = [], []
-            row3_handles.append(Line2D([], [], color=C_UTIL_REF, marker="D", markersize=5,
-                                       linestyle="--", linewidth=1.5, alpha=0.8,
-                                       markeredgecolor="white", markeredgewidth=0.8))
-            _util_t_stat = val_op.get("t_stat", 0)
-            row3_labels.append(f"τ_util = {_util_thr:.3f}  (Val-Utility)   "
-                               f"Cov = {_util_cov:.1%}   N = {_util_n}   "
-                               f"Risk = {_util_risk:.1%}   MeanRet = {_util_mr:+.2f}%")
-            fig_rc.legend(row3_handles, row3_labels,
-                          loc="lower center", ncol=1, prop=legend_prop,
-                          frameon=True, framealpha=0.92, edgecolor="none",
-                          fancybox=True, bbox_to_anchor=(0.5, 0.015),
-                          handlelength=2.5, handletextpad=0.8)
-
-        fig_rc.savefig(str(rc_path), dpi=200, facecolor="white")
-        plt.close(fig_rc)
-
-        # ── OCP threshold evolution plot (test only) ──
-        if split_name == "Test" and thres_mode == "OCP":
-            fig_thr, ax_thr = plt.subplots(figsize=(10, 4), facecolor="white")
-            ax_thr.set_facecolor("#FAFAFA")
-            # Effective threshold: τ_t = max(ŝ_t, 1 - ŝ_t)
-            eff_tau = np.maximum(test_s_hats, 1.0 - test_s_hats)
-            ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label="τ_t (OCP)")
-            ax_thr.axhline(y=val_thresholds["thr"], color="#34495E", linestyle="--",
-                           linewidth=1.2, alpha=0.7, label=f"τ Utility = {val_thresholds['thr']:.3f}")
-            ax_thr.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
-            ax_thr.set_xlabel("Test sample index", fontsize=10)
-            ax_thr.set_ylabel("Threshold τ_t", fontsize=10)
-            cc = op.get("conformal_coverage", 0)
-            n1 = op.get("n_set_1", 0)
-            n0 = op.get("n_set_0", 0)
-            nb = op.get("n_set_both", 0)
-            ne = op.get("n_set_empty", 0)
-            ax_thr.set_title(
-                f"OCP Threshold Evolution  |  Test  |  {mlabel}  (α={ocp_alpha})\n"
-                f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})  |  "
-                f"{{1}}={n1}  {{0}}={n0}  {{0,1}}={nb}  {{}}={ne}",
-                fontsize=11, fontweight="bold", color="#2C3E50")
-            ax_thr.legend(fontsize=8, loc="upper right")
-            ax_thr.set_ylim(0.4, 1.0)
-            ax_thr.grid(True, alpha=0.3)
-            fig_thr.tight_layout()
+        # ┏━━━━━━━━━━ OCP threshold evolution plot (test only) ━━━━━━━━━━┓
+        if split_name == "Test" and _is_ocp:
             thr_evo_path = save_dir / f"{file_prefix}_Test_OCP_Threshold_Evolution.png"
-            fig_thr.savefig(str(thr_evo_path), dpi=200, facecolor="white")
-            plt.close(fig_thr)
+            plot_ocp_threshold_evolution(save_path = thr_evo_path,
+                                         test_s_hats = test_s_hats,
+                                         utility_threshold = val_thresholds["thr"],
+                                         model_label = mlabel,
+                                         thres_mode = thres_mode,
+                                         ocp_alpha = ocp_alpha,
+                                         conformal_coverage = op.get("conformal_coverage", 0),
+                                         n_set_1 = op.get("n_set_1", 0),
+                                         n_set_0 = op.get("n_set_0", 0),
+                                         n_set_both = op.get("n_set_both", 0),
+                                         n_set_empty = op.get("n_set_empty", 0),
+                                         split_name = split_name)
 
-        # Print and store selective metrics + confusion matrix
+        # ┏━━━━━━━━━━ Print and store selective metrics + confusion matrix ━━━━━━━━━━┓
         thr_sel = op["threshold"]
-        if split_name == "Test" and thres_mode == "OCP":
+        if split_name == "Test" and _is_ocp:
             sel = test_approved_ocp
         else:
             sel = probs >= thr_sel
         sel_preds = sel.astype(int)
         sel_true = y_split
 
+        # ┏━━━━━━━━━━ Information for Confusion Matrix ━━━━━━━━━━┓
         sel_cm_path = save_dir / f"{file_prefix}_{split_name}_Selective_CM.png"
-        if thres_mode == "OCP" and split_name == "Test":
+        if _is_ocp and split_name == "Test":
             cc = op.get("conformal_coverage", 0)
-            sel_title = (f"{mlabel} {split_name} selective @thr={thr_sel:.3f} (OCP Median-Adaptive)\n"
+            thr_src = op.get("threshold_source", thres_mode)
+            sel_title = (f"{mlabel} {split_name} selective @thr={thr_sel:.3f} ({thr_src})\n"
                          f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})")
         else:
             sel_title = f"{mlabel} {split_name} selective @thr={thr_sel:.3f} ({thr_source})"
-        plot_confusion_matrix(sel_true, sel_preds, classes=class_names,
-                              save_path=str(sel_cm_path),
-                              title=sel_title,
-                              meta_mode=meta_mode,
-                              is_selective=True,
-                              m1_acc=m1_a, m1_prec=m1_p)
+        
+        # ┏━━━━━━━━━━ Plot Test Confusion Matrix ━━━━━━━━━━┓
+        plot_confusion_matrix(sel_true, 
+                              sel_preds, 
+                              classes      = class_names,
+                              save_path    = str(sel_cm_path),
+                              title        = sel_title,
+                              meta_mode    = meta_mode,
+                              is_selective = True,
+                              m1_acc       = m1_a, 
+                              m1_prec      = m1_p)
 
         n_sel = int(sel.sum())
         risk = int((y_split[sel] == 0).sum()) / max(n_sel, 1) if n_sel > 0 else 0
         print(f"    {split_name}: acc={metrics['accuracy']:.3f} prec={metrics['precision']:.3f} "
               f"rec={metrics['recall']:.3f} f1={metrics['f1_score']:.3f} "
-              f"| selective @thr={thr_sel:.3f} ({'OCP Median-Adaptive' if thres_mode == 'OCP' and split_name == 'Test' else thr_source}): "
+              f"| selective @thr={thr_sel:.3f} ({thr_source}): "
               f"cov={op['coverage']:.1%} t-stat={op['t_stat']:.2f} "
               f"μ={op['mean_ret']*100:+.3f}% n={op['selected_count']}")
-        sel_dict = {
-            "threshold": round(thr_sel, 4),
-            "coverage":  round(op["coverage"], 4),
-            "risk":      round(risk, 4),
-            "precision": round(1 - risk, 4),
-            "selected_count": op["selected_count"],
-            "threshold_source": thr_source,
-            "constraint_satisfied": op["constraint_satisfied"],
-            "mean_ret": round(op["mean_ret"], 6),
-            "t_stat": round(op["t_stat"], 4),
-        }
-        if thres_mode == "OCP" and split_name == "Test":
-            sel_dict["ocp"] = {
-                "alpha": ocp_alpha,
-                "conformal_coverage": round(op.get("conformal_coverage", 0), 4),
-                "target_coverage": round(1 - ocp_alpha, 4),
-                "guarantee_met": op.get("conformal_coverage", 0) >= (1 - ocp_alpha),
-                "n_set_1_trade": op.get("n_set_1", 0),
-                "n_set_0_dont_trade": op.get("n_set_0", 0),
-                "n_set_both_abstain": op.get("n_set_both", 0),
-                "n_set_empty_abstain": op.get("n_set_empty", 0),
-            }
+        
+        # ┏━━━━━━━━━━ Selective Metrics ━━━━━━━━━━┓
+        sel_dict = {"threshold": round(thr_sel, 4),
+                    "coverage":  round(op["coverage"], 4),
+                    "risk":      round(risk, 4),
+                    "precision": round(1 - risk, 4),
+                    "selected_count": op["selected_count"],
+                    "threshold_source": thr_source,
+                    "constraint_satisfied": op["constraint_satisfied"],
+                    "mean_ret": round(op["mean_ret"], 6),
+                    "t_stat": round(op["t_stat"], 4)}
+
+        # ┏━━━━━━━━━━ OCP Metrics ━━━━━━━━━━┓
+        if _is_ocp and split_name == "Test":
+            sel_dict["ocp"] = {"alpha": ocp_alpha,
+                               "conformal_coverage": round(op.get("conformal_coverage", 0), 4),
+                               "target_coverage": round(1 - ocp_alpha, 4),
+                               "guarantee_met": op.get("conformal_coverage", 0) >= (1 - ocp_alpha),
+                               "n_set_1_trade": op.get("n_set_1", 0),
+                               "n_set_0_dont_trade": op.get("n_set_0", 0),
+                               "n_set_both_abstain": op.get("n_set_both", 0),
+                               "n_set_empty_abstain": op.get("n_set_empty", 0)}
         results[f"{split_name}_selective"] = sel_dict
 
-    artifacts = {
-        "model": model,
-        "scaler": scaler,
-        "col_indices": col_indices,
-        "val_op": val_op,
-    }
+    artifacts = {"model": model,
+                 "scaler": scaler,
+                 "col_indices": col_indices,
+                 "val_op": val_op}
+
     return results, artifacts
 
 
@@ -766,7 +496,9 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                   train_end: str = None, val_end: str = None, model_name: str = "rf",
                   dataset_override: dict = None, cfg: dict = None, run_top5: bool = True,
                   run_features: bool = True, thres_mode: str = "utility",
-                  ocp_alpha: float = 0.10):
+                  ocp_alpha: float = 0.10,
+                  ocp_costs: tuple = (0.0, 10.0, 2.0),
+                  ocp_window_days: int = 25):
     """Run full feature analysis for one direction/granularity.
 
     Args:
@@ -778,7 +510,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     mlabel = _model_label(model_name)
     class_names  = _class_names(direction, mode)
     model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    thres_folder = "OCP" if thres_mode == "OCP" else "Utility_Score"
+    thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
 
     # ┏━━━━━━━━━━ Create save directory ━━━━━━━━━━┓
     save_dir     = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
@@ -925,21 +657,24 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         print(f"\n  [8/9] {mlabel} temporal split ({len(active_features)} feats, train<={train_end}, val<={val_end}):")
 
         # ┏━━━━━━━━━━ Temporal evaluation on all features ━━━━━━━━━━┓
-        temporal_all, artifacts_all = temporal_eval(dataset, 
-                                                    active_features, 
+        temporal_all, artifacts_all = temporal_eval(dataset,
+                                                    active_features,
                                                     save_dir,
-                                                    class_names       = class_names, 
+                                                    class_names       = class_names,
                                                     meta_mode         = mode,
                                                     split_indices     = split_indices,
-                                                    direction         = direction, 
+                                                    direction         = direction,
                                                     fee               = fee,
                                                     model_name        = model_name,
-                                                    desc              = "all features", 
+                                                    desc              = "all features",
                                                     file_prefix       = "8_temporal_all",
-                                                    thres_mode        = thres_mode, 
+                                                    thres_mode        = thres_mode,
                                                     ocp_alpha         = ocp_alpha,
-                                                    forecast_horizon  = fh, 
-                                                    split_indices_raw = split_indices_raw)
+                                                    forecast_horizon  = fh,
+                                                    split_indices_raw = split_indices_raw,
+                                                    granularity       = granularity,
+                                                    ocp_costs         = ocp_costs,
+                                                    ocp_window_days   = ocp_window_days)
         if run_top5:
             # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
             top_features_dir = save_dir / "Top_Features"
@@ -954,7 +689,10 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                           model_name=model_name,
                                                           desc="top-5 only", file_prefix="9_temporal_top5",
                                                           thres_mode=thres_mode, ocp_alpha=ocp_alpha,
-                                                          forecast_horizon=fh, split_indices_raw=split_indices_raw)
+                                                          forecast_horizon=fh, split_indices_raw=split_indices_raw,
+                                                          granularity=granularity,
+                                                          ocp_costs=ocp_costs,
+                                                          ocp_window_days=ocp_window_days)
 
         # ┏━━━━━━━━━━ Financial Backtest (Equity Curves + ROI Reports) ━━━━━━━━━━┓
         if cfg is not None:
@@ -1024,20 +762,29 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     print(f"\nDone ({direction}). Outputs in: {save_dir}")
 
 
-
 # ------------------------------------------------------------------------------
 # Run analysis for Unified M2 (all granularities together but separate evaluation)
 # ------------------------------------------------------------------------------
-def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, output_root: Path,
-                         train_end: str, val_end: str, model_name: str = "rf", cfg: dict = None,
-                         thres_mode: str = "utility", ocp_alpha: float = 0.10):
+def run_unified_analysis(cache_path: Path, 
+                         multi: bool, 
+                         direction: str, 
+                         mode: str, 
+                         output_root: Path,
+                         train_end: str, 
+                         val_end: str, 
+                         model_name: str = "rf", 
+                         cfg: dict = None,
+                         thres_mode: str = "utility", 
+                         ocp_alpha: float = 0.10,
+                         ocp_costs: tuple = (0.0, 10.0, 2.0),
+                         ocp_window_days: int = 25):
     """Train ONE model on all granularities (with gran-balancing weights), evaluate per-gran."""
 
     # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
     model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    thres_folder = "OCP" if thres_mode == "OCP" else "Utility_Score"
+    thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
     save_dir = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1225,53 +972,92 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         threshold = val_op["threshold"]
 
         # ┏━━━━━━━━━━ OCP: run SAOCP warm-up on val, adapt on test (delayed feedback) ━━━━━━━━━━┓
-        if thres_mode == "OCP":
-            (test_s_hats, test_approved_ocp, 
-             val_s_hats, conf_stats) = _run_saocp_online(val_probs, 
-                                                         y_val, 
-                                                         test_probs, 
-                                                         y_test, 
-                                                         alpha = ocp_alpha,
-                                                         test_dates = test_dates_raw, 
-                                                         forecast_horizon = horizon,
-                                                         val_dates = val_dates_raw)
+        _is_ocp_u = thres_mode.startswith("OCP")
+        if _is_ocp_u:
+            # ┏━━━━━━━━━━ Determine calibration window and Costs ━━━━━━━━━━┓
+            _cw = calib_window_for_gran(gran, ocp_window_days)
+            c_FN, c_FP, c_DEF = ocp_costs
 
-            ocp_op = _ocp_threshold_to_op(test_probs, 
-                                          y_test, 
+            # ┏━━━━━━━━━━ Run OCP ━━━━━━━━━━┓
+            if thres_mode in ("OCP-cost", "OCP-cost-mondrian"):
+                test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_cost_deferral_online(val_probs, 
+                                                                                                     y_val, 
+                                                                                                     test_probs, 
+                                                                                                     y_test, 
+                                                                                                     alpha            = ocp_alpha, 
+                                                                                                     test_dates       = test_dates_raw, 
+                                                                                                     forecast_horizon = horizon, 
+                                                                                                     val_dates        = val_dates_raw, 
+                                                                                                     calib_window     = _cw, 
+                                                                                                     c_FP             = c_FP, 
+                                                                                                     c_FN             = c_FN, 
+                                                                                                     c_DEF            = c_DEF, 
+                                                                                                     mondrian         = (thres_mode == "OCP-cost-mondrian"), 
+                                                                                                     test_returns     = test_returns)
+            # ┏━━━━━━━━━━ Run SAOCP with adapting calibration window of residuals ━━━━━━━━━━┓
+            elif thres_mode == "OCP-W":
+                test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(val_probs, 
+                                                                                           y_val, 
+                                                                                           test_probs, 
+                                                                                           y_test, 
+                                                                                           alpha            = ocp_alpha, 
+                                                                                           test_dates       = test_dates_raw, 
+                                                                                           forecast_horizon = horizon, 
+                                                                                           val_dates        = val_dates_raw, 
+                                                                                           calib_window     = _cw)
+            # ┏━━━━━━━━━━ Run SAOCP with fixed calibration window ━━━━━━━━━━┓
+            else:
+                test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(val_probs, 
+                                                                                           y_val, 
+                                                                                           test_probs, 
+                                                                                           y_test, 
+                                                                                           alpha            = ocp_alpha, 
+                                                                                           test_dates       = test_dates_raw, 
+                                                                                           forecast_horizon = horizon,
+                                                                                           val_dates        = val_dates_raw)
+
+            # ┏━━━━━━━━━━ Convert OCP outputs to threshold-based operation ━━━━━━━━━━┓
+            ocp_op = _ocp_threshold_to_op(test_probs,
+                                          y_test,
                                           test_returns,
-                                          test_approved_ocp, 
-                                          test_s_hats, 
+                                          test_approved_ocp,
+                                          test_s_hats,
                                           fee,
                                           conformal_stats = conf_stats)
+            ocp_op["threshold_source"] = thres_mode
             cc = conf_stats["conformal_coverage"]
+            mode_tag = thres_mode
 
             # ┏━━━━━━━━━━ Print OCP results ━━━━━━━━━━┓
-            print(f"    OCP ({gran}): α={ocp_alpha}, median τ={ocp_op['threshold']:.3f}, "
+            print(f"    {mode_tag} ({gran}): α={ocp_alpha}, median τ={ocp_op['threshold']:.3f}, "
                   f"cov={ocp_op['coverage']:.1%}, μ={ocp_op['mean_ret']*100:+.3f}% | "
                   f"Conformal cov={cc:.1%} (target≥{1-ocp_alpha:.0%}) | "
                   f"Sets: {{1}}={conf_stats['n_set_1']} {{0}}={conf_stats['n_set_0']} "
                   f"{{0,1}}={conf_stats['n_set_both']} {{}}={conf_stats['n_set_empty']}")
+            if "tau_trajectory" in conf_stats:
+                tau_std = float(np.std(conf_stats["tau_trajectory"]))
+                print(f"    Cost params: c_FN={c_FN}, c_FP={c_FP}, c_DEF={c_DEF} | τ* std={tau_std:.4f}")
 
         # ┏━━━━━━━━━━ Post-selective confusion matrices (Val & Test) ━━━━━━━━━━┓
         for split_name, y_split, probs in [("Val", y_val, val_probs), ("Test", y_test, test_probs)]:
             # ┏━━━━━━━━━━ Determine selection method ━━━━━━━━━━┓
-            if split_name == "Test" and thres_mode == "OCP":
+            if split_name == "Test" and _is_ocp_u:
                 sel = test_approved_ocp
-                thr_source = "OCP-SAOCP"
+                thr_source = ocp_op.get("threshold_source", "OCP-SAOCP")
             else:
                 sel = probs >= threshold
                 thr_source = "Utility-Opt" if split_name == "Val" else "Val-Utility"
-            
+
             # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
             sel_true = y_split
             sel_preds = sel.astype(int)
             sel_cm_path = gran_dir / f"{split_name}_Selective_CM.png"
-            thr_display = ocp_op["threshold"] if (split_name == "Test" and thres_mode == "OCP") else threshold
-            
+            thr_display = ocp_op["threshold"] if (split_name == "Test" and _is_ocp_u) else threshold
+
             # ┏━━━━━━━━━━ Determine title ━━━━━━━━━━┓
-            if thres_mode == "OCP" and split_name == "Test":
+            if _is_ocp_u and split_name == "Test":
                 cc = ocp_op.get("conformal_coverage", 0)
-                sel_title = (f"Unified {mlabel} {gran} {split_name} selective @thr={thr_display:.3f} (OCP Median-Adaptive)\n"
+                sel_title = (f"Unified {mlabel} {gran} {split_name} selective @thr={thr_display:.3f} ({thr_source})\n"
                              f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})")
             else:
                 sel_title = f"Unified {mlabel} {gran} {split_name} selective @thr={thr_display:.3f} ({thr_source})"
@@ -1286,7 +1072,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
                                   is_selective = True)
 
         # ┏━━━━━━━━━━ Apply threshold on test ━━━━━━━━━━┓
-        if thres_mode == "OCP":
+        if _is_ocp_u:
             m2_approved = test_approved_ocp
         else:
             m2_approved = test_probs >= threshold
@@ -1315,7 +1101,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
                              float_format = "%.6f")
 
         # ┏━━━━━━━━━━ Save OCP diagnostics npz (thresholds + val probs for re-run) ━━━━━━━━━━┓
-        if thres_mode == "OCP":
+        if _is_ocp_u:
             np.savez_compressed(gran_dir / "ocp_diagnostics.npz",
                                 test_s_hats = test_s_hats,
                                 val_s_hats  = val_s_hats,
@@ -1328,11 +1114,11 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         test_end = df_trades["date"].max()
 
         # ┏━━━━━━━━━━ OCP threshold evolution plot ━━━━━━━━━━┓
-        if thres_mode == "OCP":
+        if _is_ocp_u:
             fig_thr, ax_thr = plt.subplots(figsize=(10, 4), facecolor="white")
             ax_thr.set_facecolor("#FAFAFA")
             eff_tau = np.maximum(test_s_hats, 1.0 - test_s_hats)
-            ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label="τ_t (OCP)")
+            ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label=f"τ_t ({thres_mode})")
             ax_thr.axhline(y=threshold, color="#34495E", linestyle="--", linewidth=1.2, alpha=0.7, label=f"τ Utility = {threshold:.3f}")
             ax_thr.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
             ax_thr.set_xlabel("Test sample index", fontsize=10)
@@ -1342,11 +1128,11 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
             n0 = ocp_op.get("n_set_0", 0)
             nb = ocp_op.get("n_set_both", 0)
             ne = ocp_op.get("n_set_empty", 0)
-            ax_thr.set_title(f"OCP Threshold Evolution  |  Unified {gran}  |  {mlabel}  (α={ocp_alpha})\n"
+            ax_thr.set_title(f"{thres_mode} Threshold Evolution  |  Unified {gran}  |  {mlabel}  (α={ocp_alpha})\n"
                              f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})  |  "
                              f"{{1}}={n1}  {{0}}={n0}  {{0,1}}={nb}  {{}}={ne}",
-                             fontsize=11, 
-                             fontweight="bold", 
+                             fontsize=11,
+                             fontweight="bold",
                              color="#2C3E50")
             ax_thr.legend(fontsize=8, loc="upper right")
             ax_thr.set_ylim(0.4, 1.0)
@@ -1366,7 +1152,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
         execution_rate = n_approved / n_total * 100 if n_total > 0 else 0
 
         # ┏━━━━━━━━━━ Test selective metrics (use OCP mask when applicable) ━━━━━━━━━━┓
-        if thres_mode == "OCP":
+        if _is_ocp_u:
             sel_test = m2_approved
         else:
             sel_test = test_probs >= threshold
@@ -1415,7 +1201,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
                                "sharpe": _calc_sharpe(bh_h_rets, ann_horizon)}
 
         # ┏━━━━━━━━━━ Plot equity curve ━━━━━━━━━━┓
-        if thres_mode == "OCP":
+        if _is_ocp_u:
             ocp_median_tau = float(np.median(np.maximum(test_s_hats, 1.0 - test_s_hats)))
             constraint_tag = "OCP Adaptive"
             thr_display_eq = ocp_median_tau
@@ -1508,7 +1294,7 @@ def run_unified_analysis(cache_path: Path, multi, direction: str, mode: str, out
                                    "n_set_1_trade": ocp_op.get("n_set_1", 0),
                                    "n_set_0_dont_trade": ocp_op.get("n_set_0", 0),
                                    "n_set_both_abstain": ocp_op.get("n_set_both", 0),
-                                   "n_set_empty_abstain": ocp_op.get("n_set_empty", 0)}} if thres_mode == "OCP" else {})},
+                                   "n_set_empty_abstain": ocp_op.get("n_set_empty", 0)}} if _is_ocp_u else {})},
             "backtest": {"execution_rate": execution_rate,
                          "n_total_trades": n_total,
                          "n_m2_trades": n_approved,
@@ -1570,8 +1356,14 @@ def main():
     mode_group.add_argument("--paradigm-comparison", nargs="+", metavar="DIR", help="Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees randforest_7_fees randforest_OCP)")
 
     # ┏━━━━━━━━━━ Threshold Selection [Online Conformal Prediction] ━━━━━━━━━━┓
-    parser.add_argument("--thres", type=str, default="utility", choices=["utility", "OCP"], help="Threshold selection: 'utility' (financial utility on val) or 'OCP' (SAOCP online conformal)")
+    parser.add_argument("--thres", type=str, default="utility", choices=["utility", "OCP", "OCP-W", "OCP-cost", "OCP-cost-mondrian"], help=("Threshold selection: 'utility' (financial utility on val), "
+                                                                                                                                            "'OCP' (SAOCP, unbounded history), "
+                                                                                                                                            "'OCP-W' (SAOCP, windowed calibration), "
+                                                                                                                                            "'OCP-cost' (cost-aware deferral, vanilla), "
+                                                                                                                                            "'OCP-cost-mondrian' (cost-aware deferral, volatility-regime-conditional)"))
     parser.add_argument("--ocp-alpha", type=float, default=0.10, help="OCP target miscoverage rate (default: 0.10 → 90%% coverage target)")
+    parser.add_argument("--ocp-costs", type=str, default="0,10,2", help="Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')")
+    parser.add_argument("--ocp-window-days", type=int, default=25, help="Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)")
     
     # ┏━━━━━━━━━━ Feature Analysis ━━━━━━━━━━┓
     parser.add_argument("--top5", type=str, default="true", choices=["true", "false"], help="Whether to run top-5 feature analysis/backtest (default: true)")
@@ -1585,6 +1377,10 @@ def main():
     global _AG_TIME_LIMIT, _AG_PRESETS
     _AG_TIME_LIMIT = args.ag_time_limit
     _AG_PRESETS = args.ag_presets
+
+    # Parse cost vector
+    _cost_parts = [float(x) for x in args.ocp_costs.split(",")]
+    ocp_costs = (_cost_parts[0], _cost_parts[1], _cost_parts[2])  # (c_FN, c_FP, c_DEF)
 
     # ┏━━━━━━━━━━ Load Config ━━━━━━━━━━┓
     cfg         = _load_config(args.config)
@@ -1626,20 +1422,22 @@ def main():
         # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
         for gran in multi.grans:
             sub = multi.sub[gran]
-            run_analysis(cache_path, 
-                         direction, 
-                         mode, 
-                         gran, 
+            run_analysis(cache_path,
+                         direction,
+                         mode,
+                         gran,
                          output_root,
-                         train_end        = train_end, 
+                         train_end        = train_end,
                          val_end          = val_end,
-                         model_name       = args.model, 
-                         dataset_override = sub, 
+                         model_name       = args.model,
+                         dataset_override = sub,
                          cfg              = cfg,
-                         run_top5         = args.top5, 
+                         run_top5         = args.top5,
                          run_features     = args.features,
-                         thres_mode       = args.thres, 
-                         ocp_alpha        = args.ocp_alpha)
+                         thres_mode       = args.thres,
+                         ocp_alpha        = args.ocp_alpha,
+                         ocp_costs        = ocp_costs,
+                         ocp_window_days  = args.ocp_window_days)
 
     # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓
     # One model trained on all granularities, evaluated per-gran
@@ -1659,17 +1457,19 @@ def main():
         direction = _infer_direction(cache_path)
 
         # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
-        run_unified_analysis(cache_path, 
-                             multi, 
-                             direction, 
-                             mode, 
+        run_unified_analysis(cache_path,
+                             multi,
+                             direction,
+                             mode,
                              output_root,
-                             train_end  = train_end, 
-                             val_end    = val_end,
-                             model_name = args.model, 
-                             cfg        = cfg,
-                             thres_mode = args.thres, 
-                             ocp_alpha  = args.ocp_alpha)
+                             train_end       = train_end,
+                             val_end         = val_end,
+                             model_name      = args.model,
+                             cfg             = cfg,
+                             thres_mode      = args.thres,
+                             ocp_alpha       = args.ocp_alpha,
+                             ocp_costs       = ocp_costs,
+                             ocp_window_days = args.ocp_window_days)
 
     else:
         # ┏━━━━━━━━━━ Single granularity (auto-detect from config) ━━━━━━━━━━┓
@@ -1677,19 +1477,21 @@ def main():
         direction_caches = _resolve_caches(cfg, args.cache)
 
         for direction, cache_path in sorted(direction_caches.items()):
-            run_analysis(cache_path, 
-                         direction, 
-                         mode, 
-                         granularity, 
+            run_analysis(cache_path,
+                         direction,
+                         mode,
+                         granularity,
                          output_root,
-                         train_end    = train_end, 
-                         val_end      = val_end,
-                         model_name   = args.model, 
-                         cfg          = cfg,
-                         run_top5     = args.top5, 
-                         run_features = args.features,
-                         thres_mode   = args.thres, 
-                         ocp_alpha    = args.ocp_alpha)
+                         train_end       = train_end,
+                         val_end         = val_end,
+                         model_name      = args.model,
+                         cfg             = cfg,
+                         run_top5        = args.top5,
+                         run_features    = args.features,
+                         thres_mode      = args.thres,
+                         ocp_alpha       = args.ocp_alpha,
+                         ocp_costs       = ocp_costs,
+                         ocp_window_days = args.ocp_window_days)
 
     print(f"\nAll analyses complete.")
 

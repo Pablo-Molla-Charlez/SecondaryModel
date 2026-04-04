@@ -1114,6 +1114,309 @@ def compute_top_features(pb_scores: dict, mi_scores: dict, rf_scores: dict,
     return result
 
 
+# ┏━━━━━━━━━━ Temporal Risk-Coverage Plot ━━━━━━━━━━┓
+def plot_temporal_risk_coverage_curve(save_path: Path,
+                                      curve: dict,
+                                      probs: np.ndarray,
+                                      y_true: np.ndarray,
+                                      split_rets: np.ndarray,
+                                      fee: float,
+                                      op: dict,
+                                      split_name: str,
+                                      model_label: str,
+                                      thres_mode: str,
+                                      ocp_alpha: float,
+                                      val_threshold: Optional[float] = None,
+                                      val_op: Optional[dict] = None,
+                                      is_ocp: bool = False,
+                                      test_approved_ocp: Optional[np.ndarray] = None):
+    """Plot risk-coverage with return overlays for temporal_eval."""
+    thrs = curve["thresholds"]
+    covs = curve["coverage"]
+    risks_raw = curve["risk"]
+
+    # ┏━━━━━━━━━━ Colors ━━━━━━━━━━┓
+    c_risk     = "#1B4F72" # deep navy for risk curve
+    c_ret      = "#1E8449" # forest green for positive mean return
+    c_ret_neg  = "#8B0000" # dark red for negative mean return
+    c_win      = "#1E8449" # lighter green for mean win
+    c_op       = "#8B008B" # dark magenta for operating point
+    c_grid     = "#D5D8DC" # subtle grey for grid
+    c_thr05    = "#34495E" # darker grey for thr=0.5 line
+    c_util_ref = "#E67E22" # orange for utility reference
+
+    fig_rc, ax_rc = plt.subplots(figsize=(10, 6.5), facecolor="white")
+    ax_rc.set_facecolor("#FAFAFA")
+
+    order = np.argsort(covs)
+    covs_s, risks_s = covs[order], risks_raw[order]
+    umask = np.concatenate(([True], np.diff(covs_s) != 0))
+    cov_u, risk_u = covs_s[umask], risks_s[umask]
+    fmask = np.isfinite(risk_u)
+    cov_u, risk_u = cov_u[fmask], risk_u[fmask]
+    if cov_u.size >= 2:
+        from scipy.interpolate import PchipInterpolator
+        grid_cov = np.linspace(cov_u.min(), cov_u.max(), 300)
+        risk_smooth = PchipInterpolator(cov_u, risk_u, extrapolate=False)(grid_cov)
+        valid_r = np.isfinite(risk_smooth)
+        grid_cov, risk_smooth = grid_cov[valid_r], risk_smooth[valid_r]
+    else:
+        grid_cov, risk_smooth = cov_u, risk_u
+
+    ax_rc.plot(grid_cov, risk_smooth, color=c_risk, linewidth=2.2, label="Risk (Error Rate)", zorder=3)
+    ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=8)
+    ax_rc.set_ylabel("Risk (Error Rate)", fontsize=11, fontweight="bold", color="black", labelpad=8)
+    ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=9, width=1.5)
+    ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
+    for spine in ax_rc.spines.values():
+        spine.set_color("black")
+        spine.set_linewidth(1.5)
+    plt.setp(ax_rc.get_xticklabels(), fontweight="bold")
+    plt.setp(ax_rc.get_yticklabels(), fontweight="bold")
+    ax_rc.set_xlim(-0.02, 1.02)
+    ax_rc.grid(True, which="major", color=c_grid, linewidth=0.6, alpha=0.7)
+    ax_rc.set_axisbelow(True)
+
+    mean_rets = np.full_like(thrs, np.nan)
+    mean_win_rets = np.full_like(thrs, np.nan)
+    mean_lose_rets = np.full_like(thrs, np.nan)
+    for i, thr in enumerate(thrs):
+        sel = probs >= thr
+        if int(sel.sum()) >= 2:
+            net = split_rets[sel] - fee
+            labels = y_true[sel]
+            mean_rets[i] = float(np.nanmean(net))
+            winners = net[labels == 1]
+            losers = net[labels == 0]
+            if len(winners) >= 1:
+                mean_win_rets[i] = float(np.nanmean(winners))
+            if len(losers) >= 1:
+                mean_lose_rets[i] = float(np.nanmean(losers))
+
+    ax_ret = ax_rc.twinx()
+    valid = ~np.isnan(mean_rets)
+    valid_w = ~np.isnan(mean_win_rets)
+    valid_l = ~np.isnan(mean_lose_rets)
+    both_valid = valid_w & valid_l
+    if both_valid.any():
+        ax_ret.fill_between(covs[both_valid],
+                            mean_win_rets[both_valid] * 100,
+                            mean_lose_rets[both_valid] * 100,
+                            alpha=0.06, color=c_win, zorder=1, label="_nolegend_")
+
+    def _plot_dynamic_return(ax, x, y, lw, ls, alpha, label, zorder):
+        if len(x) > 1:
+            from matplotlib.collections import LineCollection
+            points = np.array([x, y]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            y_mids = segments[:, :, 1].mean(axis=1)
+            seg_colors = [c_ret if ym >= 0 else c_ret_neg for ym in y_mids]
+            lc = LineCollection(segments, colors=seg_colors, linewidth=lw, linestyles=ls, alpha=alpha, zorder=zorder)
+            ax.add_collection(lc)
+            if label and label != "_nolegend_":
+                ax.plot([], [], color=c_ret, linewidth=lw, linestyle=ls, label=label)
+        elif len(x) == 1:
+            color = c_ret if y[0] >= 0 else c_ret_neg
+            ax.plot(x, y, color=color, linewidth=lw, linestyle=ls, alpha=alpha, label=label, zorder=zorder)
+
+    _plot_dynamic_return(ax_ret, covs[valid], mean_rets[valid] * 100, 2.0, "-", 0.9, "Mean Return", 3)
+    _plot_dynamic_return(ax_ret, covs[valid_w], mean_win_rets[valid_w] * 100, 1.0, ":", 0.8, "_nolegend_", 2)
+    _plot_dynamic_return(ax_ret, covs[valid_l], mean_lose_rets[valid_l] * 100, 1.0, ":", 0.8, "_nolegend_", 2)
+    ax_ret.axhline(y=0, color=c_ret, linestyle=":", alpha=0.35, linewidth=1.0)
+    ax_ret.set_ylabel("Return (%)", fontsize=11, fontweight="bold", color="black", labelpad=8)
+    ax_ret.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
+    for spine in ax_ret.spines.values():
+        spine.set_color("black")
+        spine.set_linewidth(1.5)
+    plt.setp(ax_ret.get_yticklabels(), fontweight="bold")
+
+    idx_05 = np.argmin(np.abs(thrs - 0.5))
+    cov_05 = covs[idx_05]
+    risk_05 = risks_raw[idx_05]
+    op_cov = op["coverage"]
+    op_risk = op.get("risk", 0)
+    thr_source = op.get("threshold_source", "OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
+    show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
+    if show_baseline:
+        ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)
+        ax_rc.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=40, edgecolors="white", linewidths=1.0, zorder=5)
+        ax_rc.annotate("τ=0.50", xy=(cov_05, risk_05), xytext=(3, 5), textcoords="offset points",
+                       fontsize=7, color=c_thr05, fontweight="bold", zorder=10,
+                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_thr05, alpha=0.8, lw=0.6))
+
+    ax_rc.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7, linewidth=1.8)
+    ax_rc.scatter([op_cov], [op_risk], color=c_op, marker="D", s=40, edgecolors="white", linewidths=1.0, zorder=6)
+    ax_rc.annotate(f"$\\hat{{\\tau}}$={op['threshold']:.3f}", xy=(op_cov, op_risk), xytext=(3, 6),
+                   textcoords="offset points", fontsize=7.5, color=c_op, fontweight="bold", zorder=10,
+                   bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_op, alpha=0.85, lw=0.6))
+
+    mr_val = op["mean_ret"] * 100
+    sel_op = test_approved_ocp if split_name == "Test" and is_ocp and test_approved_ocp is not None else (probs >= op["threshold"])
+    n_op = int(sel_op.sum())
+    if n_op >= 2:
+        net_op = split_rets[sel_op] - fee
+        lab_op = y_true[sel_op]
+        w_op = net_op[lab_op == 1]
+        l_op = net_op[lab_op == 0]
+        mw_val = float(np.nanmean(w_op)) * 100 if len(w_op) >= 1 else None
+        ml_val = float(np.nanmean(l_op)) * 100 if len(l_op) >= 1 else None
+    else:
+        mw_val, ml_val = None, None
+
+    mr_05 = mean_rets[idx_05] * 100 if not np.isnan(mean_rets[idx_05]) else None
+    mw_05 = mean_win_rets[idx_05] * 100 if not np.isnan(mean_win_rets[idx_05]) else None
+    ml_05 = mean_lose_rets[idx_05] * 100 if not np.isnan(mean_lose_rets[idx_05]) else None
+
+    def _get_staggered_offsets(val_dict):
+        valid_vals = {k: v for k, v in val_dict.items() if v is not None}
+        s_keys = sorted(valid_vals.keys(), key=lambda k: valid_vals[k])
+        if len(s_keys) == 3:
+            return {s_keys[0]: (3, -8), s_keys[1]: (3, 0), s_keys[2]: (3, 8)}
+        if len(s_keys) == 2:
+            return {s_keys[0]: (3, -5), s_keys[1]: (3, 5)}
+        if len(s_keys) == 1:
+            return {s_keys[0]: (3, 0)}
+        return {}
+
+    if show_baseline:
+        offs_05 = _get_staggered_offsets({"mw": mw_05, "ml": ml_05, "mr": mr_05})
+        for key, value in {"mw": mw_05, "ml": ml_05, "mr": mr_05}.items():
+            if value is None:
+                continue
+            color = c_ret if value >= 0 else c_ret_neg
+            ax_ret.scatter([cov_05], [value], color=color, marker="o", s=35 if key == "mr" else 25,
+                           edgecolors="white", linewidths=0.8 if key == "mr" else 0.6, zorder=5)
+            ax_ret.annotate(f"{value:+.2f}%", xy=(cov_05, value), xytext=offs_05[key],
+                            textcoords="offset points", fontsize=7.5, color=color,
+                            fontweight="bold", zorder=10)
+
+    offs_op = _get_staggered_offsets({"mw": mw_val, "ml": ml_val, "mr": mr_val})
+    for key, value in {"mr": mr_val, "mw": mw_val, "ml": ml_val}.items():
+        if value is None:
+            continue
+        color = c_ret if value >= 0 else c_ret_neg
+        ax_ret.scatter([op_cov], [value], color=color, marker="D" if key == "mr" else "o",
+                       s=40 if key == "mr" else 35,
+                       edgecolors="white", linewidths=1.0 if key == "mr" else 0.8,
+                       zorder=7 if key == "mr" else 6)
+        ax_ret.annotate(f"{value:+.2f}%", xy=(op_cov, value), xytext=offs_op[key],
+                        textcoords="offset points", fontsize=7.5, color=color,
+                        fontweight="bold", zorder=10)
+
+    util_ref_plotted = False
+    if split_name == "Test" and is_ocp and val_op is not None and val_threshold is not None and val_op.get("constraint_satisfied", False):
+        util_sel = probs >= val_threshold
+        util_n = int(util_sel.sum())
+        util_cov = util_n / len(y_true) if len(y_true) > 0 else 0
+        util_risk = int((y_true[util_sel] == 0).sum()) / max(util_n, 1) if util_n > 0 else 0
+        if util_n >= 2:
+            util_net = split_rets[util_sel] - fee
+            util_lab = y_true[util_sel]
+            util_mr = float(np.nanmean(util_net)) * 100
+            util_w = util_net[util_lab == 1]
+            util_l = util_net[util_lab == 0]
+            util_mw = float(np.nanmean(util_w)) * 100 if len(util_w) >= 1 else None
+            util_ml = float(np.nanmean(util_l)) * 100 if len(util_l) >= 1 else None
+        else:
+            util_mr, util_mw, util_ml = 0, None, None
+
+        ax_rc.axvline(x=util_cov, color=c_util_ref, linestyle="--", alpha=0.7, linewidth=1.5)
+        ax_rc.scatter([util_cov], [util_risk], color=c_util_ref, marker="D", s=45, edgecolors="white", linewidths=1.0, zorder=6)
+        ax_rc.annotate(f"τ_util={val_threshold:.3f}", xy=(util_cov, util_risk), xytext=(5, -12),
+                       textcoords="offset points", fontsize=7.5, color=c_util_ref, fontweight="bold", zorder=10,
+                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_util_ref, alpha=0.85, lw=0.6))
+        util_offs = _get_staggered_offsets({"mw": util_mw, "ml": util_ml, "mr": util_mr})
+        for key, value in {"mr": util_mr, "mw": util_mw, "ml": util_ml}.items():
+            if value is None:
+                continue
+            ax_ret.scatter([util_cov], [value], color=c_util_ref, marker="s" if key == "mr" else "o",
+                           s=35 if key == "mr" else 25,
+                           edgecolors="white", linewidths=0.8 if key == "mr" else 0.6,
+                           zorder=6 if key == "mr" else 5)
+            ax_ret.annotate(f"{value:+.2f}%", xy=(util_cov, value), xytext=util_offs.get(key, (6, 0)),
+                            textcoords="offset points", fontsize=7.5, color=c_util_ref,
+                            fontweight="bold", zorder=10)
+        util_ref_plotted = True
+
+    ax_rc.set_title(f"Coverage-Risk  |  {split_name}  |  {model_label}",
+                    fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
+    fig_rc.tight_layout()
+    fig_rc.subplots_adjust(bottom=0.22 + (0.05 if util_ref_plotted else 0.0))
+
+    from matplotlib.lines import Line2D
+    legend_prop = {"size": 8}
+    row1_handles, row1_labels = [], []
+    if mw_val is not None:
+        color = c_ret if mw_val >= 0 else c_ret_neg
+        row1_handles.append(Line2D([], [], color=color, linewidth=1.0, linestyle=":", marker="o", markersize=4, markeredgecolor="white", markeredgewidth=0.6))
+        row1_labels.append(f"Avg Win = {mw_val:+.2f}%")
+    if ml_val is not None:
+        color = c_ret if ml_val >= 0 else c_ret_neg
+        row1_handles.append(Line2D([], [], color=color, linewidth=1.0, linestyle=":", marker="o", markersize=4, markeredgecolor="white", markeredgewidth=0.6))
+        row1_labels.append(f"Avg Loss = {ml_val:+.2f}%")
+    row1_handles.append(Line2D([], [], color=c_op, marker="D", markersize=5, linestyle="--", linewidth=1.5, alpha=0.8, markeredgecolor="white", markeredgewidth=0.8))
+    row1_labels.append(f"τ̂ = {op['threshold']:.3f}  ({thr_source})   Cov = {op['coverage']:.1%}   N = {op['selected_count']}   t = {op['t_stat']:.1f}")
+    fig_rc.legend(row1_handles, row1_labels,
+                  loc="lower center", ncol=len(row1_handles), prop=legend_prop,
+                  frameon=True, framealpha=0.92, edgecolor="none", fancybox=True,
+                  bbox_to_anchor=(0.5, 0.065 + (0.05 if util_ref_plotted else 0.0)),
+                  handlelength=2.5, handletextpad=0.8)
+
+    row2_handles = [Line2D([], [], color=c_risk, linewidth=2.2),
+                    Line2D([], [], color=c_ret if op["mean_ret"] >= 0 else c_ret_neg, linewidth=2.0)]
+    row2_labels = [f"Risk = {op.get('risk', 0):.1%}", f"Mean Ret = {op['mean_ret']*100:+.2f}%"]
+    fig_rc.legend(row2_handles, row2_labels,
+                  loc="lower center", ncol=2, prop=legend_prop,
+                  frameon=True, framealpha=0.92, edgecolor="none", fancybox=True,
+                  bbox_to_anchor=(0.5, 0.015 + (0.05 if util_ref_plotted else 0.0)),
+                  handlelength=2.5, handletextpad=0.8)
+
+    if util_ref_plotted:
+        row3_handles = [Line2D([], [], color=c_util_ref, marker="D", markersize=5, linestyle="--", linewidth=1.5, alpha=0.8, markeredgecolor="white", markeredgewidth=0.8)]
+        row3_labels = [f"τ_util = {val_threshold:.3f}  (Val-Utility)   Cov = {util_cov:.1%}   N = {util_n}   Risk = {util_risk:.1%}   MeanRet = {util_mr:+.2f}%"]
+        fig_rc.legend(row3_handles, row3_labels,
+                      loc="lower center", ncol=1, prop=legend_prop,
+                      frameon=True, framealpha=0.92, edgecolor="none", fancybox=True,
+                      bbox_to_anchor=(0.5, 0.015), handlelength=2.5, handletextpad=0.8)
+
+    fig_rc.savefig(str(save_path), dpi=200, facecolor="white")
+    plt.close(fig_rc)
+
+
+# ┏━━━━━━━━━━ OCP Threshold Evolution ━━━━━━━━━━┓
+def plot_ocp_threshold_evolution(save_path: Path,
+                                 test_s_hats: np.ndarray,
+                                 utility_threshold: float,
+                                 model_label: str,
+                                 thres_mode: str,
+                                 ocp_alpha: float,
+                                 conformal_coverage: float,
+                                 n_set_1: int,
+                                 n_set_0: int,
+                                 n_set_both: int,
+                                 n_set_empty: int,
+                                 split_name: str = "Test"):
+    """Plot OCP threshold evolution for temporal_eval."""
+    fig_thr, ax_thr = plt.subplots(figsize=(10, 4), facecolor="white")
+    ax_thr.set_facecolor("#FAFAFA")
+    eff_tau = np.maximum(test_s_hats, 1.0 - test_s_hats)
+    ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label=f"τ_t ({thres_mode})")
+    ax_thr.axhline(y=utility_threshold, color="#34495E", linestyle="--", linewidth=1.2, alpha=0.7, label=f"τ Utility = {utility_threshold:.3f}")
+    ax_thr.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax_thr.set_xlabel("Test sample index", fontsize=10)
+    ax_thr.set_ylabel("Threshold τ_t", fontsize=10)
+    ax_thr.set_title(f"{thres_mode} Threshold Evolution  |  {split_name}  |  {model_label}  (α={ocp_alpha})\n"
+                     f"Conformal Cov={conformal_coverage:.1%} (target≥{1-ocp_alpha:.0%})  |  "
+                     f"{{1}}={n_set_1}  {{0}}={n_set_0}  {{0,1}}={n_set_both}  {{}}={n_set_empty}",
+                     fontsize=11, fontweight="bold", color="#2C3E50")
+    ax_thr.legend(fontsize=8, loc="upper right")
+    ax_thr.set_ylim(0.4, 1.0)
+    ax_thr.grid(True, alpha=0.3)
+    fig_thr.tight_layout()
+    fig_thr.savefig(str(save_path), dpi=200, facecolor="white")
+    plt.close(fig_thr)
+
+
 __all__ = [
     "plot_correlation_heatmap",
     "plot_pointbiserial",
@@ -1128,5 +1431,7 @@ __all__ = [
     "compute_classification_metrics",
     "plot_confusion_matrix",
     "extract_time_features",
+    "plot_temporal_risk_coverage_curve",
+    "plot_ocp_threshold_evolution",
     "compute_top_features",
 ]

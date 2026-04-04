@@ -176,7 +176,7 @@ def run_feature_backtest(dataset,
 
     # ┏━━━━━━━━━━ Predict Probabilities ━━━━━━━━━━┓
     probs = model.predict_proba(X_test)[:, 1]
-    if thres_mode == "OCP" and "_ocp_test_approved" in val_op:
+    if thres_mode.startswith("OCP") and "_ocp_test_approved" in val_op:
         m2_approved = val_op["_ocp_test_approved"]
     else:
         m2_approved = probs >= threshold
@@ -216,7 +216,7 @@ def run_feature_backtest(dataset,
 
     # ┏━━━━━━━━━━ Check for Utility Threshold Approval ━━━━━━━━━━┓
     has_m2_util = False
-    if thres_mode == "OCP":
+    if thres_mode.startswith("OCP"):
         m2_util_approved = probs >= val_op["threshold"]
         m2_util_df = df_trades[m2_util_approved].copy()
         has_m2_util = len(m2_util_df) > 0
@@ -262,7 +262,7 @@ def run_feature_backtest(dataset,
     m1_wr = m1_good / n_total * 100 if n_total > 0 else 0
 
     # ┏━━━━━━━━━━ Define Strategy Names ━━━━━━━━━━┓
-    m2_name = f"M2 {mlabel} OCP" if thres_mode == "OCP" else f"M2 {mlabel} selective"
+    m2_name = f"M2 {mlabel} {thres_mode}" if thres_mode.startswith("OCP") else f"M2 {mlabel} selective"
     m2_util_name = f"M2 {mlabel} Utility"
     m1_name = "M1 Kronos (all trades)"
     bh_name = "Buy & Hold"
@@ -297,10 +297,10 @@ def run_feature_backtest(dataset,
 
     # ┏━━━━━━━━━━ Determine OCP vs Utility Threshold ━━━━━━━━━━┓
     direction_label = direction.upper()
-    if thres_mode == "OCP" and "_ocp_test_thresholds" in val_op:
+    if thres_mode.startswith("OCP") and "_ocp_test_thresholds" in val_op:
         ocp_s_hats = val_op["_ocp_test_thresholds"]
         threshold = float(np.median(np.maximum(ocp_s_hats, 1.0 - ocp_s_hats)))
-        constraint_tag = "OCP Median-Adaptive"
+        constraint_tag = f"{thres_mode} Median-Adaptive"
     else:
         constraint_tag = "Utility-Opt" if val_op["constraint_satisfied"] else "fallback"
     fee_tag = f" fee={fee*100:.2f}%" if fee > 0 else ""
