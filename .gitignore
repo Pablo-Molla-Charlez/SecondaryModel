@@ -17,3 +17,11 @@ src/Data_MLA/Kronos/Stocks/*
 !src/Data_MLA/Kronos/Stocks/.gitkeep
 src/Data_MLA/Kronos/Commodities/*
 !src/Data_MLA/Kronos/Commodities/.gitkeep
+
+src/Data_MLA/Fincast/Crypto/*
+!src/Data_MLA/Fincast/Crypto/.gitkeep
+src/Data_MLA/Fincast/Stocks/*
+!src/Data_MLA/Fincast/Stocks/.gitkeep
+src/Data_MLA/Fincast/Commodities/*
+!src/Data_MLA/Fincast/Commodities/.gitkeep
+

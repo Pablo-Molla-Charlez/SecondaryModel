@@ -64,7 +64,7 @@ flowchart TD
     A --> C[data.load]
     A --> D[data.split]
     A --> E[data.features]
-    A --> F[main_model.forecast_horizon]
+    A --> F[data.load.forecast_horizon]
     A --> G[evaluation.fee_per_trade]
     classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
@@ -301,6 +301,8 @@ data:
     meta_label_mode: "tp"          # "fp" or "tp" or "og"
     direction:       "down"        # "up" or "down"
     granularity:     "all"         # "1d", "4h", etc. or "all" for multi-granularity
+    forecast_horizon: 7
+    m1: "fincast"
 
   # ┏━━━━━━━━━━ Data Splits ━━━━━━━━━━┓
   split:
@@ -317,10 +319,6 @@ data:
     # ┏━━━━━━━━━━ Engineered Window Features ━━━━━━━━━━┓
     engineered_features:
       selected: [bb_pctb_last, rsi_last, roc_5_last, roc_20_last, atr_norm_last]
-
-# ┏━━━━━━━━━━ Main Model ━━━━━━━━━━┓
-main_model:
-  forecast_horizon: 7
 
 # ┏━━━━━━━━━━ Evaluation ━━━━━━━━━━┓
 evaluation:
@@ -343,7 +341,7 @@ evaluation:
 | Key | Current value | Meaning |
 | --- | --- | --- |
 | `paths.csv_dir` | `/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7` | Root directory containing the processed Kronos CSV files consumed by the M2 pipeline. |
-| `paths.output_root` | `/home/pablo/M2_DS/Secondary-Model/src/Output` | Base output directory. Current Kronos experiment artifacts are then written under `Output/Kronos`. |
+| `paths.output_root` | `/home/pablo/M2_DS/Secondary-Model/src/Output` | Base output directory. Artifacts are then written under the configured M1 bucket, e.g. `Output/Fincast` or `Output/Kronos`. |
 
 ### `data.load`
 
@@ -354,6 +352,8 @@ evaluation:
 | `data.load.meta_label_mode` | `tp` | Which meta-label variant to use. `tp` is the current active setup. |
 | `data.load.direction` | `down` | Trade direction for the labeling and evaluation path. |
 | `data.load.granularity` | `all` | Multi-granularity mode. This is why the main run modes for the current config are `--per-gran` and `--all-grans`. |
+| `data.load.forecast_horizon` | `7` | Prediction horizon used by the M2 pipeline. It also matters for return alignment, backtesting, and delayed-feedback OCP logic. |
+| `data.load.m1` | `fincast` | Declares which M1 model generated the upstream signals so caches, outputs, and reporting can be grouped under the correct output bucket. |
 
 ### `data.split`
 
@@ -371,12 +371,6 @@ evaluation:
 | --- | --- | --- |
 | `data.features.input` | `["open", "high", "low", "close", "volume"]` | Raw market columns used as the base inputs. |
 | `data.features.engineered_features.selected` | `[bb_pctb_last, rsi_last, roc_5_last, roc_20_last, atr_norm_last]` | Engineered window-level features exposed to the tree model and the feature-analysis utilities. |
-
-### `main_model`
-
-| Key | Current value | Meaning |
-| --- | --- | --- |
-| `main_model.forecast_horizon` | `7` | Prediction horizon used by the M2 pipeline. It also matters for return alignment, backtesting, and delayed-feedback OCP logic. |
 
 ### `evaluation`
 
