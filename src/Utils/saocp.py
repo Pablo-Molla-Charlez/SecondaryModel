@@ -430,14 +430,25 @@ def _run_cost_deferral_online(val_probs,
     tau_trajectory = np.zeros(n_test)
     n_set_1 = n_set_0 = n_set_both = n_set_empty = 0
 
+    # ┏━━━━━━━━━━ Mondrian diagnostics tracking ━━━━━━━━━━┓
+    regime_assignments = np.full(n_test, -1, dtype=int)   # 0=low-vol, 1=high-vol, -1=unknown
+    tau_low_trajectory = np.full(n_test, np.nan)
+    tau_high_trajectory = np.full(n_test, np.nan)
+    median_rv_trajectory = np.full(n_test, np.nan)
+
     # ┏━━━━━━━━━━ Pre-compute RV for the full test set (needed for regime assignment) ━━━━━━━━━━┓
     test_rv: np.ndarray | None = None
     if mondrian and test_returns is not None:
         test_rv = _realized_volatility(np.asarray(test_returns), window=rv_window)
 
     def _ingest_score(score: float, prob: float, label: int, ret_val: float | None = None):
-        """Feed a score into SAOCP and rolling buffers; periodic reset + τ* re-opt."""
-        # ┏━━━━━━━━━━ Feed a score into SAOCP and rolling buffers; periodic reset + τ* re-opt. ━━━━━━━━━━┓
+        """Feed a score into SAOCP and rolling buffers.
+
+        SAOCP is periodically reset every calib_window steps (because the
+        library accumulates residuals with no way to forget old ones).
+        τ* is re-optimised on every new score (the rolling deque IS the
+        true sliding window — no reset needed).
+        """
         nonlocal saocp, steps_since_reset
         nonlocal current_tau, tau_low_vol, tau_high_vol
 
@@ -448,48 +459,47 @@ def _run_cost_deferral_online(val_probs,
             recent_returns.append(ret_val)
         steps_since_reset += 1
 
-        # ┏━━━━━━━━━━ Reset SAOCP ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Periodic SAOCP reset (library limitation workaround) ━━━━━━━━━━┓
         if steps_since_reset >= calib_window:
             saocp = _make_saocp(alpha)
             _warm_saocp(saocp, recent_scores)
             steps_since_reset = 0
 
-            # ┏━━━━━━━━━━ Re-optimise τ* on rolling buffer ━━━━━━━━━━┓
-            buf_p = np.array([x[0] for x in recent_pl])
-            buf_l = np.array([x[1] for x in recent_pl])
-            current_tau, _, _ = _cost_grid_search(buf_p, buf_l, c_FP, c_FN, c_DEF)
+        # ┏━━━━━━━━━━ Re-optimise τ* on rolling buffer (every new score) ━━━━━━━━━━┓
+        buf_p = np.array([x[0] for x in recent_pl])
+        buf_l = np.array([x[1] for x in recent_pl])
+        current_tau, _, _ = _cost_grid_search(buf_p, buf_l, c_FP, c_FN, c_DEF)
 
-            # ┏━━━━━━━━━━ Mondrian: separate τ* per volatility regime ━━━━━━━━━━┓
-            if mondrian and recent_returns is not None and len(recent_returns) >= rv_window:
-                rv_buf = _realized_volatility(np.array(recent_returns), window=rv_window)
-                valid_rv = rv_buf[~np.isnan(rv_buf)]
-                if len(valid_rv) > 0:
-                    median_rv = np.median(valid_rv)
-                    # ┏━━━━━━━━━━ Align: only last len(rv_buf) entries of recent_pl have returns ━━━━━━━━━━┓
-                    n_buf = len(recent_returns)
-                    pl_tail = list(recent_pl)[-n_buf:]
-                    rv_tail = rv_buf[-n_buf:]
+        # ┏━━━━━━━━━━ Mondrian: separate τ* per volatility regime ━━━━━━━━━━┓
+        if mondrian and recent_returns is not None and len(recent_returns) >= rv_window:
+            rv_buf = _realized_volatility(np.array(recent_returns), window=rv_window)
+            valid_rv = rv_buf[~np.isnan(rv_buf)]
+            if len(valid_rv) > 0:
+                median_rv = np.median(valid_rv)
+                n_buf = len(recent_returns)
+                pl_tail = list(recent_pl)[-n_buf:]
+                rv_tail = rv_buf[-n_buf:]
 
-                    low_mask = rv_tail <= median_rv
-                    high_mask = rv_tail > median_rv
+                low_mask = rv_tail <= median_rv
+                high_mask = rv_tail > median_rv
 
-                    # ┏━━━━━━━━━━ Low-vol regime ━━━━━━━━━━┓
-                    if (~np.isnan(rv_tail) & low_mask).sum() >= 10:
-                        idx_low = np.where(~np.isnan(rv_tail) & low_mask)[0]
-                        p_low = np.array([pl_tail[j][0] for j in idx_low])
-                        l_low = np.array([pl_tail[j][1] for j in idx_low])
-                        tau_low_vol, _, _ = _cost_grid_search(p_low, l_low, c_FP, c_FN, c_DEF)
-                    else:
-                        tau_low_vol = current_tau
+                # ┏━━━━━━━━━━ Low-vol regime ━━━━━━━━━━┓
+                if (~np.isnan(rv_tail) & low_mask).sum() >= 10:
+                    idx_low = np.where(~np.isnan(rv_tail) & low_mask)[0]
+                    p_low = np.array([pl_tail[j][0] for j in idx_low])
+                    l_low = np.array([pl_tail[j][1] for j in idx_low])
+                    tau_low_vol, _, _ = _cost_grid_search(p_low, l_low, c_FP, c_FN, c_DEF)
+                else:
+                    tau_low_vol = current_tau
 
-                    # ┏━━━━━━━━━━ High-vol regime ━━━━━━━━━━┓
-                    if (~np.isnan(rv_tail) & high_mask).sum() >= 10:
-                        idx_high = np.where(~np.isnan(rv_tail) & high_mask)[0]
-                        p_high = np.array([pl_tail[j][0] for j in idx_high])
-                        l_high = np.array([pl_tail[j][1] for j in idx_high])
-                        tau_high_vol, _, _ = _cost_grid_search(p_high, l_high, c_FP, c_FN, c_DEF)
-                    else:
-                        tau_high_vol = current_tau
+                # ┏━━━━━━━━━━ High-vol regime ━━━━━━━━━━┓
+                if (~np.isnan(rv_tail) & high_mask).sum() >= 10:
+                    idx_high = np.where(~np.isnan(rv_tail) & high_mask)[0]
+                    p_high = np.array([pl_tail[j][0] for j in idx_high])
+                    l_high = np.array([pl_tail[j][1] for j in idx_high])
+                    tau_high_vol, _, _ = _cost_grid_search(p_high, l_high, c_FP, c_FN, c_DEF)
+                else:
+                    tau_high_vol = current_tau
 
     # ┏━━━━━━━━━━ Test-time adaptation ━━━━━━━━━━┓
     update_buffer = deque()
@@ -528,7 +538,6 @@ def _run_cost_deferral_online(val_probs,
         certainty = max(p, 1.0 - p)
         if mondrian and test_rv is not None and not np.isnan(test_rv[i]):
             # ┏━━━━━━━━━━ Determine current regime from pre-computed RV ━━━━━━━━━━┓
-            # Use the median of the rolling buffer's RV as the split point
             if recent_returns is not None and len(recent_returns) >= rv_window:
                 rv_buf = _realized_volatility(np.array(recent_returns), window=rv_window)
                 valid_rv = rv_buf[~np.isnan(rv_buf)]
@@ -536,13 +545,18 @@ def _run_cost_deferral_online(val_probs,
             else:
                 median_rv = test_rv[i]
 
+            median_rv_trajectory[i] = median_rv
             if test_rv[i] <= median_rv:
                 tau_i = tau_low_vol
+                regime_assignments[i] = 0
             else:
                 tau_i = tau_high_vol
+                regime_assignments[i] = 1
         else:
             tau_i = current_tau
 
+        tau_low_trajectory[i] = tau_low_vol
+        tau_high_trajectory[i] = tau_high_vol
         tau_trajectory[i] = tau_i
         test_approved[i] = certainty >= tau_i  # NOT deferred
 
@@ -572,6 +586,43 @@ def _run_cost_deferral_online(val_probs,
                        "tau_trajectory": tau_trajectory,
                        "cost_params":    {"c_FP": c_FP, "c_FN": c_FN, "c_DEF": c_DEF},
                        "mondrian":       mondrian}
+
+    # ┏━━━━━━━━━━ Mondrian diagnostics (also for plain OCP-cost to evaluate regime potential) ━━━━━━━━━━┓
+    if test_returns is not None:
+        if test_rv is None:
+            test_rv = _realized_volatility(np.asarray(test_returns), window=rv_window)
+        # For non-Mondrian: assign regimes post-hoc using global median RV
+        if not mondrian:
+            valid_rv = test_rv[~np.isnan(test_rv)]
+            if len(valid_rv) > 0:
+                global_med = np.median(valid_rv)
+                for i in range(n_test):
+                    if not np.isnan(test_rv[i]):
+                        regime_assignments[i] = 0 if test_rv[i] <= global_med else 1
+                        median_rv_trajectory[i] = global_med
+        
+        # Compute per-regime win rates
+        _labels = np.asarray(test_labels, dtype=int)
+        _low = regime_assignments == 0
+        _high = regime_assignments == 1
+        low_wr = float(_labels[_low].mean()) if _low.sum() > 0 else float("nan")
+        high_wr = float(_labels[_high].mean()) if _high.sum() > 0 else float("nan")
+        overall_wr = float(_labels.mean()) if len(_labels) > 0 else float("nan")
+
+        conformal_stats["mondrian_diag"] = {"test_rv":              test_rv,
+                                            "regime_assignments":   regime_assignments,
+                                            "tau_low_trajectory":   tau_low_trajectory if mondrian else None,
+                                            "tau_high_trajectory":  tau_high_trajectory if mondrian else None,
+                                            "median_rv_trajectory": median_rv_trajectory,
+                                            "test_labels":          _labels,
+                                            "is_mondrian":          mondrian}
+
+        conformal_stats["regime_stats"] = {"n_low_vol":   int(_low.sum()),
+                                           "n_high_vol":  int(_high.sum()),
+                                           "wr_low_vol":  round(low_wr * 100, 2),
+                                           "wr_high_vol": round(high_wr * 100, 2),
+                                           "wr_overall":  round(overall_wr * 100, 2),
+                                           "delta_wr_pp": round((low_wr - high_wr) * 100, 2) if not (np.isnan(low_wr) or np.isnan(high_wr)) else None}
 
     return test_thresholds, test_approved, val_thresholds, conformal_stats
 
@@ -638,6 +689,159 @@ def _ocp_threshold_to_op(test_probs,
     return op
 
 
+def plot_mondrian_diagnostics(conformal_stats, save_dir, gran_label="", thres_mode="OCP-cost-mondrian"):
+    """Generate 3 diagnostic plots for Mondrian cost-aware deferral.
+
+    Plots saved to save_dir:
+      1. RV time series with median split line
+      2. τ* per regime (low-vol vs high-vol) over time
+      3. Rolling win rate per regime (does the split separate easy/hard?)
+
+    Parameters
+    ----------
+    conformal_stats : dict
+        Output from _run_cost_deferral_online with mondrian=True.
+    save_dir : str or Path
+        Directory to save the plot files.
+    gran_label : str
+        Granularity label for titles (e.g. "4h").
+    thres_mode : str
+        Threshold mode label for titles.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+
+    diag = conformal_stats.get("mondrian_diag")
+    if diag is None:
+        return
+
+    # ┏━━━━━━━━━━ Extract Information for realized volatility-based regime analysis ━━━━━━━━━━┓
+    save_dir = Path(save_dir)
+    test_rv      = diag["test_rv"]
+    regimes      = diag["regime_assignments"]
+    tau_low_t    = diag["tau_low_trajectory"]    # None for non-Mondrian
+    tau_high_t   = diag["tau_high_trajectory"]   # None for non-Mondrian
+    is_mondrian  = diag.get("is_mondrian", False)
+    median_rv_t  = diag["median_rv_trajectory"]
+    labels       = diag["test_labels"]
+    tau_traj     = conformal_stats["tau_trajectory"]
+    n = len(test_rv)
+    idx = np.arange(n)
+
+    cost_p = conformal_stats.get("cost_params", {})
+    cost_tag = f"c_FP={cost_p.get('c_FP','?')}, c_DEF={cost_p.get('c_DEF','?')}"
+
+    # ┏━━━━━━━━━━ Plot 1: RV time series with median split ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(12, 4), facecolor="white")
+    ax.set_facecolor("#FAFAFA")
+    valid = ~np.isnan(test_rv)
+    ax.plot(idx[valid], test_rv[valid], color="#2980B9", linewidth=0.6, alpha=0.8, label="Realized Volatility")
+    valid_med = ~np.isnan(median_rv_t)
+    if valid_med.any():
+        ax.plot(idx[valid_med], median_rv_t[valid_med], color="#E74C3C", linewidth=1.2,
+                linestyle="--", alpha=0.9, label="Rolling median (split)")
+    
+    # ┏━━━━━━━━━━ Shade Regimes: Low vs High ━━━━━━━━━━┓
+    rv_max = float(np.nanmax(test_rv)) if valid.any() else 1.0
+    low = regimes == 0
+    high = regimes == 1
+    if low.any():
+        ax.fill_between(idx, 0, rv_max, where=low, alpha=0.08, color="#27AE60", label="Low-vol regime")
+    if high.any():
+        ax.fill_between(idx, 0, rv_max, where=high, alpha=0.08, color="#E74C3C", label="High-vol regime")
+    ax.set_xlabel("Test sample index", fontsize=10)
+    ax.set_ylabel("Realized Volatility", fontsize=10)
+    ax.set_title(f"Realized Volatility & Regime Assignment  |  {gran_label}  |  {thres_mode}\n{cost_tag}", fontsize=11, fontweight="bold", color="#2C3E50")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
+    fig.savefig(str(save_dir / "mondrian_rv_regimes.png"), dpi=200, facecolor="white")
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Plot 2: τ* per regime over time (only meaningful for Mondrian) ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(12, 4), facecolor="white")
+    ax.set_facecolor("#FAFAFA")
+    if is_mondrian:
+        ax.plot(idx, tau_traj, color="#8B008B", linewidth=0.4, alpha=0.25, label="τ* applied (per-sample)")
+    else:
+        ax.plot(idx, tau_traj, color="#8B008B", linewidth=0.8, alpha=0.7, label="τ* applied")
+    if is_mondrian and tau_low_t is not None and tau_high_t is not None:
+        valid_low = ~np.isnan(tau_low_t)
+        valid_high = ~np.isnan(tau_high_t)
+        if valid_high.any():
+            ax.plot(idx[valid_high], tau_high_t[valid_high], color="#E74C3C", linewidth=1.2, alpha=0.9, label="τ* high-vol")
+        if valid_low.any():
+            ax.plot(idx[valid_low], tau_low_t[valid_low], color="#27AE60", linewidth=1.2, alpha=0.9,
+                    linestyle="--", label="τ* low-vol")
+    ax.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax.set_xlabel("Test sample index", fontsize=10)
+    ax.set_ylabel("Deferral threshold τ*", fontsize=10)
+    title_2 = "Per-Regime τ* Evolution" if is_mondrian else "τ* Evolution (global, no regime split)"
+    ax.set_title(f"{title_2}  |  {gran_label}  |  {thres_mode}\n{cost_tag}", fontsize=11, fontweight="bold", color="#2C3E50")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.set_ylim(0.45, 1.0)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
+    fig.savefig(str(save_dir / "mondrian_tau_regimes.png"), dpi=200, facecolor="white")
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Plot 3: Rolling win rate per regime ━━━━━━━━━━┓
+    rolling_w = min(200, n // 5) if n > 50 else max(10, n // 3)
+    fig, ax = plt.subplots(figsize=(12, 4), facecolor="white")
+    ax.set_facecolor("#FAFAFA")
+
+    # ┏━━━━━━━━━━ Overall Rolling Window Win-Rate ━━━━━━━━━━┓
+    wins = (labels == 1).astype(float)
+    overall_wr = pd.Series(wins).rolling(rolling_w, min_periods=20).mean()
+    ax.plot(idx, overall_wr.values, color="#8B008B", linewidth=1.0, alpha=0.6, label=f"Overall WR (roll={rolling_w})")
+
+    # ┏━━━━━━━━━━ Per-regime WR: compute only within regime windows ━━━━━━━━━━┓
+    for regime_val, regime_name, color in [(0, "Low-vol", "#27AE60"), (1, "High-vol", "#E74C3C")]:
+        mask = regimes == regime_val
+        if mask.sum() < 20:
+            continue
+        # ┏━━━━━━━━━━ Rolling WR within regime samples only ━━━━━━━━━━┓
+        regime_wins = np.where(mask, wins, np.nan)
+        regime_wr = pd.Series(regime_wins).rolling(rolling_w, min_periods=20).mean()
+        ax.plot(idx, regime_wr.values, color=color, linewidth=1.2, alpha=0.9, label=f"{regime_name} WR")
+
+    # ┏━━━━━━━━━━ Summary stats in text box ━━━━━━━━━━┓
+    low_mask = regimes == 0
+    high_mask = regimes == 1
+    low_wr = labels[low_mask].mean() * 100 if low_mask.sum() > 0 else 0
+    high_wr = labels[high_mask].mean() * 100 if high_mask.sum() > 0 else 0
+    overall_wr_val = labels.mean() * 100
+    n_low = int(low_mask.sum())
+    n_high = int(high_mask.sum())
+    stats_text = (f"Low-vol: WR={low_wr:.1f}% (n={n_low})\n"
+                  f"High-vol: WR={high_wr:.1f}% (n={n_high})\n"
+                  f"Overall: WR={overall_wr_val:.1f}% (n={n})\n"
+                  f"Δ WR = {low_wr - high_wr:+.1f}pp")
+    ax.text(0.02, 0.97, stats_text, transform=ax.transAxes, fontsize=8, verticalalignment="top", fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="#BDC3C7", alpha=0.9))
+
+    ax.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax.set_xlabel("Test sample index", fontsize=10)
+    ax.set_ylabel("Win Rate", fontsize=10)
+    ax.set_title(f"Win Rate by Volatility Regime  |  {gran_label}  |  {thres_mode}\n"
+                 f"{cost_tag}  |  Does the regime split separate easy/hard periods?",
+                 fontsize=11, fontweight="bold", color="#2C3E50")
+    ax.legend(fontsize=8, loc="upper right")
+    ax.set_ylim(0.2, 0.8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
+    fig.savefig(str(save_dir / "mondrian_wr_regimes.png"), dpi=200, facecolor="white")
+    plt.close(fig)
+
+
 __all__ = [
     "_ocp_conformity_score",
     "_run_saocp_online",
@@ -645,4 +849,5 @@ __all__ = [
     "_ocp_threshold_to_op",
     "calib_window_for_gran",
     "_candles_per_day",
+    "plot_mondrian_diagnostics",
 ]

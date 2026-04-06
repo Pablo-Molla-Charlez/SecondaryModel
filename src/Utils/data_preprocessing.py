@@ -965,7 +965,7 @@ def load_dataset_from_config(config: dict) -> pd.DataFrame:
             return path.parent
         mode_root = _resolve_mode_root(path)
         if mode_root is not None:
-            horizon = config.get("main_model", {}).get("forecast_horizon", None)
+            horizon = config.get("data", {}).get("load", {}).get("forecast_horizon", None)
             if horizon is None:
                 horizon = split_cfg.get("forecast_horizon", None)
             if horizon is not None:
@@ -1108,4 +1108,3 @@ def load_dataset_from_config(config: dict) -> pd.DataFrame:
         print("┏━━━━━━━━━━ Finished: Filtering by Date Range ━━━━━━━━━━┓")
 
     return df
-

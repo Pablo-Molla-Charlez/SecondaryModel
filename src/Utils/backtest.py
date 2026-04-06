@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from Utils.utils import m1_display_label as _m1_display_label
 from Utils.utils import model_label as _model_label
 
 # ┏━━━━━━━━━━ Load Raw Close Prices from CSVs ━━━━━━━━━━┓
@@ -264,7 +265,7 @@ def run_feature_backtest(dataset,
     # ┏━━━━━━━━━━ Define Strategy Names ━━━━━━━━━━┓
     m2_name = f"M2 {mlabel} {thres_mode}" if thres_mode.startswith("OCP") else f"M2 {mlabel} selective"
     m2_util_name = f"M2 {mlabel} Utility"
-    m1_name = "M1 Kronos (all trades)"
+    m1_name = f"{_m1_display_label(cfg)} (all trades)"
     bh_name = "Buy & Hold"
 
     # ┏━━━━━━━━━━ Calculate Annualization Factors ━━━━━━━━━━┓
@@ -412,7 +413,7 @@ def run_feature_backtest(dataset,
                 f"{mdd[bh_name]:+.2f}%",
             ]
         )
-        col_labels = ["Asset", "M2 OCP", "M2 Utility", "M1 Kronos", "B&H"]
+        col_labels = ["Asset", "M2 OCP", "M2 Utility", _m1_display_label(cfg), "B&H"]
     else:
         table_data.append(
             ["Portfolio Return", f"{ptf[m2_name]:+.2f}%", f"{ptf[m1_name]:+.2f}%", f"{ptf[bh_name]:+.2f}%"]
@@ -433,7 +434,7 @@ def run_feature_backtest(dataset,
         table_data.append(
             ["Max Drawdown", f"{mdd[m2_name]:+.2f}%", f"{mdd[m1_name]:+.2f}%", f"{mdd[bh_name]:+.2f}%"]
         )
-        col_labels = ["Asset", f"M2 {mlabel}", "M1 Kronos", "B&H"]
+        col_labels = ["Asset", f"M2 {mlabel}", _m1_display_label(cfg), "B&H"]
 
     # ┏━━━━━━━━━━ Set Column Widths ━━━━━━━━━━┓
     n_cols_tbl = len(col_labels)
@@ -527,7 +528,7 @@ def run_feature_backtest(dataset,
         f"Threshold: {threshold:.4f} ({constraint_tag}) | Fee: {fee*100:.3f}%",
         "=" * 60,
         f"Total Test Trades:     {n_total}",
-        f"M1 Baseline Win-Rate:  {m1_wr:.1f}% ({m1_good}/{n_total})",
+        f"{_m1_display_label(cfg)} Baseline Win-Rate:  {m1_wr:.1f}% ({m1_good}/{n_total})",
         "-" * 60,
         f"M2 Approved Trades:    {n_approved} ({execution_rate:.1f}% execution)",
         f"M2 Rejected Trades:    {n_total - n_approved}",

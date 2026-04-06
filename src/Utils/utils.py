@@ -14,9 +14,31 @@ from Utils.data_preprocessing import (load_dataset_from_config,
                                       prepare_multi_asset_dataset, 
                                       GRAN_SEQ_LEN)
 
+# ┏━━━━━━━━━━ Model Label ━━━━━━━━━━┓
 def model_label(model_name: str) -> str:
     """Canonical short label for a model name."""
     return {"rf": "RF", "xgboost": "XGB", "autogluon": "AG"}.get(model_name, model_name.upper())
+
+# ┏━━━━━━━━━━ M1 Model Name retrieval ━━━━━━━━━━┓
+def m1_model_name(cfg: dict | None) -> str:
+    """Configured M1 model name normalized to lowercase."""
+    raw = (cfg or {}).get("data", {}).get("load", {}).get("m1", "kronos")
+    return str(raw).strip().lower() or "kronos"
+
+# ┏━━━━━━━━━━ M1 Output Bucket ━━━━━━━━━━┓
+def m1_output_bucket(cfg: dict | None) -> str:
+    """Folder name under Output/ for the configured M1 model."""
+    name = m1_model_name(cfg)
+    if name == "kronos":
+        return "Kronos"
+    if name == "fincast":
+        return "Fincast"
+    return "".join(part.capitalize() for part in name.replace("-", "_").split("_") if part)
+
+# ┏━━━━━━━━━━ M1 Display Label ━━━━━━━━━━┓
+def m1_display_label(cfg: dict | None) -> str:
+    """Human-readable M1 label used in plots and reports."""
+    return f"M1 {m1_output_bucket(cfg)}"
 
 
 # ┏━━━━━━━━━━ JSON Encoder ━━━━━━━━━━┓
@@ -93,7 +115,7 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     feat_cfg         = data_cfg.get("features", {})
     granularity      = load_cfg.get("granularity", "1h")
     direction        = load_cfg.get("direction", "up")
-    forecast_horizon = cfg.get("main_model", {}).get("forecast_horizon", 7)
+    forecast_horizon = load_cfg.get("forecast_horizon", 7)
     is_multi_gran    = (granularity == "all")
     seq_len          = GRAN_SEQ_LEN.get(granularity, split_cfg.get("context_length", 48))
 
@@ -115,7 +137,7 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     cfg_hash = hashlib.md5(cfg_str.encode()).hexdigest()[:10]
 
     # ┏━━━━━━━━━━ Build cache path ━━━━━━━━━━┓
-    cache_dir = Path(cfg["paths"]["output_root"]) / "Kronos" / "cache"
+    cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     if is_multi_gran:
         cache_name = f"multi_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
@@ -167,7 +189,7 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     """Return {direction: cache_path} for each direction that has a cache."""
     # ┏━━━━━━━━━━ Extract Configs ━━━━━━━━━━┓
     gran = cfg["data"]["load"]["granularity"]
-    cache_dir = Path(cfg["paths"]["output_root"]) / "Kronos" / "cache"
+    cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
 
     # ┏━━━━━━━━━━ Explicit cache path ━━━━━━━━━━┓
     if explicit:

@@ -65,7 +65,8 @@ from Utils.features import (_plot_prob_distribution,
 from Utils.saocp import (_ocp_threshold_to_op,
                          _run_saocp_online,
                          _run_cost_deferral_online,
-                         calib_window_for_gran)
+                         calib_window_for_gran,
+                         plot_mondrian_diagnostics)
 
 # ┏━━━━━━━━━━ Utility-based Selective Classification [risk-coverage analysis] ━━━━━━━━━━┓   
 from Utils.selective_classification import (_find_best_utility_threshold, 
@@ -73,6 +74,8 @@ from Utils.selective_classification import (_find_best_utility_threshold,
 
 # ┏━━━━━━━━━━ Utils ━━━━━━━━━━┓
 from Utils.utils import (NumpyJSONEncoder, 
+                         m1_display_label as _m1_display_label,
+                         m1_output_bucket as _m1_output_bucket,
                          model_label as _model_label, 
                          _safe_json, 
                          _load_config, 
@@ -366,6 +369,13 @@ def temporal_eval(dataset: dict,
                                     val_labels  = y_val.astype(int),
                                     alpha       = np.array([ocp_alpha]),
                                     **({"tau_trajectory": conf_stats["tau_trajectory"]} if "tau_trajectory" in conf_stats else {}))
+
+                # ┏━━━━━━━━━━ Mondrian / cost-deferral regime diagnostics ━━━━━━━━━━┓
+                if split_name == "Test" and "mondrian_diag" in conf_stats:
+                    plot_mondrian_diagnostics(conf_stats, 
+                                              save_dir,
+                                              gran_label = granularity,
+                                              thres_mode = thres_mode)
             else:
                 # ┏━━━━━━━━━━ Utility: apply fixed Val threshold to test ━━━━━━━━━━┓
                 thr = val_thresholds["thr"]
@@ -431,13 +441,13 @@ def temporal_eval(dataset: dict,
 
         # ┏━━━━━━━━━━ Information for Confusion Matrix ━━━━━━━━━━┓
         sel_cm_path = save_dir / f"{file_prefix}_{split_name}_Selective_CM.png"
+        thr_src = op.get("threshold_source", thres_mode)
         if _is_ocp and split_name == "Test":
             cc = op.get("conformal_coverage", 0)
-            thr_src = op.get("threshold_source", thres_mode)
             sel_title = (f"{mlabel} {split_name} selective @thr={thr_sel:.3f} ({thr_src})\n"
                          f"Conformal Cov={cc:.1%} (target≥{1-ocp_alpha:.0%})")
         else:
-            sel_title = f"{mlabel} {split_name} selective @thr={thr_sel:.3f} ({thr_source})"
+            sel_title = f"{mlabel} {split_name} selective @thr={thr_sel:.3f} ({thr_src})"
         
         # ┏━━━━━━━━━━ Plot Test Confusion Matrix ━━━━━━━━━━┓
         plot_confusion_matrix(sel_true, 
@@ -454,7 +464,7 @@ def temporal_eval(dataset: dict,
         risk = int((y_split[sel] == 0).sum()) / max(n_sel, 1) if n_sel > 0 else 0
         print(f"    {split_name}: acc={metrics['accuracy']:.3f} prec={metrics['precision']:.3f} "
               f"rec={metrics['recall']:.3f} f1={metrics['f1_score']:.3f} "
-              f"| selective @thr={thr_sel:.3f} ({thr_source}): "
+              f"| selective @thr={thr_sel:.3f} ({thr_src}): "
               f"cov={op['coverage']:.1%} t-stat={op['t_stat']:.2f} "
               f"μ={op['mean_ret']*100:+.3f}% n={op['selected_count']}")
         
@@ -464,7 +474,7 @@ def temporal_eval(dataset: dict,
                     "risk":      round(risk, 4),
                     "precision": round(1 - risk, 4),
                     "selected_count": op["selected_count"],
-                    "threshold_source": thr_source,
+                    "threshold_source": thr_src,
                     "constraint_satisfied": op["constraint_satisfied"],
                     "mean_ret": round(op["mean_ret"], 6),
                     "t_stat": round(op["t_stat"], 4)}
@@ -479,6 +489,9 @@ def temporal_eval(dataset: dict,
                                "n_set_0_dont_trade": op.get("n_set_0", 0),
                                "n_set_both_abstain": op.get("n_set_both", 0),
                                "n_set_empty_abstain": op.get("n_set_empty", 0)}
+            
+            if conf_stats.get("regime_stats"):
+                sel_dict["regime_stats"] = conf_stats["regime_stats"]
         results[f"{split_name}_selective"] = sel_dict
 
     artifacts = {"model": model,
@@ -513,7 +526,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
 
     # ┏━━━━━━━━━━ Create save directory ━━━━━━━━━━┓
-    save_dir     = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
+    save_dir     = output_root / _m1_output_bucket(cfg) / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
@@ -737,6 +750,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
 
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     summary = {"cache": str(cache_path),
+               "m1_model": cfg.get("data", {}).get("load", {}).get("m1", "kronos") if cfg else "kronos",
                "granularity": granularity,
                "direction": direction,
                "meta_label_mode": mode,
@@ -785,7 +799,7 @@ def run_unified_analysis(cache_path: Path,
     class_names = _class_names(direction, mode)
     model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
     thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
-    save_dir = output_root / "Kronos" / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
+    save_dir = output_root / _m1_output_bucket(cfg) / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ Fee and Horizon ━━━━━━━━━━┓
@@ -892,6 +906,7 @@ def run_unified_analysis(cache_path: Path,
 
     # ┏━━━━━━━━━━ Summary of per-granularity evaluation ━━━━━━━━━━┓
     summary = {"cache": str(cache_path),
+               "m1_model": cfg.get("data", {}).get("load", {}).get("m1", "kronos") if cfg else "kronos",
                "direction": direction,
                "meta_label_mode": mode,
                "model": model_name,
@@ -1109,6 +1124,13 @@ def run_unified_analysis(cache_path: Path,
                                 val_labels  = y_val.astype(int),
                                 alpha       = np.array([ocp_alpha]))
 
+            # ┏━━━━━━━━━━ Mondrian / cost-deferral regime diagnostics ━━━━━━━━━━┓
+            if "mondrian_diag" in conf_stats:
+                plot_mondrian_diagnostics(conf_stats, 
+                                          gran_dir,
+                                          gran_label = gran,
+                                          thres_mode = thres_mode)
+
         m2_df = df_trades[df_trades["m2_approved"]]
         test_start = df_trades["date"].min()
         test_end = df_trades["date"].max()
@@ -1184,7 +1206,7 @@ def run_unified_analysis(cache_path: Path,
         ann_horizon = np.sqrt(ann_bar ** 2 / horizon)
 
         m2_name = f"M2 {mlabel} unified"
-        m1_name = "M1 Kronos (all trades)"
+        m1_name = f"{_m1_display_label(cfg)} (all trades)"
         bh_name = "Buy & Hold"
 
         # ┏━━━━━━━━━━ Results from Backtest: Sharpe Ratio, Max Drawdown, Total Return ━━━━━━━━━━┓
@@ -1238,7 +1260,7 @@ def run_unified_analysis(cache_path: Path,
             f"Threshold: {thr_display_eq:.4f} ({constraint_tag}) | Fee: {fee*100:.3f}%",
             "=" * 60,
             f"Total Test Trades:     {n_total}",
-            f"M1 Baseline Win-Rate:  {m1_wr:.1f}% ({m1_good}/{n_total})",
+            f"{_m1_display_label(cfg)} Baseline Win-Rate:  {m1_wr:.1f}% ({m1_good}/{n_total})",
             "-" * 60,
             f"M2 Approved Trades:    {n_approved} ({execution_rate:.1f}% execution)",
             f"M2 Rejected Trades:    {n_total - n_approved}",
@@ -1294,7 +1316,8 @@ def run_unified_analysis(cache_path: Path,
                                    "n_set_1_trade": ocp_op.get("n_set_1", 0),
                                    "n_set_0_dont_trade": ocp_op.get("n_set_0", 0),
                                    "n_set_both_abstain": ocp_op.get("n_set_both", 0),
-                                   "n_set_empty_abstain": ocp_op.get("n_set_empty", 0)}} if _is_ocp_u else {})},
+                                   "n_set_empty_abstain": ocp_op.get("n_set_empty", 0),
+                                   **({"regime_stats": conf_stats["regime_stats"]} if conf_stats.get("regime_stats") else {})}} if _is_ocp_u else {})},
             "backtest": {"execution_rate": execution_rate,
                          "n_total_trades": n_total,
                          "n_m2_trades": n_approved,
@@ -1356,14 +1379,14 @@ def main():
     mode_group.add_argument("--paradigm-comparison", nargs="+", metavar="DIR", help="Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees randforest_7_fees randforest_OCP)")
 
     # ┏━━━━━━━━━━ Threshold Selection [Online Conformal Prediction] ━━━━━━━━━━┓
+    parser.add_argument("--ocp-alpha", type=float, default=0.10, help="OCP target miscoverage rate (default: 0.10 → 90%% coverage target)")
+    parser.add_argument("--ocp-costs", type=str, default="0,10,2", help="Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')")
+    parser.add_argument("--ocp-window-days", type=int, default=25, help="Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)")
     parser.add_argument("--thres", type=str, default="utility", choices=["utility", "OCP", "OCP-W", "OCP-cost", "OCP-cost-mondrian"], help=("Threshold selection: 'utility' (financial utility on val), "
                                                                                                                                             "'OCP' (SAOCP, unbounded history), "
                                                                                                                                             "'OCP-W' (SAOCP, windowed calibration), "
                                                                                                                                             "'OCP-cost' (cost-aware deferral, vanilla), "
                                                                                                                                             "'OCP-cost-mondrian' (cost-aware deferral, volatility-regime-conditional)"))
-    parser.add_argument("--ocp-alpha", type=float, default=0.10, help="OCP target miscoverage rate (default: 0.10 → 90%% coverage target)")
-    parser.add_argument("--ocp-costs", type=str, default="0,10,2", help="Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')")
-    parser.add_argument("--ocp-window-days", type=int, default=25, help="Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)")
     
     # ┏━━━━━━━━━━ Feature Analysis ━━━━━━━━━━┓
     parser.add_argument("--top5", type=str, default="true", choices=["true", "false"], help="Whether to run top-5 feature analysis/backtest (default: true)")
@@ -1378,7 +1401,7 @@ def main():
     _AG_TIME_LIMIT = args.ag_time_limit
     _AG_PRESETS = args.ag_presets
 
-    # Parse cost vector
+    # ┏━━━━━━━━━━ Parse cost vector ━━━━━━━━━━┓
     _cost_parts = [float(x) for x in args.ocp_costs.split(",")]
     ocp_costs = (_cost_parts[0], _cost_parts[1], _cost_parts[2])  # (c_FN, c_FP, c_DEF)
 
