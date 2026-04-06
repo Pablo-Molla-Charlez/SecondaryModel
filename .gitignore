@@ -17,3 +17,6 @@ src/Data_MLA/Kronos/Stocks/*
 !src/Data_MLA/Kronos/Stocks/.gitkeep
 src/Data_MLA/Kronos/Commodities/*
 !src/Data_MLA/Kronos/Commodities/.gitkeep
+
+# IDE specific files
+.idea
