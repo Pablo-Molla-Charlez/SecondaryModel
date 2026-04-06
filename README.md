@@ -64,7 +64,6 @@ flowchart TD
     A --> C[data.load]
     A --> D[data.split]
     A --> E[data.features]
-    A --> F[data.load.forecast_horizon]
     A --> G[evaluation.fee_per_trade]
     classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
