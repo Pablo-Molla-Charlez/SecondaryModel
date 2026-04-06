@@ -70,8 +70,8 @@ flowchart TD
     classDef detail fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
     class A root;
     class B,C,D,E group;
-    class F,G detail;
-    linkStyle 0,1,2,3,4,5 stroke:#2563eb,stroke-width:6px;
+    class G detail;
+    linkStyle 0,1,2,3,4 stroke:#2563eb,stroke-width:6px;
 ```
 
 ---
