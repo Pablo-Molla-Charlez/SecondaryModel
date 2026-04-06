@@ -54,12 +54,13 @@ from Utils.features import (_plot_prob_distribution,
                             plot_class_distributions,
                             plot_correlation_heatmap,
                             plot_mutual_information,
-                            plot_confusion_matrix, 
+                            plot_confusion_matrix,
                             plot_ocp_threshold_evolution,
                             plot_pointbiserial,
                             plot_temporal_risk_coverage_curve,
                             plot_tree_importance,
-                            compute_top_features)
+                            compute_top_features,
+                            run_feature_selection)
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
 from Utils.saocp import (_ocp_threshold_to_op,
@@ -549,18 +550,27 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     df_all, labels_all = _build_dataframe(dataset)
 
     # ┏━━━━━━━━━━ Get train-only subset for feature analysis (no val/test leakage in feature selection) ━━━━━━━━━━┓
+    df_val_fs = None       # validation DataFrame for MDA/SHAP/LIME (None if no split)
+    labels_val_fs = None
     if train_end and val_end:
         # ┏━━━━━━━━━━ Split by global time ━━━━━━━━━━┓
-        idx_train, _, _, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
-        
+        idx_train, _, idx_val, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
+
         # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
         eng_raw = dataset["eng_features"].numpy() if isinstance(dataset["eng_features"], torch.Tensor) else dataset["eng_features"]
         labels_raw = dataset["labels"].numpy() if isinstance(dataset["labels"], torch.Tensor) else dataset["labels"]
-        
+
         # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
         df_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
         labels_train = labels_raw[idx_train].astype(int)
-        print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}")
+
+        # ┏━━━━━━━━━━ Validation set for MDA/SHAP/LIME feature selection ━━━━━━━━━━┓
+        if len(idx_val) > 0:
+            df_val_fs = pd.DataFrame(eng_raw[idx_val], columns=ENG_FEATURE_NAMES)
+            labels_val_fs = labels_raw[idx_val].astype(int)
+
+        print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}"
+              f" | Val for FS: {len(idx_val)}")
     else:
         # ┏━━━━━━━━━━ No temporal split dates, using all data ━━━━━━━━━━┓
         df_train = df_all
@@ -638,6 +648,29 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                          meta_mode     = mode,
                                                          model_builder = lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
                                                          model_labeler = _model_label)
+
+        # ┏━━━━━━━━━━ MDA / SHAP / LIME Feature Selection (requires val split) ━━━━━━━━━━┓
+        fs_result  = {}
+        fs_cfg     = cfg.get("data", {}).get("features", {}).get("feature_selection", {}) if cfg else {}
+        fs_methods = fs_cfg.get("methods", ["mda", "shap", "lime"])
+        fs_top_k   = fs_cfg.get("top_k", None)
+        run_fs     = fs_cfg.get("enabled", True)
+
+        if run_fs and df_val_fs is not None and len(df_val_fs) > 0:
+            fs_dir = features_dir / "Feature_Selection"
+            fs_dir.mkdir(parents=True, exist_ok=True)
+            fs_result = run_feature_selection(df_train       = df_train,
+                                              labels_train   = labels_train,
+                                              df_val         = df_val_fs,
+                                              labels_val     = labels_val_fs,
+                                              save_dir       = fs_dir,
+                                              model_builder  = lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
+                                              model_name     = model_name,
+                                              fs_methods     = fs_methods,
+                                              top_k          = fs_top_k,
+                                              verbose        = True)
+        elif run_fs:
+            print("  [FS] Skipping MDA/SHAP/LIME — no validation split available (need train_end + val_end).")
     else:
         print(f"  [--features=false] Skipping feature analysis (steps 1-7)")
 

@@ -17,7 +17,6 @@ data:
     direction:       "down"        # "up" or "down"
     granularity:     "all"         # "1d", "4h", etc. or "all" for multi-granularity
     forecast_horizon: 7
-    
 
   # ┏━━━━━━━━━━ Data Splits ━━━━━━━━━━┓
   split:
@@ -34,6 +33,12 @@ data:
     # ┏━━━━━━━━━━ Engineered Window Features ━━━━━━━━━━┓
     engineered_features:
       selected: [bb_pctb_last, rsi_last, roc_5_last, roc_20_last, atr_norm_last]
+
+    # ┏━━━━━━━━━━ Feature Selection (MDA / SHAP / LIME) ━━━━━━━━━━┓
+    feature_selection:
+      enabled: true                    # set to false to skip MDA/SHAP/LIME
+      methods: ["mda", "shap", "lime"] # any subset of: mda, shap, lime
+      top_k: null                      # null = rank only (no pruning), int = keep top-k
 
 # ┏━━━━━━━━━━ Evaluation ━━━━━━━━━━┓
 evaluation:

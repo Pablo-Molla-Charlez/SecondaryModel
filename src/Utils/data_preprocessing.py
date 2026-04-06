@@ -344,37 +344,44 @@ ENG_FEATURE_GROUPS = {
     'volume':       ['vol_spike_ratio', 'vol_trend_slope', 'vol_cv'],
     'momentum':     ['rsi_last', 'macd_last', 'roc_5_last', 'roc_20_last', 'momentum_align'],
     'regime':       ['adx_last', 'hurst', 'choppiness_idx'],
+    # Crypto external + 30-day volatility features (last value per window)
+    'xfeatures':    ['dvol_last', 'fear_greed_last', 'news_sentiment_last',
+                     'r_vol_30_last', 'r_vol_30_ann_last', 'atr_w30_last', 
+                     'rvi_30_last', 'massi_30_last', 'log_return_last', 'dcr_last'],
 }
 
 # ┏━━━━━━━━━━ Flat ordered list of all feature names ━━━━━━━━━━┓
 ENG_FEATURE_NAMES = []
-for _g in ['window_stats', 'volatility', 'volume', 'momentum', 'regime']:
+for _g in ['window_stats', 'volatility', 'volume', 'momentum', 'regime', 'xfeatures']:
     ENG_FEATURE_NAMES.extend(ENG_FEATURE_GROUPS[_g])
 
 # ┏━━━━━━━━━━ Known indicator column names used by compute_window_features ━━━━━━━━━━┓
-# These are auto-discovered from the CSV — no config list needed.
-INDICATOR_COLUMNS = ['rsi_14', 'macd_histogram', 'bollinger_pct_b', 'bollinger_bandwidth',
-                     'atr_14', 'atr_norm', 'adx_14', 'roc_5', 'roc_20']
+# Base 9 technical indicators + Crypto extras.  Auto-discovered from CSV columns.
+from Data_MLA.indicators import BASE_INDICATOR_COLUMNS, CRYPTO_XFEATURE_COLUMNS
+INDICATOR_COLUMNS = BASE_INDICATOR_COLUMNS + CRYPTO_XFEATURE_COLUMNS
 
 
 def compute_window_features(ohlcv_window: np.ndarray,
                             extrinsic_window: np.ndarray,
                             extrinsic_cols: list) -> np.ndarray:
     """
-    Compute 23 engineered scalar features for a single window.
+    Compute engineered scalar features for a single window.
+
+    The output vector has 23 base features + 26 CTTS-style xfeatures = 49 total.
 
     Parameters
     ----------
     ohlcv_window : np.ndarray, shape (seq_len, 5)
         Columns: open, high, low, close, volume.
     extrinsic_window : np.ndarray, shape (seq_len, F)
-        Row-level indicator columns (RSI, MACD, BB, ATR, ADX, RoC, ...).
+        Row-level indicator columns (RSI, MACD, BB, ATR, ADX, RoC,
+        plus CTTS crypto xfeature columns when available).
     extrinsic_cols : list of str
         Column names corresponding to extrinsic_window columns.
 
     Returns
     -------
-    np.ndarray, shape (23,)
+    np.ndarray, shape (len(ENG_FEATURE_NAMES),)
         Ordered as ENG_FEATURE_NAMES.
     """
     T = ohlcv_window.shape[0]
@@ -489,12 +496,29 @@ def compute_window_features(ohlcv_window: np.ndarray,
     else:
         choppiness_idx = 50.0
 
+    # ┏━━━━━━━━━━ Group 6: Crypto external + 30-day volatility features ━━━━━━━━━━┓
+    dvol_last           = _ext_last('dvol')
+    fear_greed_last     = _ext_last('fear_greed_idx')
+    news_sentiment_last = _ext_last('news_sentiment')
+    r_vol_30_last       = _ext_last('r_vol_30')
+    r_vol_30_ann_last   = _ext_last('r_vol_30_ann')
+    atr_w30_last        = _ext_last('atr_w30')
+    rvi_30_last         = _ext_last('rvi_30')
+    massi_30_last       = _ext_last('massi_30')
+    log_return_last     = _ext_last('log_return')
+    dcr_last            = _ext_last('dcr')
+
     return np.array([ret_mean, ret_std, ret_skew, ret_kurt,
                      trend_slope, trend_r2, reversal_count, max_drawdown,
                      atr_last, atr_norm_last, bb_pctb_last, bb_bw_last,
                      vol_spike_ratio, vol_trend_slope, vol_cv,
                      rsi_last, macd_last, roc_5_last, roc_20_last, momentum_align,
-                     adx_last, hurst, choppiness_idx],
+                     adx_last, hurst, choppiness_idx,
+                     # XFeatures Group
+                     dvol_last, fear_greed_last, news_sentiment_last,
+                     r_vol_30_last, r_vol_30_ann_last,
+                     atr_w30_last, rvi_30_last, massi_30_last,
+                     log_return_last, dcr_last],
                      dtype=np.float32)
 
 
@@ -561,18 +585,50 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
 
     print(f"[prepare_multi_asset_dataset] {len(assets)} Assets, seq_len={seq_len}.")
     
+    # ┏━━━━━━━━━━ Enrich with crypto xfeatures if not already present ━━━━━━━━━━┓
+    _xfeat_needed = [c for c in CRYPTO_XFEATURE_COLUMNS if c not in df.columns]
+    _do_xfeat_enrich = len(_xfeat_needed) > 0
+
+    # ┏━━━━━━━━━━ Pre-load BTC daily close for vol-beta DVOL proxy ━━━━━━━━━━┓
+    _btc_close_daily = None
+    if _do_xfeat_enrich:
+        _btc_assets = [a for a in assets if "BTC" in a.upper()]
+        if _btc_assets:
+            _btc_df = df[df['asset'] == _btc_assets[0]].copy()
+            _btc_df = _btc_df.sort_values('date').reset_index(drop=True)
+            if 'close' in _btc_df.columns and 'date' in _btc_df.columns:
+                _btc_close_daily = _btc_df.set_index('date')['close'].sort_index()
+                _btc_close_daily.index = pd.to_datetime(_btc_close_daily.index)
+
     # ┏━━━━━━━━━━ Process each asset ━━━━━━━━━━┓
     for asset in assets:
         asset_df = df[df['asset'] == asset].copy()
         asset_df = asset_df.sort_values('date').reset_index(drop=True)
-        
+
+        # ┏━━━━━━━━━━ Add crypto xfeatures per-asset if missing ━━━━━━━━━━┓
+        if _do_xfeat_enrich:
+            try:
+                from Data_MLA.indicators import add_crypto_xfeatures
+                asset_df = add_crypto_xfeatures(
+                    asset_df,
+                    asset=asset,
+                    btc_close_daily=_btc_close_daily,
+                    lag_days=1,
+                )
+            except Exception as exc:
+                import warnings
+                warnings.warn(f"[prepare] xfeature enrichment failed for {asset}: {exc}")
+                for c in CRYPTO_XFEATURE_COLUMNS:
+                    if c not in asset_df.columns:
+                        asset_df[c] = np.nan
+
         # ┏━━━━━━━━━━ Filter short assets ━━━━━━━━━━┓
         n = len(asset_df)
         if n < seq_len:
             skip_short_asset += 1
             print(f"  [SKIP] {asset}: only {n} rows, need {seq_len}")
             continue
-        
+
         # ┏━━━━━━━━━━ Create windows ━━━━━━━━━━┓
         N = n - seq_len + 1  # Number of windows for this asset
         total_possible_windows += N
