@@ -3,6 +3,7 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
+# TODO make dynamic so its not causing merge conflicts
 paths:
   csv_dir: "/Volumes/Data/other/2026_NII/Data_MLA/Fincast/Crypto/TP/horizon_7"
   output_root: "/Volumes/Data/other/2026_NII/Output"
