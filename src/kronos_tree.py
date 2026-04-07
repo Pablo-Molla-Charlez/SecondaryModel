@@ -772,6 +772,9 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     with open(save_dir / "analysis_summary.json", "w") as f:
         json.dump(summary, f, indent=2, cls=NumpyJSONEncoder)
+        
+    # TODO save model -- currently only the unified M2 is saved
+    
 
     print(f"\nDone ({direction}). Outputs in: {save_dir}")
 
