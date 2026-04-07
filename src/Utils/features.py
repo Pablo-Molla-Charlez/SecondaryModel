@@ -280,14 +280,14 @@ def plot_tree_importance(df:           pd.DataFrame,
           f"acc={cv_metrics['accuracy']:.3f} prec={cv_metrics['precision']:.3f} "
           f"rec={cv_metrics['recall']:.3f} f1={cv_metrics['f1_score']:.3f}")
 
-    # ┏━━━━━━━━━━ Plot Confusion Matrix ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Plot Confusion Matrix (5-fold Chrono CV diagnostic) ━━━━━━━━━━┓
     if class_names is not None:
         cm_path = save_dir / f"{file_prefix}_CM.png"
         plot_confusion_matrix(labels[scored_mask],
                               cv_preds[scored_mask],
                               classes=class_names,
                               save_path=str(cm_path),
-                              title=f"{mlabel} Confusion Matrix ({desc})",
+                              title=f"{mlabel} — 5-Fold Chronological CV ({desc})\n[Diagnostic: feature importance sanity check, not a hold-out eval]",
                               meta_mode=meta_mode)
 
     return {row["feature"]: row["importance"] for _, row in imp_df.iterrows()}, cv_metrics
@@ -853,19 +853,21 @@ def plot_m1_prediction_returns_histogram(dataset: Dict[str, Any],
     ax_b.set_xlim(low, high)
     ax_b.grid(True, alpha=0.2)
     
-    # Scatter Axis limits zoom - dynamically centered around 0 with buffer
+    # ┏━━━━━━━━━━ Scatter Axis limits zoom - dynamically centered around 0 with buffer ━━━━━━━━━━┓
     s_low, s_high = get_dynamic_ret_limits([x_scatter, y_scatter], min_buffer=5.0)
     ax_c.set_xlim(s_low, s_high)
     ax_c.set_ylim(s_low, s_high)
 
-    # Combine legends for neatness
+    # ┏━━━━━━━━━━ Combine legends for neatness ━━━━━━━━━━┓
     h3, l3 = ax_b.get_legend_handles_labels()
     h4, l4 = ax_b2.get_legend_handles_labels()
     ax_b.legend(h4 + h3, l4 + l3, loc='upper left', fontsize='small')
 
+    # ┏━━━━━━━━━━ Title and Layout ━━━━━━━━━━┓
     fig.suptitle(f"M1 Performance Analysis & Calibration {title_suffix}", fontsize=18, fontweight='bold')
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     
+    # ┏━━━━━━━━━━ Save Figure ━━━━━━━━━━┓
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, bbox_inches='tight', dpi=150)
     plt.close(fig)
@@ -1069,23 +1071,19 @@ def compute_top_features(pb_scores: dict, mi_scores: dict, rf_scores: dict,
     # ┏━━━━━━━━━━ Build Detailed Output ━━━━━━━━━━┓
     top_details = []
     for f in selected:
-        top_details.append({
-            "feature": f,
-            "avg_rank": round(avg_ranks[f], 2),
-            "pb_rank": ranks["point_biserial"].get(f),
-            "mi_rank": ranks["mutual_info"].get(f),
-            "rf_rank": ranks["rf_importance"].get(f),
-            "pb_score": round(pb_scores.get(f, 0), 6),
-            "mi_score": round(mi_scores.get(f, 0), 6),
-            "rf_score": round(rf_scores.get(f, 0), 6),
-            "dominant_metric": _dominant_metric(f, ranks),
-        })
+        top_details.append({"feature": f,
+                            "avg_rank": round(avg_ranks[f], 2),
+                            "pb_rank": ranks["point_biserial"].get(f),
+                            "mi_rank": ranks["mutual_info"].get(f),
+                            "rf_rank": ranks["rf_importance"].get(f),
+                            "pb_score": round(pb_scores.get(f, 0), 6),
+                            "mi_score": round(mi_scores.get(f, 0), 6),
+                            "rf_score": round(rf_scores.get(f, 0), 6),
+                            "dominant_metric": _dominant_metric(f, ranks)})
 
-    result = {
-        "top_5_features": selected,
-        "top_5_details": top_details,
-        "correlation_warnings": correlation_warnings,
-    }
+    result = {"top_5_features": selected,
+              "top_5_details": top_details,
+              "correlation_warnings": correlation_warnings}
 
     # ┏━━━━━━━━━━ Print to Terminal ━━━━━━━━━━┓
     print(f"  [6/9] Top-{TOP_K} features (rank aggregation + correlation check):")
@@ -1101,14 +1099,13 @@ def compute_top_features(pb_scores: dict, mi_scores: dict, rf_scores: dict,
     # ┏━━━━━━━━━━ Save standalone CSV of full ranking ━━━━━━━━━━┓
     full_rank_rows = []
     for f in sorted_features:
-        full_rank_rows.append({
-            "feature": f,
-            "avg_rank": round(avg_ranks[f], 2),
-            "pb_rank": ranks["point_biserial"].get(f),
-            "mi_rank": ranks["mutual_info"].get(f),
-            "rf_rank": ranks["rf_importance"].get(f),
-            "selected": f in selected,
-        })
+        full_rank_rows.append({"feature": f,
+                               "avg_rank": round(avg_ranks[f], 2),
+                               "pb_rank": ranks["point_biserial"].get(f),
+                               "mi_rank": ranks["mutual_info"].get(f),
+                               "rf_rank": ranks["rf_importance"].get(f),
+                               "selected": f in selected})
+
     pd.DataFrame(full_rank_rows).to_csv(save_dir / "6_rank_aggregation.csv", index=False)
 
     return result
@@ -1463,7 +1460,7 @@ def mda_rank(model,
 
     # ┏━━━━━━━━━━ Sort and Save ━━━━━━━━━━┓
     s = pd.Series(drops).sort_values(ascending=False)
-    s.to_csv(save_dir / "fs_mda_importance.csv")
+    s.to_csv(save_dir / "fs_importance_MDA.csv")
 
     # ┏━━━━━━━━━━ Plot ━━━━━━━━━━┓
     try:
@@ -1473,7 +1470,7 @@ def mda_rank(model,
         ax.set_xlabel("ΔACC")
         ax.set_ylabel("Feature")
         plt.tight_layout()
-        fig.savefig(save_dir / "fs_mda_bar.png", dpi=150)
+        fig.savefig(save_dir / "fs_bar_MDA.png", dpi=150)
         plt.close(fig)
     except Exception:
         pass
@@ -1534,7 +1531,7 @@ def shap_rank(model,
 
     # ┏━━━━━━━━━━ Save CSV + plots ━━━━━━━━━━┓
     s = pd.Series(scores).sort_values(ascending=False)
-    s.to_csv(save_dir / "fs_shap_mean_abs.csv")
+    s.to_csv(save_dir / "fs_importance_SHAP.csv")
 
     try:
         # ┏━━━━━━━━━━ Beeswarm plot ━━━━━━━━━━┓
@@ -1542,8 +1539,9 @@ def shap_rank(model,
                           pd.DataFrame(Xv, columns=cols), 
                           show = False,
                           max_display = min(20, len(cols)))
+        plt.title("SHAP Beeswarm — Global Feature Impact (Val)", fontsize=12, pad=15)
         plt.tight_layout()
-        plt.savefig(save_dir / "fs_shap_beeswarm.png", dpi=150)
+        plt.savefig(save_dir / "fs_beeswarm_SHAP.png", dpi=150)
         plt.close()
 
         # ┏━━━━━━━━━━ Bar plot ━━━━━━━━━━┓
@@ -1552,8 +1550,9 @@ def shap_rank(model,
                           show = False,
                           plot_type = "bar", 
                           max_display = min(20, len(cols)))
+        plt.title("SHAP — Mean |SHAP Value| (Val)", fontsize=12, pad=15)
         plt.tight_layout()
-        plt.savefig(save_dir / "fs_shap_bar.png", dpi=150)
+        plt.savefig(save_dir / "fs_bar_SHAP.png", dpi=150)
         plt.close()
     except Exception:
         pass
@@ -1633,7 +1632,7 @@ def lime_rank(model,
     # ┏━━━━━━━━━━ Save CSV + plot ━━━━━━━━━━┓
     scores = {c: float(np.mean(v)) if v else 0.0 for c, v in contrib.items()}
     s = pd.Series(scores).sort_values(ascending=False)
-    s.to_csv(save_dir / "fs_lime_mean_abs.csv")
+    s.to_csv(save_dir / "fs_importance_LIME.csv")
 
     try:
         fig, ax = plt.subplots(figsize=(8, max(3, min(12, 0.25 * len(s)))))
@@ -1642,7 +1641,7 @@ def lime_rank(model,
         ax.set_xlabel("Mean |contrib|")
         ax.set_ylabel("Feature")
         plt.tight_layout()
-        fig.savefig(save_dir / "fs_lime_bar.png", dpi=150)
+        fig.savefig(save_dir / "fs_bar_LIME.png", dpi=150)
         plt.close(fig)
     except Exception:
         pass
