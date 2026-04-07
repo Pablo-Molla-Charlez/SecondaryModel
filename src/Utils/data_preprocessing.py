@@ -651,7 +651,16 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
         ohlcv_vals = asset_df[list(column_features)].values.astype(np.float32)
         
         # ┏━━━━━━━━━━ Auto-discover indicator columns for this asset ━━━━━━━━━━┓
-        ext_cols = [c for c in INDICATOR_COLUMNS if c in asset_df.columns]
+        # Base indicators: strict NaN check (skip window if incomplete)
+        # Xfeature columns: forward-fill + zero-fill (never drop windows)
+        base_ext_cols = [c for c in BASE_INDICATOR_COLUMNS if c in asset_df.columns]
+        xfeat_ext_cols = [c for c in CRYPTO_XFEATURE_COLUMNS if c in asset_df.columns]
+        ext_cols = base_ext_cols + xfeat_ext_cols
+        n_base_ext = len(base_ext_cols)
+
+        # ┏━━━━━━━━━━ Xfeature columns Forward-Filling ━━━━━━━━━━┓
+        if xfeat_ext_cols:
+            asset_df[xfeat_ext_cols] = asset_df[xfeat_ext_cols].ffill().fillna(0.0)
         if ext_cols:
             extrinsic_vals = asset_df[ext_cols].values.astype(np.float32)
         else:
@@ -718,10 +727,10 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
         for i in range(N):
             start, end = i, i + seq_len
             
-            # ┏━━━━━━━━━━ Check for NaNs in indicator columns (skip window if incomplete) ━━━━━━━━━━┓
-            if extrinsic_vals.shape[1] > 0:
-                window_ext = extrinsic_vals[start:end, :]
-                if np.isnan(window_ext).any():
+            # ┏━━━━━━━━━━ Check for NaNs in base indicator columns only (skip window if incomplete) ━━━━━━━━━━┓
+            if n_base_ext > 0:
+                window_base_ext = extrinsic_vals[start:end, :n_base_ext]
+                if np.isnan(window_base_ext).any():
                     skip_nan_extrinsic += 1
                     continue  # Skip incomplete window
 
@@ -775,7 +784,7 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
 
             # ┏━━━━━━━━━━ Engineered window-level features ━━━━━━━━━━┓
             _ext_w = extrinsic_vals[start:end, :] if extrinsic_vals.shape[1] > 0 else np.zeros((seq_len, 0), dtype=np.float32)
-            all_eng_features.append(compute_window_features(window, _ext_w, _ext_cols_list))
+            all_eng_features.append(compute_window_features(window, _ext_w, ext_cols))
 
             # ┏━━━━━━━━━━ Time features for the window ━━━━━━━━━━┓
             for key in all_time_ids:
