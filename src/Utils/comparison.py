@@ -9,7 +9,7 @@ from pathlib import Path
 from Utils.utils import model_label as _model_label
 
 # ┏━━━━━━━━━━ Granularity Order ━━━━━━━━━━┓
-GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m"]
 
 # ┏━━━━━━━━━━ Run Comparison ━━━━━━━━━━┓
 def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = None):

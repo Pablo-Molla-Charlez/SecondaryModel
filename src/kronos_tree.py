@@ -31,9 +31,14 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ┏━━━━━━━━━━ Pipeline Data Preprocessing ━━━━━━━━━━┓
-from Utils.data_preprocessing import (ENG_FEATURE_NAMES, ENG_FEATURE_GROUPS, split_by_global_time,
-                                      load_dataset_from_config, prepare_multi_asset_dataset,
-                                      prepare_multi_gran_dataset, GRAN_SEQ_LEN)
+from Utils.data_preprocessing import (ENG_FEATURE_NAMES, 
+                                      ENG_FEATURE_GROUPS, 
+                                      resolve_feature_names,
+                                      split_by_global_time, 
+                                      load_dataset_from_config,
+                                      prepare_multi_asset_dataset, 
+                                      prepare_multi_gran_dataset,
+                                      GRAN_SEQ_LEN)
 
 # ┏━━━━━━━━━━ Financial Backtesting ━━━━━━━━━━┓
 from Utils.backtest import (_annualization_factor, 
@@ -54,12 +59,13 @@ from Utils.features import (_plot_prob_distribution,
                             plot_class_distributions,
                             plot_correlation_heatmap,
                             plot_mutual_information,
-                            plot_confusion_matrix, 
+                            plot_confusion_matrix,
                             plot_ocp_threshold_evolution,
                             plot_pointbiserial,
                             plot_temporal_risk_coverage_curve,
                             plot_tree_importance,
-                            compute_top_features)
+                            compute_top_features,
+                            run_feature_selection)
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
 from Utils.saocp import (_ocp_threshold_to_op,
@@ -108,7 +114,7 @@ def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
     labels = labels[valid].astype(int)
 
     # ┏━━━━━━━━━━ Create dataframe ━━━━━━━━━━┓
-    df = pd.DataFrame(eng, columns=ENG_FEATURE_NAMES)
+    df = pd.DataFrame(eng, columns = resolve_feature_names(eng.shape[1]))
     return df, labels
 
 # ------------------------------------------------------------------------------
@@ -123,7 +129,7 @@ def temporal_eval(dataset: dict,
                   direction: str = "up",
                   fee: float = 0.0,
                   model_name: str = "rf",
-                  desc: str = "all features", file_prefix: str = "8_temporal_all",
+                  desc: str = "all features", file_prefix: str = "8_all",
                   thres_mode: str = "utility", ocp_alpha: float = 0.10,
                   forecast_horizon: int = 1,
                   split_indices_raw: tuple = None,
@@ -184,7 +190,7 @@ def temporal_eval(dataset: dict,
             m1_acc_test, m1_prec_test = _calc_m1(idx_test_raw)
 
     # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
-    all_names = list(ENG_FEATURE_NAMES)
+    all_names = resolve_feature_names(eng.shape[1])
     col_indices = [all_names.index(c) for c in feature_cols]
 
     # ┏━━━━━━━━━━ Train, Validation, and Test Sets ━━━━━━━━━━┓
@@ -549,18 +555,28 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     df_all, labels_all = _build_dataframe(dataset)
 
     # ┏━━━━━━━━━━ Get train-only subset for feature analysis (no val/test leakage in feature selection) ━━━━━━━━━━┓
+    df_val_fs = None       # validation DataFrame for MDA/SHAP/LIME (None if no split)
+    labels_val_fs = None
     if train_end and val_end:
         # ┏━━━━━━━━━━ Split by global time ━━━━━━━━━━┓
-        idx_train, _, _, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
-        
+        idx_train, _, idx_val, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
+
         # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
         eng_raw = dataset["eng_features"].numpy() if isinstance(dataset["eng_features"], torch.Tensor) else dataset["eng_features"]
         labels_raw = dataset["labels"].numpy() if isinstance(dataset["labels"], torch.Tensor) else dataset["labels"]
-        
+
         # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
-        df_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
+        _feat_names = resolve_feature_names(eng_raw.shape[1])
+        df_train = pd.DataFrame(eng_raw[idx_train], columns = _feat_names)
         labels_train = labels_raw[idx_train].astype(int)
-        print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}")
+
+        # ┏━━━━━━━━━━ Validation set for MDA/SHAP/LIME feature selection ━━━━━━━━━━┓
+        if len(idx_val) > 0:
+            df_val_fs = pd.DataFrame(eng_raw[idx_val], columns = _feat_names)
+            labels_val_fs = labels_raw[idx_val].astype(int)
+
+        print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}"
+              f" | Val for FS: {len(idx_val)}")
     else:
         # ┏━━━━━━━━━━ No temporal split dates, using all data ━━━━━━━━━━┓
         df_train = df_all
@@ -638,6 +654,29 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                          meta_mode     = mode,
                                                          model_builder = lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
                                                          model_labeler = _model_label)
+
+        # ┏━━━━━━━━━━ MDA / SHAP / LIME Feature Selection (requires val split) ━━━━━━━━━━┓
+        fs_result  = {}
+        fs_cfg     = cfg.get("data", {}).get("features", {}).get("feature_selection", {}) if cfg else {}
+        fs_methods = fs_cfg.get("methods", ["mda", "shap", "lime"])
+        fs_top_k   = fs_cfg.get("top_k", None)
+        run_fs     = fs_cfg.get("enabled", True)
+
+        if run_fs and df_val_fs is not None and len(df_val_fs) > 0:
+            fs_dir = features_dir / "Feature_Selection"
+            fs_dir.mkdir(parents=True, exist_ok=True)
+            fs_result = run_feature_selection(df_train       = df_train,
+                                              labels_train   = labels_train,
+                                              df_val         = df_val_fs,
+                                              labels_val     = labels_val_fs,
+                                              save_dir       = fs_dir,
+                                              model_builder  = lambda name, n_samples, ratio: _build_tree_model(name, n_samples, ratio),
+                                              model_name     = model_name,
+                                              fs_methods     = fs_methods,
+                                              top_k          = fs_top_k,
+                                              verbose        = True)
+        elif run_fs:
+            print("  [FS] Skipping MDA/SHAP/LIME — no validation split available (need train_end + val_end).")
     else:
         print(f"  [--features=false] Skipping feature analysis (steps 1-7)")
 
@@ -680,7 +719,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                     fee               = fee,
                                                     model_name        = model_name,
                                                     desc              = "all features",
-                                                    file_prefix       = "8_temporal_all",
+                                                    file_prefix       = "8_all",
                                                     thres_mode        = thres_mode,
                                                     ocp_alpha         = ocp_alpha,
                                                     forecast_horizon  = fh,
@@ -695,17 +734,24 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
             print(f"  [9/9] {mlabel} temporal split (top-5, train<={train_end}, val<={val_end}):")
 
             # ┏━━━━━━━━━━ Temporal evaluation on top-5 features ━━━━━━━━━━┓
-            temporal_top5, artifacts_top5 = temporal_eval(dataset, top5, top_features_dir,
-                                                          class_names=class_names, meta_mode=mode,
-                                                          split_indices=split_indices,
-                                                          direction=direction, fee=fee,
-                                                          model_name=model_name,
-                                                          desc="top-5 only", file_prefix="9_temporal_top5",
-                                                          thres_mode=thres_mode, ocp_alpha=ocp_alpha,
-                                                          forecast_horizon=fh, split_indices_raw=split_indices_raw,
-                                                          granularity=granularity,
-                                                          ocp_costs=ocp_costs,
-                                                          ocp_window_days=ocp_window_days)
+            temporal_top5, artifacts_top5 = temporal_eval(dataset, 
+                                                          top5, 
+                                                          top_features_dir,
+                                                          class_names       = class_names, 
+                                                          meta_mode         = mode,
+                                                          split_indices     = split_indices,
+                                                          direction         = direction, 
+                                                          fee               = fee,
+                                                          model_name        = model_name,
+                                                          desc              = "top-5 only", 
+                                                          file_prefix       = "9_top5",
+                                                          thres_mode        = thres_mode, 
+                                                          ocp_alpha         = ocp_alpha,
+                                                          forecast_horizon  = fh, 
+                                                          split_indices_raw = split_indices_raw,
+                                                          granularity       = granularity,
+                                                          ocp_costs         = ocp_costs,
+                                                          ocp_window_days   = ocp_window_days)
 
         # ┏━━━━━━━━━━ Financial Backtest (Equity Curves + ROI Reports) ━━━━━━━━━━┓
         if cfg is not None:
@@ -879,11 +925,12 @@ def run_unified_analysis(cache_path: Path,
     print(f"\n  Unified train set: {len(y_train_all)} samples "
           f"(class 0: {(y_train_all==0).sum()}, class 1: {(y_train_all==1).sum()})")
 
-    # ┏━━━━━━━━━━ Feature names: 23 eng features + one-hot gran columns ━━━━━━━━━━┓
-    feature_names = list(ENG_FEATURE_NAMES) + gran_onehot_names
+    # ┏━━━━━━━━━━ Feature names: eng features + one-hot gran columns ━━━━━━━━━━┓
+    n_eng = X_train_all.shape[1] - len(gran_onehot_names)
+    _eng_names = resolve_feature_names(n_eng)
+    feature_names = _eng_names + gran_onehot_names
 
     # ┏━━━━━━━━━━ Drop zero-variance / all-NaN features, impute, scale ━━━━━━━━━━┓
-    n_eng = len(ENG_FEATURE_NAMES)
     scaler = StandardScaler()
     X_train_all[:, :n_eng] = scaler.fit_transform(X_train_all[:, :n_eng])
 

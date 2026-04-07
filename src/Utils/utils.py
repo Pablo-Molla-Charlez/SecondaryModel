@@ -99,7 +99,20 @@ def get_device() -> torch.device:
 # ┏━━━━━━━━━━ Config & Cache Helpers ━━━━━━━━━━┓
 def _load_config(cfg_path: str = "config.yaml") -> dict:
     with open(cfg_path, "r") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+        
+    # ┏━━━━━━━━━━ Validation: Ensure m1 matches csv_dir ━━━━━━━━━━┓
+    m1_val = str(cfg.get("data", {}).get("load", {}).get("m1", "kronos")).strip().lower()
+    csv_dir_raw = cfg.get("paths", {}).get("csv_dir", "")
+    csv_dir = str(csv_dir_raw).lower()
+    
+    if m1_val not in csv_dir:
+        raise ValueError(f"\n\n[CONFIG ERROR] Mismatch between 'm1' model and 'csv_dir' in {cfg_path}!\n"
+                         f"  m1 is set to:      '{m1_val}'\n"
+                         f"  csv_dir points to: '{csv_dir_raw}'\n"
+                         f"Please ensure the 'm1' value matches the dataset in 'csv_dir' to avoid mixing data.\n")
+        
+    return cfg
 
 # ┏━━━━━━━━━━ Build cache from config ━━━━━━━━━━┓
 def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
