@@ -355,6 +355,20 @@ ENG_FEATURE_NAMES = []
 for _g in ['window_stats', 'volatility', 'volume', 'momentum', 'regime', 'xfeatures']:
     ENG_FEATURE_NAMES.extend(ENG_FEATURE_GROUPS[_g])
 
+# ┏━━━━━━━━━━ List of Features depending on Cache Dataset ━━━━━━━━━━┓
+def resolve_feature_names(n_cols: int) -> list:
+    """Return ENG_FEATURE_NAMES sliced to match the actual tensor width.
+
+    Old caches may have fewer columns (e.g. 23) than the current full list (33).
+    This avoids a shape mismatch when building DataFrames from cached tensors.
+    """
+    if n_cols == len(ENG_FEATURE_NAMES):
+        return list(ENG_FEATURE_NAMES)
+    if n_cols < len(ENG_FEATURE_NAMES):
+        return list(ENG_FEATURE_NAMES[:n_cols])
+    # More columns than expected — pad with generic names
+    return list(ENG_FEATURE_NAMES) + [f"feat_{i}" for i in range(len(ENG_FEATURE_NAMES), n_cols)]
+
 # ┏━━━━━━━━━━ Known indicator column names used by compute_window_features ━━━━━━━━━━┓
 # Base 9 technical indicators + Crypto extras.  Auto-discovered from CSV columns.
 from Data_MLA.indicators import BASE_INDICATOR_COLUMNS, CRYPTO_XFEATURE_COLUMNS

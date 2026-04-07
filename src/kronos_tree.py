@@ -31,9 +31,14 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ┏━━━━━━━━━━ Pipeline Data Preprocessing ━━━━━━━━━━┓
-from Utils.data_preprocessing import (ENG_FEATURE_NAMES, ENG_FEATURE_GROUPS, split_by_global_time,
-                                      load_dataset_from_config, prepare_multi_asset_dataset,
-                                      prepare_multi_gran_dataset, GRAN_SEQ_LEN)
+from Utils.data_preprocessing import (ENG_FEATURE_NAMES, 
+                                      ENG_FEATURE_GROUPS, 
+                                      resolve_feature_names,
+                                      split_by_global_time, 
+                                      load_dataset_from_config,
+                                      prepare_multi_asset_dataset, 
+                                      prepare_multi_gran_dataset,
+                                      GRAN_SEQ_LEN)
 
 # ┏━━━━━━━━━━ Financial Backtesting ━━━━━━━━━━┓
 from Utils.backtest import (_annualization_factor, 
@@ -109,7 +114,7 @@ def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
     labels = labels[valid].astype(int)
 
     # ┏━━━━━━━━━━ Create dataframe ━━━━━━━━━━┓
-    df = pd.DataFrame(eng, columns=ENG_FEATURE_NAMES)
+    df = pd.DataFrame(eng, columns = resolve_feature_names(eng.shape[1]))
     return df, labels
 
 # ------------------------------------------------------------------------------
@@ -185,7 +190,7 @@ def temporal_eval(dataset: dict,
             m1_acc_test, m1_prec_test = _calc_m1(idx_test_raw)
 
     # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
-    all_names = list(ENG_FEATURE_NAMES)
+    all_names = resolve_feature_names(eng.shape[1])
     col_indices = [all_names.index(c) for c in feature_cols]
 
     # ┏━━━━━━━━━━ Train, Validation, and Test Sets ━━━━━━━━━━┓
@@ -561,12 +566,13 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         labels_raw = dataset["labels"].numpy() if isinstance(dataset["labels"], torch.Tensor) else dataset["labels"]
 
         # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
-        df_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
+        _feat_names = resolve_feature_names(eng_raw.shape[1])
+        df_train = pd.DataFrame(eng_raw[idx_train], columns = _feat_names)
         labels_train = labels_raw[idx_train].astype(int)
 
         # ┏━━━━━━━━━━ Validation set for MDA/SHAP/LIME feature selection ━━━━━━━━━━┓
         if len(idx_val) > 0:
-            df_val_fs = pd.DataFrame(eng_raw[idx_val], columns=ENG_FEATURE_NAMES)
+            df_val_fs = pd.DataFrame(eng_raw[idx_val], columns = _feat_names)
             labels_val_fs = labels_raw[idx_val].astype(int)
 
         print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}"
@@ -909,11 +915,12 @@ def run_unified_analysis(cache_path: Path,
     print(f"\n  Unified train set: {len(y_train_all)} samples "
           f"(class 0: {(y_train_all==0).sum()}, class 1: {(y_train_all==1).sum()})")
 
-    # ┏━━━━━━━━━━ Feature names: 23 eng features + one-hot gran columns ━━━━━━━━━━┓
-    feature_names = list(ENG_FEATURE_NAMES) + gran_onehot_names
+    # ┏━━━━━━━━━━ Feature names: eng features + one-hot gran columns ━━━━━━━━━━┓
+    n_eng = X_train_all.shape[1] - len(gran_onehot_names)
+    _eng_names = resolve_feature_names(n_eng)
+    feature_names = _eng_names + gran_onehot_names
 
     # ┏━━━━━━━━━━ Drop zero-variance / all-NaN features, impute, scale ━━━━━━━━━━┓
-    n_eng = len(ENG_FEATURE_NAMES)
     scaler = StandardScaler()
     X_train_all[:, :n_eng] = scaler.fit_transform(X_train_all[:, :n_eng])
 
