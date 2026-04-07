@@ -31,3 +31,7 @@ autogluon.tabular
 
 # Online conformal prediction (SAOCP adaptive threshold)
 online_conformal
+
+# Feature selection (MDA/SHAP/LIME ranking)
+shap
+lime
