@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 from Utils.utils import _load_multi_cache
 from Utils.data_preprocessing import split_by_global_time, ENG_FEATURE_NAMES
+from Interpretability.plotting_scripts.plotting_learning_curves import plot_learning_curve
 
 # make learning curves for all models
 import os
@@ -39,10 +40,12 @@ def fit_classifier_parallel(x_train, y_train, x_val, y_val, x_test, y_test, clas
     fitted_classifier = clone(classifier).fit(x_train.iloc[i_train], y_train[i_train])
     
     y_pred = fitted_classifier.predict(x_val)
+    y_pred_test = fitted_classifier.predict(x_test)
+    
     acc_val = accuracy_score(y_val, y_pred)
     prec_val = precision_score(y_val, y_pred)
-    acc_test = accuracy_score(y_test, y_pred)
-    prec_test = precision_score(y_test, y_pred)
+    acc_test = accuracy_score(y_test, y_pred_test)
+    prec_test = precision_score(y_test, y_pred_test)
     
     return acc_val, prec_val, acc_test, prec_test
 
@@ -50,10 +53,11 @@ def fit_classifier_parallel(x_train, y_train, x_val, y_val, x_test, y_test, clas
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_root', type=str, default="/Volumes/Data/other/2026_NII/Output")
-    parser.add_argument('--direction', type=str, default="down", choices=["down", "up"])
+    parser.add_argument('--direction', type=str, default="up", choices=["down", "up"])
     parser.add_argument('--m1', type=str, default="Kronos", choices=["Kronos", "Fincast"])
     parser.add_argument('--gran', type=str, default="1d",
                         choices=["1d", "1h", "2h", "4h", "6h", "8h", "12h", "15min", "30min", "unified"])
+    parser.add_argument('--meta_label_mode', type=str, default="tp", choices=["tp", "fp", "og"])
     
     parser.add_argument('--forecast_horizon', type=int, default=7)
     
@@ -132,32 +136,72 @@ if __name__ == "__main__":
             save_dict_pre_val[f"{training_quota:.2f}"].append(prec_val)
             save_dict_acc_test[f"{training_quota:.2f}"].append(acc_test)
             save_dict_pre_test[f"{training_quota:.2f}"].append(prec_test)
-            
+    
     # save to files
     if not os.path.exists(
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"):
         os.makedirs(f"{args.output_root}/{args.m1}/interpretability/learning_curves/")
-    
     
     save_frame = pd.DataFrame(save_dict_acc_val)
     save_frame.to_csv(
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"
         f"acc_val_multi_{args.forecast_horizon}_fee_n_splits={args.n_splits}.csv",
         index=False)
+    
+    plot_learning_curve(save_frame,
+                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_val_learning_curve.png",
+                        display=False,
+                        metric="Validation Accuracy",
+                        gran=args.gran,
+                        m1=args.m1,
+                        n_splits=args.n_splits,
+                        forecast_horizon=args.forecast_horizon,
+                        direction=args.direction)
+    
     save_frame = pd.DataFrame(save_dict_acc_test)
     save_frame.to_csv(
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"
         f"acc_test_multi_{args.forecast_horizon}_fee_n_splits={args.n_splits}.csv",
         index=False)
     
+    plot_learning_curve(save_frame,
+                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_test_learning_curve.png",
+                        display=False,
+                        metric="Test Accuracy",
+                        gran=args.gran,
+                        m1=args.m1,
+                        n_splits=args.n_splits,
+                        forecast_horizon=args.forecast_horizon,
+                        direction=args.direction)
+    
     save_frame = pd.DataFrame(save_dict_pre_val)
     save_frame.to_csv(
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"
         f"precision_val_multi_{args.forecast_horizon}_fee_n_splits={args.n_splits}.csv",
         index=False)
-
+    
+    plot_learning_curve(save_frame,
+                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_val_learning_curve.png",
+                        display=False,
+                        metric="Validation Precision",
+                        gran=args.gran,
+                        m1=args.m1,
+                        n_splits=args.n_splits,
+                        forecast_horizon=args.forecast_horizon,
+                        direction=args.direction)
+    
     save_frame = pd.DataFrame(save_dict_pre_test)
     save_frame.to_csv(
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"
         f"precision_test_multi_{args.forecast_horizon}_fee_n_splits={args.n_splits}.csv",
         index=False)
+    
+    plot_learning_curve(save_frame,
+                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_test_learning_curve.png",
+                        display=False,
+                        metric="Test Precision",
+                        gran=args.gran,
+                        m1=args.m1,
+                        n_splits=args.n_splits,
+                        forecast_horizon=args.forecast_horizon,
+                        direction=args.direction)
