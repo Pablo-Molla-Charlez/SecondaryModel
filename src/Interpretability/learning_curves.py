@@ -43,9 +43,9 @@ def fit_classifier_parallel(x_train, y_train, x_val, y_val, x_test, y_test, clas
     y_pred_test = fitted_classifier.predict(x_test)
     
     acc_val = accuracy_score(y_val, y_pred)
-    prec_val = precision_score(y_val, y_pred)
+    prec_val = precision_score(y_val, y_pred, zero_division=0)  # NOTE if we only have TN and FN then we assume precision to be 0
     acc_test = accuracy_score(y_test, y_pred_test)
-    prec_test = precision_score(y_test, y_pred_test)
+    prec_test = precision_score(y_test, y_pred_test, zero_division=0)
     
     return acc_val, prec_val, acc_test, prec_test
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     parser.add_argument('--direction', type=str, default="up", choices=["down", "up"])
     parser.add_argument('--m1', type=str, default="Kronos", choices=["Kronos", "Fincast"])
     parser.add_argument('--gran', type=str, default="1d",
-                        choices=["1d", "1h", "2h", "4h", "6h", "8h", "12h", "15min", "30min", "unified"])
+                        choices=["1d", "1h", "2h", "4h", "6h", "8h", "12h", "15m", "30m", "unified"])
     parser.add_argument('--meta_label_mode', type=str, default="tp", choices=["tp", "fp", "og"])
     
     parser.add_argument('--forecast_horizon', type=int, default=7)
@@ -78,21 +78,21 @@ if __name__ == "__main__":
     
     multi = _load_multi_cache(
         f'{args.output_root}/{args.m1}/cache/multi_{args.forecast_horizon}_fee_{args.direction}_{hash_val}.pt')
-    
+    print(f"multi keys: {multi.sub.keys()}")
     sub = multi.sub[args.gran]
     idx_train, _, idx_val, idx_test = split_by_global_time(sub, train_end="2025-05-30", val_end="2025-10-01")
     eng_raw = sub["eng_features"].numpy() if isinstance(sub["eng_features"], torch.Tensor) else sub["eng_features"]
     labels_raw = sub["labels"].numpy() if isinstance(sub["labels"], torch.Tensor) else sub["labels"]
-    
+
     X_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
     y_train = labels_raw[idx_train].astype(int)
-    
+
     X_val = pd.DataFrame(eng_raw[idx_val], columns=ENG_FEATURE_NAMES)
     y_val = labels_raw[idx_val].astype(int)
-    
+
     X_test = pd.DataFrame(eng_raw[idx_test], columns=ENG_FEATURE_NAMES)
     y_test = labels_raw[idx_test].astype(int)
-    
+
     # print(f"train: {X_train.shape} | Features: {X_train.columns}")
     # print(f"val: {X_val.shape} | Features: {X_val.columns}")
     # print(f"test: {X_test.shape} | Features: {X_test.columns}")
@@ -136,11 +136,14 @@ if __name__ == "__main__":
             save_dict_pre_val[f"{training_quota:.2f}"].append(prec_val)
             save_dict_acc_test[f"{training_quota:.2f}"].append(acc_test)
             save_dict_pre_test[f"{training_quota:.2f}"].append(prec_test)
-    
-    # save to files
-    if not os.path.exists(
-        f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/"):
-        os.makedirs(f"{args.output_root}/{args.m1}/interpretability/learning_curves/")
+
+    # data dir
+    os.makedirs(
+        f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/",
+        exist_ok=True)
+    os.makedirs(
+        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/",
+        exist_ok=True)
     
     save_frame = pd.DataFrame(save_dict_acc_val)
     save_frame.to_csv(

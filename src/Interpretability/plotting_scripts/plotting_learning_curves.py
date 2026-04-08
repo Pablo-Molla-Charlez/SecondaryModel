@@ -31,8 +31,9 @@ def plot_learning_curve(
 
     plt.xlabel("Quota of training data used")
     plt.ylabel(f"{metric}")
-    plt.ylim(0, 1)
-    plt.xlim(0, np.max(x)+0.5)
+    plt.ylim(0.1, 1)
+    plt.xlim(0, np.max(x) + 0.5)
+    plt.yscale("log")
 
     # Title
     title_parts = []
