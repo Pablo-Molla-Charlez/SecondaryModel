@@ -34,11 +34,11 @@ class SklearnTimeSeriesCV(BaseTimeSeriesCV):
         """
         Yield temporal splits as actual data (not indices).
         """
-        if not isinstance(X, pd.DataFrame):
-            raise TypeError("X must be a pandas DataFrame")
-
-        if not isinstance(y, np.ndarray):
-            raise TypeError("y must be a numpy array")
+        # if not isinstance(X, pd.DataFrame):
+        #     raise TypeError("X must be a pandas DataFrame")
+        #
+        # if not isinstance(y, np.ndarray):
+        #     raise TypeError("y must be a numpy array")
 
         if len(X) != len(y):
             raise ValueError("X and y must have same length")
