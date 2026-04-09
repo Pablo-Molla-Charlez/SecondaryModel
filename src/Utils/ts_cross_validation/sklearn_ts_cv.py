@@ -44,4 +44,8 @@ class SklearnTimeSeriesCV(BaseTimeSeriesCV):
             raise ValueError("X and y must have same length")
 
         for train_idx, test_idx in self._tscv.split(X):
+            # --- Ensure non-empty splits ---
+            if len(train_idx) == 0 or len(test_idx) == 0:
+                continue  # skip invalid split
+                
             yield train_idx, test_idx
