@@ -1,11 +1,11 @@
-grans=("unified")   # "1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m"
+grans=("1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m" "unified")
 m1s=("Kronos" "Fincast")
 directions=("up" "down")
 
 for gran in "${grans[@]}"; do
   for m1 in "${m1s[@]}"; do
     for direction in "${directions[@]}"; do
-      python learning_curves.py \
+      python shap_analysis.py \
               --m1 $m1 \
               --gran $gran \
               --direction $direction \
@@ -13,4 +13,3 @@ for gran in "${grans[@]}"; do
     done
   done
 done
-

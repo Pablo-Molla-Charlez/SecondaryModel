@@ -78,7 +78,7 @@ if __name__ == "__main__":
     
     multi = _load_multi_cache(
         f'{args.output_root}/{args.m1}/cache/multi_{args.forecast_horizon}_fee_{args.direction}_{hash_val}.pt')
-    print(f"multi keys: {multi.sub.keys()}")
+
     sub = multi.sub[args.gran]
     idx_train, _, idx_val, idx_test = split_by_global_time(sub, train_end="2025-05-30", val_end="2025-10-01")
     eng_raw = sub["eng_features"].numpy() if isinstance(sub["eng_features"], torch.Tensor) else sub["eng_features"]

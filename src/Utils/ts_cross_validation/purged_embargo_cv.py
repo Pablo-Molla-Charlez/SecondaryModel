@@ -1,7 +1,7 @@
 from Utils.ts_cross_validation._ts_cross_validation import BaseTimeSeriesCV
 import pandas as pd
 import numpy as np
-from typing import Iterator, Tuple, Optional
+from typing import Iterator, Tuple, Optional, Union
 
 
 class PurgedEmbargoTimeSeriesCV(BaseTimeSeriesCV):
@@ -38,18 +38,13 @@ class PurgedEmbargoTimeSeriesCV(BaseTimeSeriesCV):
 
     def split(
         self,
-        X: pd.DataFrame,
-        y: np.ndarray
-    ) -> Iterator[Tuple[pd.DataFrame, np.ndarray, pd.DataFrame, np.ndarray]]:
+        X: Union[np.ndarray, pd.DataFrame],
+        y: Optional[np.ndarray] = None,
+        groups=None
+    ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
 
-        if not isinstance(X, pd.DataFrame):
-            raise TypeError("X must be a pandas DataFrame")
-
-        if not isinstance(y, np.ndarray):
-            raise TypeError("y must be a numpy array")
-
-        if len(X) != len(y):
-            raise ValueError("X and y must have same length")
+        # if not isinstance(X, pd.DataFrame):
+        #     raise TypeError("X must be a pandas DataFrame")
 
         if not X.index.equals(self.t1.index):
             raise ValueError("X and t1 must have the same index")
@@ -57,9 +52,7 @@ class PurgedEmbargoTimeSeriesCV(BaseTimeSeriesCV):
         n_samples = len(X)
         indices = np.arange(n_samples)
 
-        # Split indices into contiguous folds
         test_ranges = np.array_split(indices, self.n_splits)
-
         embargo_size = int(n_samples * self.embargo_pct)
 
         for test_idx in test_ranges:
@@ -68,13 +61,12 @@ class PurgedEmbargoTimeSeriesCV(BaseTimeSeriesCV):
 
             test_times = X.index[test_idx]
 
-            # --- PURGING ---
             train_mask = np.ones(n_samples, dtype=bool)
 
-            # Remove test indices
+            # remove test
             train_mask[test_idx] = False
 
-            # Remove overlapping labels
+            # --- PURGING ---
             test_start_time = test_times[0]
             test_end_time = test_times[-1]
 
@@ -85,14 +77,8 @@ class PurgedEmbargoTimeSeriesCV(BaseTimeSeriesCV):
             if embargo_size > 0:
                 embargo_start = test_end + 1
                 embargo_end = min(n_samples, embargo_start + embargo_size)
-
                 train_mask[embargo_start:embargo_end] = False
 
             train_idx = indices[train_mask]
 
-            yield (
-                X.iloc[train_idx],
-                y[train_idx],
-                X.iloc[test_idx],
-                y[test_idx],
-            )
+            yield train_idx, test_idx

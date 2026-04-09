@@ -2,6 +2,7 @@ from Utils.ts_cross_validation._ts_cross_validation import BaseTimeSeriesCV
 from sklearn.model_selection import TimeSeriesSplit
 import numpy as np
 import pandas as pd
+from typing import Iterator, Tuple, Optional, Union
 
 
 class SklearnTimeSeriesCV(BaseTimeSeriesCV):
@@ -24,7 +25,12 @@ class SklearnTimeSeriesCV(BaseTimeSeriesCV):
             test_size=test_size
         )
 
-    def split(self, X: pd.DataFrame, y: np.ndarray):
+    def split(
+            self,
+            X: Union[np.ndarray, pd.DataFrame],
+            y: Optional[np.ndarray] = None,
+            groups=None
+    ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
         """
         Yield temporal splits as actual data (not indices).
         """
@@ -38,10 +44,4 @@ class SklearnTimeSeriesCV(BaseTimeSeriesCV):
             raise ValueError("X and y must have same length")
 
         for train_idx, test_idx in self._tscv.split(X):
-            X_train = X.iloc[train_idx]
-            X_test = X.iloc[test_idx]
-
-            y_train = y[train_idx]
-            y_test = y[test_idx]
-
-            yield X_train, y_train, X_test, y_test
+            yield train_idx, test_idx
