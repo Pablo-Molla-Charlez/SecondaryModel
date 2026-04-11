@@ -8,8 +8,8 @@
   <img src="https://img.shields.io/badge/OCP-SAOCP%20Diagnostics-7c3aed?style=for-the-badge" alt="OCP SAOCP Diagnostics" />
 </p>
 
-> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, on top of financial foundation models like Kronos or Fincast.
-> This README documents the code that is actually present today: the modular tree-based M2 stack around `kronos_tree.py` and `Utils/`.
+> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of financial foundation models: **Kronos** and **Fincast**.
+> This README documents the modular tree-based M2 stack around `kronos_tree.py` and its dedicated configuration suite (`config_kronos.yaml` and `config_fincast.yaml`).
 
 <table>
   <tr>
@@ -86,15 +86,15 @@ Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to i
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    A[Train Set] -->|Fit Model| B(Base Classifier)
-    B -->|Predict| C[Val-Cal Set]
-    C -->|Calibrate| D(Calibrator)
-    D -->|Predict| E[Val-Opt Set]
-    E -->|Optimize Utility| F(Target Threshold)
-    F -->|Apply| G[Test Set]
-    G -->|Final Stats| H[Performance]
+    A[Train] --> B(Classifier)
+    B --> C[Calibrate]
+    C --> D(Calibrator)
+    D --> E[Optimize]
+    E --> F(Threshold)
+    F --> G[Test Set]
     classDef split fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     class A,C,E,G split;
+    linkStyle default stroke:#0f172a,stroke-width:4px;
 ```
 
 | Window | Subset | Purpose |
@@ -113,13 +113,20 @@ We enforce **Temporal Embargoes** at every boundary. A purge window (based on th
 
 ## Model Registry: Expanding Beyond Trees
 
-While the core focus is on tree-based models, the registry has expanded to include cutting-edge Transformer-based architectures.
+The pipeline supports a diverse registry of classifiers, ranging from classical ensemble methods to state-of-the-art foundation models.
 
-### TabPFN (Prior-Data Fitted Networks)
-We've integrated **TabPFN**, a state-of-the-art foundation model for tabular data. It uses an In-Context Learning (ICL) approach, where a Transformer is pre-trained on millions of synthetic datasets to perform zero-shot classification on new data in a single forward pass.
+### 1. Ensemble Tree Models
+- **Random Forest (`rf`)**: Our canonical baseline. Favored for its robustness and used to compute **OOB (Out-of-Bag) predictions** for streamlined calibration.
+- **XGBoost (`xgboost`)**: High-efficiency gradient boosting, optimized for capturing non-linear relationships in noisy financial features.
+
+### 2. Auto Gluon (`autogluon`)
+An automated ML suite that performs multi-layer stacking and ensembling (Trees, KNN, Linear Models) to find the most performant architecture for a given asset/granularity within a specified time budget.
+
+### 3. TabPFN (Prior-Data Fitted Networks)
+We've integrated **TabPFN**, a state-of-the-art foundation model for tabular data. It uses an In-Context Learning (ICL) approach, where a Transformer is pre-trained on synthetic datasets to perform zero-shot classification in a single forward pass.
 - **Reference**: [PriorLabs/TabPFN](https://github.com/PriorLabs/TabPFN)
 - **Zero-Shot (`tabpfn`)**: Uses the pre-trained prior directly. Extremely fast and robust on small financial datasets.
-- **Fine-Tuned (`tabpfn_ft`)**: Leverages gradient-based fine-tuning on our specific market distributions to sharpen probability calibration.
+- **Fine-Tuned (`tabpfn_ft`)**: Leverages gradient-based fine-tuning to adapt to specific market distributions and sharpen probability calibration.
 
 ---
 
@@ -135,18 +142,23 @@ A model is considered "Converged" only if it passes two independent stress tests
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2563eb', 'primaryBorderColor': '#1d4ed8', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dcfce7', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart TD
-    A[Model Config + Cache] --> B{Edge Engine}
-    B --> C[Seed Analysis<br/>100 trials]
-    B --> D[CPCV Analysis<br/>Combinatorial paths]
-    C --> E[Stability Score<br/>40% weight]
-    D --> F[Regime Score<br/>60% weight]
-    E & F --> G[Convergence Score]
+    A[Cache] --> B{Edge Engine}
+    B --> C[Seeds<br/>Stability]
+    B --> D[CPCV<br/>Regime]
+    C --> E[Score: 40%]
+    D --> F[Score: 60%]
+    E & F --> G[Convergence]
     G --> H{Verdict}
-    H -->|Both Pass| I[GREEN: Deployable]
-    H -->|Gap Detected| J[AMBER: Caution]
-    H -->|Neither| K[RED: Rejected]
-    classDef gate fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
-    class B,H gate;
+    H --> I[GREEN: Pass]
+    H --> J[AMBER: Risk]
+    H --> K[RED: Reject]
+    classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
+    classDef amber fill:#f59e0b,stroke:#b45309,color:#ffffff;
+    classDef red fill:#ef4444,stroke:#b91c1c,color:#ffffff;
+    class I green;
+    class J amber;
+    class K red;
+    linkStyle default stroke:#0f172a,stroke-width:4px;
 ```
 
 ---
@@ -162,7 +174,8 @@ flowchart TD
 
 | Path | Role |
 | --- | --- |
-| `config.yaml` | Main runtime configuration for paths, dates, selected engineered features, forecast horizon, and fees. |
+| `config_kronos.yaml` | Runtime configuration for the **Kronos** foundation path (paths, dates, features). |
+| `config_fincast.yaml` | Runtime configuration for the **Fincast** foundation path. |
 | `kronos_tree.py` | Main M2 analysis entrypoint; orchestrates 4-way splits, training, evaluation, and selective backtesting. |
 | `Utils/models.py` | Central model factory supporting `rf`, `xgboost`, `autogluon`, and `tabpfn_ft`. Includes model-info export helpers. |
 | `Utils/edge.py` | **The Gate Keeper**: Stability engine (seeds) and regime-sensitivity analysis (CPCV). Computes the final Edge Convergence Score. |
@@ -185,23 +198,22 @@ flowchart TD
 </p>
 
 ### `kronos_tree.py`: Analysis Pipeline
-The primary analysis orchestrator. All runs now utilize the **Calibration-First** workflow by default.
+The primary analysis orchestrator. All runs now utilize the **Calibration-First** workflow.
 
-| Command | Goal |
+| Use Case | Command |
 | --- | --- |
-| `python kronos_tree.py --per-gran` | Train one model per granularity from a multi-gran cache. |
-| `python kronos_tree.py --all-grans` | Train one unified model across all granularities. |
-| `python kronos_tree.py --model tabpfn_ft` | Run the fine-tuned TabPFN foundation model. |
-| `python kronos_tree.py --per-gran --model rf --thres utility` | RF with Selective Classification (Utility thresholding). |
+| **Kronos (Default)** | `python kronos_tree.py --config config_kronos.yaml --per-gran` |
+| **Fincast (Foundation)** | `python kronos_tree.py --config config_fincast.yaml --per-gran` |
+| **TabPFN on Fincast** | `python kronos_tree.py --config config_fincast.yaml --model tabpfn_ft` |
 
 ### `Utils/edge.py`: Convergence Protocol
-The final check before model deployment. Runs combinatorial stress tests.
+The final check before model deployment. Runs combinatorial stress tests. Support for both foundation paths via `--config`.
 
-| Mode | Command | What it does |
-| --- | --- | --- |
-| **Seeds** | `--mode seeds --trials 100` | Checks model stability across 100 random seeds. |
-| **CPCV** | `--mode cpcv --n-blocks 6` | Checks regime sensitivity via Combinatorial Purged CV. |
-| **Convergence** | `--convergence` | Computes the weighted (60/40) Gate-Keeper convergence score. |
+| Mode | Command (Fincast Example) |
+| --- | --- |
+| **Seeds** | `python Utils/edge.py --config config_fincast.yaml --mode seeds --trials 100` |
+| **CPCV** | `python Utils/edge.py --config config_fincast.yaml --mode cpcv --n-blocks 6` |
+| **Convergence** | `python Utils/edge.py --config config_fincast.yaml --convergence` |
 
 #### Example Convergence Chain:
 ```bash
@@ -293,16 +305,15 @@ How to read this structure:
 
 ---
 
-## Exact Current `config.yaml`
+## Configuration Examples
 
 <p>
-  <img src="https://img.shields.io/badge/Config-Exact%20File%20Snapshot-2563eb?style=flat-square" alt="Config Exact File Snapshot" />
-  <img src="https://img.shields.io/badge/Current%20Direction-down-ef4444?style=flat-square" alt="Current Direction down" />
-  <img src="https://img.shields.io/badge/Granularity-all-0f766e?style=flat-square" alt="Granularity all" />
-  <img src="https://img.shields.io/badge/Horizon-7-f59e0b?style=flat-square" alt="Horizon 7" />
+  <img src="https://img.shields.io/badge/Config-Dual%20Path%20Schema-2563eb?style=flat-square" alt="Config Dual Path Schema" />
+  <img src="https://img.shields.io/badge/Kronos-config_kronos.yaml-0f766e?style=flat-square" alt="Kronos config_kronos yaml" />
+  <img src="https://img.shields.io/badge/Fincast-config_fincast.yaml-1d4ed8?style=flat-square" alt="Fincast config_fincast yaml" />
 </p>
 
-The block below is the current file exactly as it exists today.
+The project uses two primary configuration files Sharing the same schema. Below is a snapshot of `config_kronos.yaml`.
 
 ```yaml
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
