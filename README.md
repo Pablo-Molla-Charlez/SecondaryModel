@@ -39,7 +39,7 @@ flowchart LR
     A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data_preprocessing.py]
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
     C --> D[kronos_tree.py<br/>pipeline orchestration]
-    D --> K[Utils/models.py<br/>model factory and AutoGluon wrapper]
+    D --> K[Utils/models.py<br/>model factory ()]
     K --> E[Selective Classification<br/>utility threshold or SAOCP]
     E --> F[Feature Plots]
     E --> G[Temporal Evaluation]
@@ -90,7 +90,7 @@ Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to i
 flowchart LR
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"] --> B["&nbsp;&nbsp;Calibrate&nbsp;&nbsp;<br/><small>Calibrator</small>"]
     B --> C["&nbsp;&nbsp;Optimize&nbsp;&nbsp;<br/><small>Threshold</small>"]
-    D["&nbsp;&nbsp;Test Set&nbsp;&nbsp;<br/><small>Performance</small>"]
+    D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test Set&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]
     C --> D
     classDef split fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     class A,B,C,D split;
@@ -149,9 +149,9 @@ flowchart TD
     D --> F[Score: 60%]
     E & F --> G[Convergence]
     G --> H{Verdict}
-    H --> I[GREEN: Pass<br/>Seeds & CPCV True]
-    H --> J[AMBER: Risk<br/>One True]
-    H --> K[RED: Reject<br/>Neither True]
+    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Seeds & CPCV True</small>"]
+    H --> J["&nbsp;&nbsp;&nbsp;AMBER: Risk&nbsp;&nbsp;&nbsp;<br/><small>One True</small>"]
+    H --> K["&nbsp;&nbsp;&nbsp;&nbsp;RED: Reject&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Neither True</small>"]
     classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
     classDef amber fill:#f59e0b,stroke:#b45309,color:#ffffff;
     classDef red fill:#ef4444,stroke:#b91c1c,color:#ffffff;
