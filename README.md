@@ -88,20 +88,19 @@ Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to i
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    subgraph Validation
-        B["&nbsp;&nbsp;Calibrate&nbsp;&nbsp;<br/><small>Calibrator</small>"]:::calib
+    subgraph Validation ["&nbsp;<br/>Validation<br/>&nbsp;"]
+        B["&nbsp;&nbsp;Calibrate&nbsp;&nbsp;<br/><small>Calibrator</small>"]:::opt
         C["&nbsp;&nbsp;Optimize&nbsp;&nbsp;<br/><small>Threshold</small>"]:::opt
         B --> C
     end
-    style Validation fill:#ffdecb,stroke:#f97316,stroke-width:2px,color:#7c2d12
+    style Validation fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#ffffff
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> B
     D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test Set&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
     C --> D
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    classDef calib fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
     classDef opt   fill:#ef4444,stroke:#b91c1c,color:#ffffff,stroke-width:2px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
-    linkStyle 0 stroke:#f59e0b,stroke-width:6px;
+    linkStyle 0 stroke:#ef4444,stroke-width:6px;
     linkStyle 1 stroke:#0f766e,stroke-width:6px;
     linkStyle 2 stroke:#ef4444,stroke-width:6px;
 ```
