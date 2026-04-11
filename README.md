@@ -38,8 +38,8 @@
 flowchart LR
     A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data_preprocessing.py]
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
-    C --> D[kronos_tree.py<br/>pipeline orchestration]
-    D --> K[Utils/models.py<br/>model factory ()]
+    C --> D[kronos_tree.py<br/>Pipeline Orchestration]
+    D --> K[Utils/models.py<br/>Model Factory: RF, XGB, AutoGluon, TabPFN]
     K --> E[Selective Classification<br/>utility threshold or SAOCP]
     E --> F[Feature Plots]
     E --> G[Temporal Evaluation]
