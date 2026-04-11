@@ -88,7 +88,7 @@ Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to i
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    subgraph Validation ["<br/>Validation<br/><br/><br/>"]
+    subgraph Validation ["Validation<br/><br/><br/><br/>"]
         B["&nbsp;&nbsp;Calibrate&nbsp;&nbsp;<br/><small>Calibrator</small>"]:::opt
         C["&nbsp;&nbsp;Optimize&nbsp;&nbsp;<br/><small>Threshold</small>"]:::opt
         B --> C
