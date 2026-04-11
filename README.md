@@ -88,14 +88,11 @@ Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to i
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    A[Train] --> B(Classifier)
-    B --> C[Calibrate]
-    C --> D(Calibrator)
-    D --> E[Optimize]
-    E --> F(Threshold)
-    F --> G[Test Set]
+    A["Train<br/><small>Classifier</small>"] --> B["Calibrate<br/><small>Calibrator</small>"]
+    B --> C["Optimize<br/><small>Threshold</small>"]
+    C --> D["Test Set<br/><small>Performance</small>"]
     classDef split fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    class A,C,E,G split;
+    class A,B,C,D split;
     linkStyle default stroke:#0f766e,stroke-width:6px;
 ```
 
