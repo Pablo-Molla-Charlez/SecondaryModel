@@ -151,9 +151,9 @@ flowchart TD
     D --> F[Score: 60%]
     E & F --> G[Convergence]
     G --> H{Verdict}
-    H --> I[GREEN: Pass<br/>Seeds & CPCV True]
-    H --> J[AMBER: Risk<br/>One True]
-    H --> K[RED: Reject<br/>Neither True]
+    H --> I[GREEN: Pass<br/><small>Seeds & CPCV True</small>]
+    H --> J[AMBER: Risk<br/><small>One True</small>]
+    H --> K[RED: Reject<br/><small>Neither True</small>]
     classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
     classDef amber fill:#f59e0b,stroke:#b45309,color:#ffffff;
     classDef red fill:#ef4444,stroke:#b91c1c,color:#ffffff;
