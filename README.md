@@ -54,7 +54,7 @@ flowchart LR
     class D,K model;
     class E select;
     class F,G,H,I,J report;
-    linkStyle default stroke:#0f172a,stroke-width:5px;
+    linkStyle default stroke:#0f172a,stroke-width:6px;
 ```
 
 ```mermaid
@@ -94,7 +94,7 @@ flowchart LR
     F --> G[Test Set]
     classDef split fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     class A,C,E,G split;
-    linkStyle default stroke:#0f172a,stroke-width:4px;
+    linkStyle default stroke:#0f766e,stroke-width:6px;
 ```
 
 | Window | Subset | Purpose |
@@ -158,7 +158,7 @@ flowchart TD
     class I green;
     class J amber;
     class K red;
-    linkStyle default stroke:#0f172a,stroke-width:4px;
+    linkStyle default stroke:#2563eb,stroke-width:6px;
 ```
 
 ---
