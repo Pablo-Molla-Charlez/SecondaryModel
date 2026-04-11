@@ -54,7 +54,9 @@ flowchart LR
     class D,K model;
     class E select;
     class F,G,H,I,J report;
-    linkStyle default stroke:#0f172a,stroke-width:6px;
+    linkStyle 0,1,2 stroke:#0f766e,stroke-width:6px;
+    linkStyle 3,4 stroke:#2563eb,stroke-width:6px;
+    linkStyle 5,6,7,8,9 stroke:#f59e0b,stroke-width:6px;
 ```
 
 ```mermaid
