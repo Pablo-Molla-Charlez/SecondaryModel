@@ -1,5 +1,5 @@
 """
-Kronos Tree — M2 Meta-Labeling with RF/XGBoost/AutoGluon
+Kronos Tree — M2 Meta-Labeling with RF/XGBoost/AutoGluon/TabPFN
 =========================================================
 Feature analysis, temporal evaluation, and financial backtesting for the M2 meta-labeling system.
 
@@ -14,6 +14,8 @@ Usage:
   python Utils/kronos_tree.py --cache path/to/cache.pt                                           # single-gran auto-detect
   python Utils/kronos_tree.py --model xgboost --cache path/to/cache.pt                           # use XGBoost
   python Utils/kronos_tree.py --model autogluon --cache path/to/cache.pt                         # use AutoGluon ensemble
+  python Utils/kronos_tree.py --model tabpfn --cache path/to/cache.pt                            # use TabPFN zero-shot
+  python Utils/kronos_tree.py --model tabpfn_ft --cache path/to/cache.pt                         # use TabPFN fine-tuned
 """
 
 import argparse, hashlib, sys, json, pickle
@@ -75,8 +77,9 @@ from Utils.saocp import (_ocp_threshold_to_op,
                          plot_mondrian_diagnostics)
 
 # ┏━━━━━━━━━━ Utility-based Selective Classification [risk-coverage analysis] ━━━━━━━━━━┓   
-from Utils.selective_classification import (_find_best_utility_threshold, 
-                                            collect_risk_coverage_curve)
+from Utils.selective_classification import (_find_best_utility_threshold,
+                                            collect_risk_coverage_curve,
+                                            calibrate_probabilities)
 
 # ┏━━━━━━━━━━ Utils ━━━━━━━━━━┓
 from Utils.utils import (NumpyJSONEncoder, 
@@ -91,9 +94,10 @@ from Utils.utils import (NumpyJSONEncoder,
                          _infer_direction,
                          _load_multi_cache)
 # ┏━━━━━━━━━━ Models ━━━━━━━━━━┓
-from Utils.models import (MODEL_CHOICES, 
-                          _AG_TIME_LIMIT, 
-                          _AG_PRESETS, 
+from Utils.models import (MODEL_CHOICES,
+                          MODELS_NO_SCALING,
+                          _AG_TIME_LIMIT,
+                          _AG_PRESETS,
                           _build_tree_model)
 
 
@@ -136,13 +140,13 @@ def temporal_eval(dataset: dict,
                   granularity: str = "1d",
                   ocp_costs: tuple = (0.0, 10.0, 2.0),
                   ocp_window_days: int = 25) -> dict:
-    """Train model on train split, evaluate on val and test. Plot confusion matrices.
+    """Train on Train, calibrate on Val-Cal, sweep threshold on Val-Opt, evaluate on Test.
 
-    Threshold selection uses financial utility (t-statistic of net returns)
-    on the validation set instead of a fixed classification-risk budget.
+    4-way split: Train / Val-Cal / Val-Opt / Test with embargo gaps.
+    Calibration → Threshold → Evaluation all operate in calibrated probability space.
 
     Args:
-        split_indices: (idx_train, idx_val, idx_test) pre-computed from split_by_global_time.
+        split_indices: (idx_train, idx_cal, idx_opt, idx_test) with embargo.
         direction: 'up' or 'down' — used to flip returns for short strategies.
         fee: per-trade fee (decimal, e.g. 0.002 for 0.2%).
     """
@@ -158,8 +162,8 @@ def temporal_eval(dataset: dict,
     if isinstance(returns_all, torch.Tensor):
         returns_all = returns_all.numpy()
 
-    # ┏━━━━━━━━━━ Split Data ━━━━━━━━━━┓
-    idx_train, idx_val, idx_test = split_indices
+    # ┏━━━━━━━━━━ Split Data (4-way: Train / Cal / Opt / Test) ━━━━━━━━━━┓
+    idx_train, idx_cal, idx_opt, idx_test = split_indices
 
     # ┏━━━━━━━━━━ M1 Metrics ━━━━━━━━━━┓
     m1_acc_val, m1_prec_val = None, None
@@ -193,35 +197,61 @@ def temporal_eval(dataset: dict,
     all_names = resolve_feature_names(eng.shape[1])
     col_indices = [all_names.index(c) for c in feature_cols]
 
-    # ┏━━━━━━━━━━ Train, Validation, and Test Sets ━━━━━━━━━━┓
-    X_train = eng[idx_train][:, col_indices]
-    y_train = labels[idx_train].astype(int)
-    X_val   = eng[idx_val][:, col_indices]
-    y_val   = labels[idx_val].astype(int)
-    X_test  = eng[idx_test][:, col_indices]
-    y_test  = labels[idx_test].astype(int)
+    # ┏━━━━━━━━━━ Load Train, Val-Cal, Val-Opt, and Test data ━━━━━━━━━━┓
+    X_train       = eng[idx_train][:, col_indices]
+    y_train       = labels[idx_train].astype(int)
+    X_cal         = eng[idx_cal][:, col_indices]
+    y_cal         = labels[idx_cal].astype(int)
+    X_opt         = eng[idx_opt][:, col_indices]
+    y_opt         = labels[idx_opt].astype(int)
+    X_test        = eng[idx_test][:, col_indices]
+    y_test        = labels[idx_test].astype(int)
+    train_returns = returns_all[idx_train]
+    opt_returns   = returns_all[idx_opt].copy()
+    test_returns  = returns_all[idx_test].copy()
 
-    # ┏━━━━━━━━━━ Direction-aware returns for utility calculation ━━━━━━━━━━┓
-    val_returns = returns_all[idx_val].copy()
-    test_returns = returns_all[idx_test].copy()
+    # ┏━━━━━━━━━━ Direction-aware returns ━━━━━━━━━━┓
     if direction.lower() == "down":
-        val_returns = -val_returns
+        opt_returns  = -opt_returns
         test_returns = -test_returns
+
+    # ┏━━━━━━━━━━ Drop NaN-return rows before eval ━━━━━━━━━━┓
+    # Val-Opt
+    _opt_valid = ~np.isnan(opt_returns)
+    if not _opt_valid.all():
+        print(f"  [temporal_eval] WARNING: {(~_opt_valid).sum()} opt rows with NaN returns dropped")
+        X_opt       = X_opt[_opt_valid]
+        y_opt       = y_opt[_opt_valid]
+        opt_returns = opt_returns[_opt_valid]
+        idx_opt     = idx_opt[_opt_valid]
+    
+    # Test
+    _test_valid = ~np.isnan(test_returns)
+    if not _test_valid.all():
+        print(f"  [temporal_eval] WARNING: {(~_test_valid).sum()} test rows with NaN returns dropped")
+        X_test       = X_test[_test_valid]
+        y_test       = y_test[_test_valid]
+        test_returns = test_returns[_test_valid]
+        idx_test     = idx_test[_test_valid]
 
     # ┏━━━━━━━━━━ Standardize Features ━━━━━━━━━━┓
     scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val   = scaler.transform(X_val)
-    X_test  = scaler.transform(X_test)
+    if model_name not in MODELS_NO_SCALING:
+        X_train = scaler.fit_transform(X_train)
+        X_cal   = scaler.transform(X_cal)
+        X_opt   = scaler.transform(X_opt)
+        X_test  = scaler.transform(X_test)
+    else:
+        scaler.fit(X_train)  # kept for cache compatibility; data stays raw
 
     # ┏━━━━━━━━━━ Class Weights ━━━━━━━━━━┓
     n_pos = int((y_train == 1).sum())
     n_neg = int((y_train == 0).sum())
     cw_ratio = n_neg / max(n_pos, 1)
 
-    # ┏━━━━━━━━━━ Build Tree Model ━━━━━━━━━━┓
-    model = _build_tree_model(model_name, 
-                              len(y_train), 
+    # ┏━━━━━━━━━━ Build Tree Model + Fit on Train ━━━━━━━━━━┓
+    model = _build_tree_model(model_name,
+                              len(y_train),
                               cw_ratio,
                               feature_names = feature_cols,
                               presets       = _AG_PRESETS)
@@ -237,16 +267,41 @@ def temporal_eval(dataset: dict,
     val_thresholds = {}
     val_op = None
 
-    # ┏━━━━━━━━━━ Pre-compute val probs for OCP warm-up (needed before test loop) ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Pre-compute OCP probs (warm-up) ━━━━━━━━━━┓
     _is_ocp = thres_mode.startswith("OCP")
-    _val_probs_ocp = model.predict_proba(X_val)[:, 1] if _is_ocp else None
-    
-    # ┏━━━━━━━━━━ Extract dates for delayed feedback in SAOCP (both val and test) ━━━━━━━━━━┓
-    _val_dates_ocp  = [dataset["dates"][j] for j in idx_val]  if _is_ocp else None
-    _test_dates_ocp = [dataset["dates"][j] for j in idx_test] if _is_ocp else None
+    # For OCP, use combined Val-Cal+Val-Opt as the "val" warm-up set
+    X_val_combined = np.vstack([X_cal, X_opt])
+    y_val_combined = np.concatenate([y_cal, y_opt])
+    _val_probs_ocp = model.predict_proba(X_val_combined)[:, 1] if _is_ocp else None
 
-    # ┏━━━━━━━━━━ Loop through splits ━━━━━━━━━━┓
-    for split_name, X_split, y_split, split_rets in [("Val", X_val, y_val, val_returns), ("Test", X_test, y_test, test_returns)]:
+    # ┏━━━━━━━━━━ Calibrate on Val-Cal ━━━━━━━━━━┓
+    _raw_cal_probs  = model.predict_proba(X_cal)[:, 1]
+    _calib = calibrate_probabilities(_raw_cal_probs, y_cal)
+    _calibrator = _calib["calibrator"]
+
+    # ┏━━━━━━━━━━ Sweep threshold on calibrated Val-Opt ━━━━━━━━━━┓
+    _raw_opt_probs  = model.predict_proba(X_opt)[:, 1]
+    _cal_opt_probs  = _calibrator.predict(_raw_opt_probs)
+    op = _find_best_utility_threshold(_cal_opt_probs, opt_returns, fee=fee, labels=y_opt)
+    val_op = op
+    val_thresholds["thr"] = op["threshold"]
+
+    # ┏━━━━━━━━━━ Apply calibration to Test ━━━━━━━━━━┓
+    _raw_test_probs = model.predict_proba(X_test)[:, 1]
+    _cal_test_probs = _calibrator.predict(_raw_test_probs)
+    print(f"    Calibration (isotonic on Cal n={len(y_cal)}):")
+    print(f"      Opt range  [{_raw_opt_probs.min():.3f}, {_raw_opt_probs.max():.3f}] → [{_cal_opt_probs.min():.3f}, {_cal_opt_probs.max():.3f}]")
+    print(f"      Test range [{_raw_test_probs.min():.3f}, {_raw_test_probs.max():.3f}] → [{_cal_test_probs.min():.3f}, {_cal_test_probs.max():.3f}]")
+    print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
+
+    # ┏━━━━━━━━━━ Extract dates for SAOCP ━━━━━━━━━━┓
+    _opt_dates  = np.array([dataset["dates"][j] for j in idx_opt])
+    _test_dates = np.array([dataset["dates"][j] for j in idx_test])
+    _val_dates_ocp  = np.array([dataset["dates"][j] for j in np.concatenate([idx_cal, idx_opt])]) if _is_ocp else None
+    _test_dates_ocp = _test_dates if _is_ocp else None
+
+    # ┏━━━━━━━━━━ Loop through evaluation splits ━━━━━━━━━━┓
+    for split_name, X_split, y_split, split_rets in [("Val", X_opt, y_opt, opt_returns), ("Test", X_test, y_test, test_returns)]:
         
         # ┏━━━━━━━━━━ Predictions and Probabilities ━━━━━━━━━━┓
         preds = model.predict(X_split)
@@ -287,20 +342,23 @@ def temporal_eval(dataset: dict,
                                 file_prefix = f"{file_prefix}_{split_name}_Prob_Dist",
                                 title       = f"{mlabel} {split_name} ({desc})")
 
-        # ┏━━━━━━━━━━ Risk-coverage curve ━━━━━━━━━━┓
-        curve = collect_risk_coverage_curve(y_true  = y_split, 
-                                            y_score = probs)
+        # ┏━━━━━━━━━━ Risk-coverage curve (all in calibrated space) ━━━━━━━━━━┓
+        if split_name == "Test" and not _is_ocp:
+            score_probs = _cal_test_probs
+        elif split_name == "Val" and not _is_ocp:
+            score_probs = _cal_opt_probs
+        else:
+            score_probs = probs
 
-        # ┏━━━━━━━━━━ Utility Threshold Optimization in Validation ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Collect Risk-Coverage Curve ━━━━━━━━━━┓
+        curve = collect_risk_coverage_curve(y_true  = y_split, y_score = score_probs)
+
+        # ┏━━━━━━━━━━ Val: threshold already computed above, just record metrics ━━━━━━━━━━┓
         if split_name == "Val":
-            # ┏━━━━━━━━━━ Financial utility threshold optimization ━━━━━━━━━━┓
-            op = _find_best_utility_threshold(probs, split_rets, fee=fee)
-            sel_val = probs >= op["threshold"]
+            sel_val = _cal_opt_probs >= op["threshold"]
             n_sel_val = int(sel_val.sum())
             err_val = int((y_split[sel_val] == 0).sum()) if n_sel_val > 0 else 0
             op["risk"] = err_val / max(n_sel_val, 1)
-            val_thresholds["thr"] = op["threshold"]
-            val_op = op
         else:
             if _is_ocp:
                 # ┏━━━━━━━━━━ OCP dispatch: choose variant ━━━━━━━━━━┓
@@ -309,17 +367,17 @@ def temporal_eval(dataset: dict,
 
                 # ┏━━━━━━━━━━ Cost-aware deferral (vanilla or Mondrian) ━━━━━━━━━━┓
                 if thres_mode in ("OCP-cost", "OCP-cost-mondrian"):
-                    test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_cost_deferral_online(_val_probs_ocp, 
-                                                                                                       y_val, 
-                                                                                                       probs, 
-                                                                                                       y_split, 
+                    test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_cost_deferral_online(_val_probs_ocp,
+                                                                                                       y_val_combined,
+                                                                                                       probs,
+                                                                                                       y_split,
                                                                                                        alpha            = ocp_alpha,
                                                                                                        test_dates       = _test_dates_ocp,
                                                                                                        forecast_horizon = forecast_horizon,
                                                                                                        val_dates        = _val_dates_ocp,
                                                                                                        calib_window     = _cw,
-                                                                                                       c_FP             = c_FP, 
-                                                                                                       c_FN             = c_FN, 
+                                                                                                       c_FP             = c_FP,
+                                                                                                       c_FN             = c_FN,
                                                                                                        c_DEF            = c_DEF,
                                                                                                        mondrian         = (thres_mode == "OCP-cost-mondrian"),
                                                                                                        test_returns     = split_rets)
@@ -327,9 +385,9 @@ def temporal_eval(dataset: dict,
                 # ┏━━━━━━━━━━ Windowed SAOCP ━━━━━━━━━━┓
                 elif thres_mode == "OCP-W":
                     test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(_val_probs_ocp,
-                                                                                               y_val, 
-                                                                                               probs, 
-                                                                                               y_split, 
+                                                                                               y_val_combined,
+                                                                                               probs,
+                                                                                               y_split,
                                                                                                alpha            = ocp_alpha,
                                                                                                test_dates       = _test_dates_ocp,
                                                                                                forecast_horizon = forecast_horizon,
@@ -338,9 +396,9 @@ def temporal_eval(dataset: dict,
                 # ┏━━━━━━━━━━ Original OCP (unbounded history) ━━━━━━━━━━┓
                 else:
                     test_s_hats, test_approved_ocp, val_s_hats, conf_stats = _run_saocp_online(_val_probs_ocp,
-                                                                                               y_val, 
-                                                                                               probs, 
-                                                                                               y_split, 
+                                                                                               y_val_combined,
+                                                                                               probs,
+                                                                                               y_split,
                                                                                                alpha            = ocp_alpha,
                                                                                                test_dates       = _test_dates_ocp,
                                                                                                forecast_horizon = forecast_horizon,
@@ -372,7 +430,7 @@ def temporal_eval(dataset: dict,
                                     test_s_hats = test_s_hats,
                                     val_s_hats  = val_s_hats,
                                     val_probs   = _val_probs_ocp,
-                                    val_labels  = y_val.astype(int),
+                                    val_labels  = y_val_combined.astype(int),
                                     alpha       = np.array([ocp_alpha]),
                                     **({"tau_trajectory": conf_stats["tau_trajectory"]} if "tau_trajectory" in conf_stats else {}))
 
@@ -383,9 +441,9 @@ def temporal_eval(dataset: dict,
                                               gran_label = granularity,
                                               thres_mode = thres_mode)
             else:
-                # ┏━━━━━━━━━━ Utility: apply fixed Val threshold to test ━━━━━━━━━━┓
+                # ┏━━━━━━━━━━ Utility: apply fixed Val threshold to test (calibrated test probs) ━━━━━━━━━━┓
                 thr = val_thresholds["thr"]
-                sel = probs >= thr
+                sel = _cal_test_probs >= thr
                 n_sel = int(sel.sum())
                 err = int((y_split[sel] == 0).sum()) if n_sel > 0 else 0
                 net_rets_test = split_rets[sel] - fee if n_sel > 0 else np.array([0.0])
@@ -406,7 +464,7 @@ def temporal_eval(dataset: dict,
         rc_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage.png"
         plot_temporal_risk_coverage_curve(save_path = rc_path,
                                           curve = curve,
-                                          probs = probs,
+                                          probs = score_probs,
                                           y_true = y_split,
                                           split_rets = split_rets,
                                           fee = fee,
@@ -441,7 +499,7 @@ def temporal_eval(dataset: dict,
         if split_name == "Test" and _is_ocp:
             sel = test_approved_ocp
         else:
-            sel = probs >= thr_sel
+            sel = (score_probs >= thr_sel)
         sel_preds = sel.astype(int)
         sel_true = y_split
 
@@ -485,6 +543,7 @@ def temporal_eval(dataset: dict,
                     "mean_ret": round(op["mean_ret"], 6),
                     "t_stat": round(op["t_stat"], 4)}
 
+
         # ┏━━━━━━━━━━ OCP Metrics ━━━━━━━━━━┓
         if _is_ocp and split_name == "Test":
             sel_dict["ocp"] = {"alpha": ocp_alpha,
@@ -503,7 +562,8 @@ def temporal_eval(dataset: dict,
     artifacts = {"model": model,
                  "scaler": scaler,
                  "col_indices": col_indices,
-                 "val_op": val_op}
+                 "val_op": val_op,
+                 "calibrator": _calibrator}
 
     return results, artifacts
 
@@ -528,8 +588,15 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names  = _class_names(direction, mode)
-    model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
+    model_folder = {"rf":        "randforest", 
+                    "xgboost":   "xgboost", 
+                    "autogluon": "autogluon", 
+                    "tabpfn":    "tabpfn", 
+                    "tabpfn_ft": "tabpfn_ft"}[model_name]
+    if thres_mode.startswith("OCP"):
+        thres_folder = thres_mode
+    else:
+        thres_folder = "Utility_Score"
 
     # ┏━━━━━━━━━━ Create save directory ━━━━━━━━━━┓
     save_dir     = output_root / _m1_output_bucket(cfg) / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
@@ -693,17 +760,41 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                             train_end  = train_end, 
                                                             val_end    = val_end, 
                                                             return_raw = True)
-            
-        # ┏━━━━━━━━━━ Split indices ━━━━━━━━━━┓
-        split_indices = (idx_train_t, idx_val_t, idx_test_t)
+
+        # ┏━━━━━━━━━━ Compute 4-way split with embargo ━━━━━━━━━━┓
+        from Utils.edge import _compute_embargo_splits, _gran_to_timedelta
+        
+        # ┏━━━━━━━━━━ Get Dates and Labels ━━━━━━━━━━┓
+        fh = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7)) if cfg else 7
+        dates_all = dataset["dates"]
+        labels_all = dataset["labels"]
+        if isinstance(labels_all, torch.Tensor): labels_all = labels_all.numpy()
+        valid_mask = ~np.isnan(labels_all)
+        dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid_mask[i]]
+        
+        # ┏━━━━━━━━━━ Compute Embargo Splits ━━━━━━━━━━┓
+        embargo = _compute_embargo_splits(dates_valid, train_end, val_end, fh, granularity)
+        
+        # ┏━━━━━━━━━━ Map embargo indices (into valid-only) to full-dataset indices ━━━━━━━━━━┓
+        valid_indices     = np.where(valid_mask)[0]
+        idx_train_e       = valid_indices[embargo["idx_train"]]
+        idx_cal_e         = valid_indices[embargo["idx_cal"]]
+        idx_opt_e         = valid_indices[embargo["idx_opt"]]
+        idx_test_e        = valid_indices[embargo["idx_test"]]
+        split_indices     = (idx_train_e, idx_cal_e, idx_opt_e, idx_test_e)
         split_indices_raw = (idx_train_raw, idx_val_raw, idx_test_raw)
+
+        # ┏━━━━━━━━━━ Get Purge and Cal End ━━━━━━━━━━┓
+        purge_td = embargo["purge_td"]
+        cal_end  = embargo["cal_end"]
+        
+        # ┏━━━━━━━━━━ Print Split Info ━━━━━━━━━━┓
+        print(f"    4-way split: train={len(idx_train_e):,}  cal={len(idx_cal_e):,}  opt={len(idx_opt_e):,}  test={len(idx_test_e):,}")
+        print(f"    Cal end: {cal_end.strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
         
         # ┏━━━━━━━━━━ Fee per trade ━━━━━━━━━━┓
         fee = cfg.get("evaluation", {}).get("fee_per_trade", 0.0) if cfg is not None else 0.0
 
-        # ┏━━━━━━━━━━ Forecast horizon ━━━━━━━━━━┓
-        fh = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7)) if cfg else 7
-        
         # ┏━━━━━━━━━━ Active features ━━━━━━━━━━┓
         active_features = list(df_train.columns)
         print(f"\n  [8/9] {mlabel} temporal split ({len(active_features)} feats, train<={train_end}, val<={val_end}):")
@@ -727,6 +818,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                     granularity       = granularity,
                                                     ocp_costs         = ocp_costs,
                                                     ocp_window_days   = ocp_window_days)
+        
+        # TODO: Change the selection when Till creates pipeline
         if run_top5:
             # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
             top_features_dir = save_dir / "Top_Features"
@@ -843,8 +936,15 @@ def run_unified_analysis(cache_path: Path,
     # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
-    model_folder = {"rf": "randforest", "xgboost": "xgboost", "autogluon": "autogluon"}[model_name]
-    thres_folder = thres_mode if thres_mode.startswith("OCP") else "Utility_Score"
+    model_folder = {"rf":        "randforest", 
+                    "xgboost":   "xgboost", 
+                    "autogluon": "autogluon", 
+                    "tabpfn":    "tabpfn", 
+                    "tabpfn_ft": "tabpfn_ft"}[model_name]
+    if thres_mode.startswith("OCP"):
+        thres_folder = thres_mode
+    else:
+        thres_folder = "Utility_Score"
     save_dir = output_root / _m1_output_bucket(cfg) / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -929,7 +1029,10 @@ def run_unified_analysis(cache_path: Path,
 
     # ┏━━━━━━━━━━ Drop zero-variance / all-NaN features, impute, scale ━━━━━━━━━━┓
     scaler = StandardScaler()
-    X_train_all[:, :n_eng] = scaler.fit_transform(X_train_all[:, :n_eng])
+    if model_name not in MODELS_NO_SCALING:
+        X_train_all[:, :n_eng] = scaler.fit_transform(X_train_all[:, :n_eng])
+    else:
+        scaler.fit(X_train_all[:, :n_eng])  # kept for cache compatibility; data stays raw
 
     # ┏━━━━━━━━━━ Train unified model ━━━━━━━━━━┓
     n_pos = int((y_train_all == 1).sum())
@@ -993,14 +1096,22 @@ def run_unified_analysis(cache_path: Path,
             test_returns = -test_returns
 
         # ┏━━━━━━━━━━ Impute + scale (eng features only, one-hot stays as-is) ━━━━━━━━━━┓
-        for X in [X_val_raw, X_test_raw]:
-            X[:, :n_eng] = scaler.transform(X[:, :n_eng])
+        if model_name not in MODELS_NO_SCALING:
+            for X in [X_val_raw, X_test_raw]:
+                X[:, :n_eng] = scaler.transform(X[:, :n_eng])
 
         # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
         val_preds = model.predict(X_val_raw)
         val_probs = model.predict_proba(X_val_raw)[:, 1]
         test_preds = model.predict(X_test_raw)
         test_probs = model.predict_proba(X_test_raw)[:, 1]
+
+        # ┏━━━━━━━━━━ Calibrate probabilities (isotonic on val → apply to test only) ━━━━━━━━━━┓
+        _calib_u = calibrate_probabilities(val_probs, y_val, test_probs)
+        test_probs_cal = _calib_u["test_calibrated"]
+        _calibrator_u  = _calib_u["calibrator"]
+        print(f"    Calibration (isotonic): test [{test_probs.min():.3f},{test_probs.max():.3f}] → "
+              f"[{test_probs_cal.min():.3f},{test_probs_cal.max():.3f}]")
 
         # ┏━━━━━━━━━━ Pre-selective confusion matrices + metrics (Val & Test) ━━━━━━━━━━┓
         presel_metrics = {}
@@ -1025,8 +1136,8 @@ def run_unified_analysis(cache_path: Path,
                                           "risk":      round(1 - prec_val, 4),
                                           "baseline":  round(int((y_split == 1).sum()) / len(y_split), 4) if len(y_split) > 0 else 0}
 
-        # ┏━━━━━━━━━━ Threshold optimization on val (always computed) ━━━━━━━━━━┓
-        val_op = _find_best_utility_threshold(val_probs, val_returns, fee=fee)
+        # ┏━━━━━━━━━━ Threshold optimization on val (standard utility) ━━━━━━━━━━┓
+        val_op = _find_best_utility_threshold(val_probs, val_returns, fee=fee, labels=y_val)
         sel_val = val_probs >= val_op["threshold"]
         n_sel_val = int(sel_val.sum())
         err_val = int((y_val[sel_val] == 0).sum()) if n_sel_val > 0 else 0
@@ -1101,13 +1212,13 @@ def run_unified_analysis(cache_path: Path,
                 print(f"    Cost params: c_FN={c_FN}, c_FP={c_FP}, c_DEF={c_DEF} | τ* std={tau_std:.4f}")
 
         # ┏━━━━━━━━━━ Post-selective confusion matrices (Val & Test) ━━━━━━━━━━┓
-        for split_name, y_split, probs in [("Val", y_val, val_probs), ("Test", y_test, test_probs)]:
+        for split_name, y_split, probs_cal in [("Val", y_val, val_probs), ("Test", y_test, test_probs_cal)]:
             # ┏━━━━━━━━━━ Determine selection method ━━━━━━━━━━┓
             if split_name == "Test" and _is_ocp_u:
                 sel = test_approved_ocp
                 thr_source = ocp_op.get("threshold_source", "OCP-SAOCP")
             else:
-                sel = probs >= threshold
+                sel = probs_cal >= threshold
                 thr_source = "Utility-Opt" if split_name == "Val" else "Val-Utility"
 
             # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
@@ -1137,7 +1248,7 @@ def run_unified_analysis(cache_path: Path,
         if _is_ocp_u:
             m2_approved = test_approved_ocp
         else:
-            m2_approved = test_probs >= threshold
+            m2_approved = test_probs_cal >= threshold
         net_returns = test_returns - fee
 
         # ┏━━━━━━━━━━ Trade DataFrame ━━━━━━━━━━┓
@@ -1146,7 +1257,8 @@ def run_unified_analysis(cache_path: Path,
                                   "return": net_returns,
                                   "label": y_test,
                                   "m2_approved": m2_approved,
-                                  "m2_prob": test_probs})
+                                  "m2_prob_raw": test_probs,
+                                  "m2_prob": test_probs_cal})
 
         df_trades    = df_trades.dropna(subset=["return"]).reset_index(drop=True)
         m2_approved  = df_trades["m2_approved"].values
@@ -1412,7 +1524,7 @@ def main():
     parser.add_argument("--config",        type=str, default="config.yaml", help="Path to config.yaml")
     
     # ┏━━━━━━━━━━ Model Selection ━━━━━━━━━━┓
-    parser.add_argument("--model",         type=str, default="rf", choices=MODEL_CHOICES, help="Classifier: 'rf' (Random Forest), 'xgboost' (XGBoost), or 'autogluon' (AutoGluon)")
+    parser.add_argument("--model",         type=str, default="rf", choices=MODEL_CHOICES, help="Classifier: 'rf' (Random Forest), 'xgboost' (XGBoost), 'autogluon' (AutoGluon), 'tabpfn' (TabPFN zero-shot), 'tabpfn_ft' (TabPFN fine-tuned)")
     parser.add_argument("--ag-time-limit", type=int, default=300, help="AutoGluon time limit per fit in seconds (default: 300)")
     parser.add_argument("--ag-presets",    type=str, default="best_quality", choices=["best_quality", "high_quality", "good_quality", "medium_quality"], help="AutoGluon model preset (default: best_quality)")
 

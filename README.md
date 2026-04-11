@@ -76,26 +76,78 @@ flowchart TD
 
 ---
 
+## Core Architecture: Calibration-First
+
+The pipeline follows a strict **Calibration-First** architecture designed to eliminate data leakage and ensure statistical validity in financial meta-labeling.
+
+### 1. The 4-Way Splitting Protocol
+Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to isolate model fitting, probability calibration, and threshold optimization.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
+flowchart LR
+    A[Train Set] -->|Fit Model| B(Base Classifier)
+    B -->|Predict| C[Val-Cal Set]
+    C -->|Calibrate| D(Calibrator)
+    D -->|Predict| E[Val-Opt Set]
+    E -->|Optimize Utility| F(Target Threshold)
+    F -->|Apply| G[Test Set]
+    G -->|Final Stats| H[Performance]
+    classDef split fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
+    class A,C,E,G split;
+```
+
+| Window | Subset | Purpose |
+| --- | --- | --- |
+| **Train** | Training | Fitting the base classifier (RF, XGBoost, or TabPFN). |
+| **Val-Cal** | Calibration | Fitting the probability calibrator (Isotonic Regression or Platt Scaling). |
+| **Val-Opt** | Optimization | Searching for the optimal financial utility threshold (Selective Classification). |
+| **Test** | Evaluation | Final, isolated out-of-sample backtest and performance monitoring. |
+
+### 2. Leakage Elimination & Embargo
+We enforce **Temporal Embargoes** at every boundary. A purge window (based on the forecast horizon) is removed between `Train`, `Val`, and `Test` sets to prevent information leakage from overlapping labels in the financial time series.
+
+---
+
 ## Codebase Description
 
-<p>
-  <img src="https://img.shields.io/badge/Focus-Current%20Code%20Only-0f766e?style=flat-square" alt="Focus Current Code Only" />
-</p>
+## Model Registry: Expanding Beyond Trees
 
-The active `src/` tree is centered on `kronos_tree.py`, which drives the current M2 research workflow for tree-based meta-label filtering on top of Kronos/Fincast signals.
+While the core focus is on tree-based models, the registry has expanded to include cutting-edge Transformer-based architectures.
 
-The latest refactor also split model-definition logic into `Utils/models.py`, so model construction is no longer described as living inside `kronos_tree.py`.
+### TabPFN (Prior-Data Fitted Networks)
+We've integrated **TabPFN**, a state-of-the-art foundation model for tabular data. It uses an In-Context Learning (ICL) approach, where a Transformer is pre-trained on millions of synthetic datasets to perform zero-shot classification on new data in a single forward pass.
+- **Reference**: [PriorLabs/TabPFN](https://github.com/PriorLabs/TabPFN)
+- **Zero-Shot (`tabpfn`)**: Uses the pre-trained prior directly. Extremely fast and robust on small financial datasets.
+- **Fine-Tuned (`tabpfn_ft`)**: Leverages gradient-based fine-tuning on our specific market distributions to sharpen probability calibration.
 
-It supports:
+---
 
-- Random Forest, XGBoost, and AutoGluon classifiers
-- Centralized model construction through `Utils/models.py`
-- Feature diagnostics and ranking
-- Temporal validation and test evaluation
-- Utility-threshold and SAOCP selection
-- Backtests and equity curves
-- Separate-vs-unified (per-gran vs all-grans) comparison tables
-- Practical OCP diagnostics
+## Edge Convergence: The Gate Keeper
+
+Model performance on a single test set is often a "lucky" snapshot. The **Edge Analysis** suite (`Utils/edge.py`) provides a statistically robust protocol to determine if a model is truly ready for deployment.
+
+### The Principle of Convergence
+A model is considered "Converged" only if it passes two independent stress tests:
+1. **Regime Sensitivity (CPCV)**: Does the model hold up when the market regime shifts (e.g., from Bull to Bear)?
+2. **Model Stability (Seeds)**: Is the model's "alpha" stable, or is it just noise from a lucky random seed?
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2563eb', 'primaryBorderColor': '#1d4ed8', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dcfce7', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
+flowchart TD
+    A[Model Config + Cache] --> B{Edge Engine}
+    B --> C[Seed Analysis<br/>100 trials]
+    B --> D[CPCV Analysis<br/>Combinatorial paths]
+    C --> E[Stability Score<br/>40% weight]
+    D --> F[Regime Score<br/>60% weight]
+    E & F --> G[Convergence Score]
+    G --> H{Verdict}
+    H -->|Both Pass| I[GREEN: Deployable]
+    H -->|Gap Detected| J[AMBER: Caution]
+    H -->|Neither| K[RED: Rejected]
+    classDef gate fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
+    class B,H gate;
+```
 
 ---
 
@@ -111,84 +163,54 @@ It supports:
 | Path | Role |
 | --- | --- |
 | `config.yaml` | Main runtime configuration for paths, dates, selected engineered features, forecast horizon, and fees. |
-| `kronos_tree.py` | Main M2 analysis entrypoint and the only primary CLI in this folder; orchestrates training, evaluation, selection, backtesting, and reporting. |
-| `Utils/models.py` | Central model factory for `rf`, `xgboost`, and `autogluon`, including the sklearn-compatible AutoGluon wrapper and model-info export helpers. |
-| `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, and feature plumbing. |
+| `kronos_tree.py` | Main M2 analysis entrypoint; orchestrates 4-way splits, training, evaluation, and selective backtesting. |
+| `Utils/models.py` | Central model factory supporting `rf`, `xgboost`, `autogluon`, and `tabpfn_ft`. Includes model-info export helpers. |
+| `Utils/edge.py` | **The Gate Keeper**: Stability engine (seeds) and regime-sensitivity analysis (CPCV). Computes the final Edge Convergence Score. |
+| `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, and embargo/purge logic. |
 | `Utils/features.py` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
-| `Utils/selective_classification.py` | Risk-coverage utilities, plotting, metrics export, and utility-threshold search. |
-| `Utils/saocp.py` | Online Conformal Prediction (OCP) / Strongly Adaptive Online Conformal Prediction (SAOCP) logic, including delayed-feedback online helpers. |
 | `Utils/backtest.py` | Backtest helpers, equity construction, Sharpe / drawdown, and reporting. |
 | `Utils/comparison.py` | Separate-vs-unified and cross-paradigm comparison builders. |
 | `Utils/ocp_analysis.py` | Practical OCP diagnostics for completed result folders. |
-| `Utils/ocp_theory.py` | OCP theory-oriented experiments kept separate from the main analysis path. |
-| `Data_MLA/` | Kronos-oriented dataset assets, technical indicator computation, and meta-label conversion utilities. |
+| `Utils/saocp.py` | Strongly Adaptive Online Conformal Prediction logic. |
+| `Data_MLA/` | Kronos-oriented dataset assets and technical indicator computation. |
 
 ---
 
 ## Run Guide
 
 <p>
-  <img src="https://img.shields.io/badge/Run%20Modes-Single%20%7C%20Per--Gran%20%7C%20Unified-0f766e?style=flat-square" alt="Run Modes" />
-  <img src="https://img.shields.io/badge/Model%20Choice-rf%20%7C%20xgboost%20%7C%20autogluon-2563eb?style=flat-square" alt="Model Choice" />
-  <img src="https://img.shields.io/badge/Threshold-utility%20or%20OCP-f59e0b?style=flat-square" alt="Threshold" />
+  <img src="https://img.shields.io/badge/Run%20Modes-Per--Gran%20%7C%20Unified-0f766e?style=flat-square" alt="Run Modes" />
+  <img src="https://img.shields.io/badge/Model%20Choice-rf%20%7C%20xgboost%20%7C%20tabpfn_ft-2563eb?style=flat-square" alt="Model Choice" />
+  <img src="https://img.shields.io/badge/Selection-utility%20%7C%20OCP-f59e0b?style=flat-square" alt="Selection" />
 </p>
 
-### Working Directory
+### `kronos_tree.py`: Analysis Pipeline
+The primary analysis orchestrator. All runs now utilize the **Calibration-First** workflow by default.
 
-Run the commands below from:
+| Command | Goal |
+| --- | --- |
+| `python kronos_tree.py --per-gran` | Train one model per granularity from a multi-gran cache. |
+| `python kronos_tree.py --all-grans` | Train one unified model across all granularities. |
+| `python kronos_tree.py --model tabpfn_ft` | Run the fine-tuned TabPFN foundation model. |
+| `python kronos_tree.py --per-gran --model rf --thres utility` | RF with Selective Classification (Utility thresholding). |
 
+### `Utils/edge.py`: Convergence Protocol
+The final check before model deployment. Runs combinatorial stress tests.
+
+| Mode | Command | What it does |
+| --- | --- | --- |
+| **Seeds** | `--mode seeds --trials 100` | Checks model stability across 100 random seeds. |
+| **CPCV** | `--mode cpcv --n-blocks 6` | Checks regime sensitivity via Combinatorial Purged CV. |
+| **Convergence** | `--convergence` | Computes the weighted (60/40) Gate-Keeper convergence score. |
+
+#### Example Convergence Chain:
 ```bash
-cd /home/pablo/M2_DS/Secondary-Model/src
+python Utils/edge.py --cache your_cache.pt --mode seeds --model randforest --trials 100
+python Utils/edge.py --cache your_cache.pt --mode cpcv --model randforest --n-blocks 6
+python Utils/edge.py --cache your_cache.pt --convergence --model randforest
 ```
 
-### `kronos_tree.py`: Main CLI
-
-`kronos_tree.py` is the real entrypoint. It has four mutually exclusive modes:
-
-| Mode | Command shape | What it does |
-| --- | --- | --- |
-| single-granularity | `python kronos_tree.py [flags]` | Uses a single-granularity config or cache. |
-| per-granularity | `python kronos_tree.py --per-gran [flags]` | Trains one model per granularity from a multi-gran cache. |
-| unified | `python kronos_tree.py --all-grans [flags]` | Trains one unified model across all granularities, then reports per granularity. |
-| comparison-only | `python kronos_tree.py --comparison ...` or `--paradigm-comparison ...` | Builds comparison artifacts from already completed result folders. |
-
-### `kronos_tree.py`: Command Cookbook
-
-The current `config.yaml` uses `granularity: "all"`, so the normal choices for this repository right now are `--per-gran` and `--all-grans`.
-
-| Use case | Command |
-| --- | --- |
-| Show the full CLI help | `python kronos_tree.py --help` |
-| Single-granularity run with a single-gran config | `python kronos_tree.py --config your_single_gran_config.yaml` |
-| Per-granularity run using the current config | `python kronos_tree.py --config config.yaml --per-gran` |
-| Unified multi-granularity run using the current config | `python kronos_tree.py --config config.yaml --all-grans` |
-| Per-granularity run with an explicit cache | `python kronos_tree.py --config config.yaml --per-gran --cache Output/Kronos/cache/your_multi_cache.pt` |
-| Unified run with an explicit cache | `python kronos_tree.py --config config.yaml --all-grans --cache Output/Kronos/cache/your_multi_cache.pt` |
-| Per-granularity Random Forest with utility threshold | `python kronos_tree.py --config config.yaml --per-gran --model rf --thres utility` |
-| Per-granularity Random Forest with SAOCP | `python kronos_tree.py --config config.yaml --per-gran --model rf --thres OCP --ocp-alpha 0.10` |
-| Unified XGBoost run | `python kronos_tree.py --config config.yaml --all-grans --model xgboost --thres utility` |
-| Unified AutoGluon run | `python kronos_tree.py --config config.yaml --all-grans --model autogluon --ag-time-limit 900 --ag-presets high_quality` |
-| Disable feature analysis completely | `python kronos_tree.py --config config.yaml --per-gran --features false --top5 false` |
-| Build separate-vs-unified comparison tables | `python kronos_tree.py --comparison Output/Kronos/randforest Output/Kronos/randforest/unified_down_tp` |
-| Build cross-paradigm comparison tables | `python kronos_tree.py --paradigm-comparison Output/Kronos/randforest Output/Kronos/xgboost Output/Kronos/autogluon` |
-
-### `kronos_tree.py`: Flag Reference
-
-| Flag | Values | Meaning |
-| --- | --- | --- |
-| `--cache` | path to `.pt` | Use an explicit dataset cache instead of resolving it only from `config.yaml`. |
-| `--config` | path to YAML | Config file path. Default: `config.yaml`. |
-| `--model` | `rf`, `xgboost`, `autogluon` | Selects the classifier family. |
-| `--ag-time-limit` | integer seconds | AutoGluon fit time limit per training call. |
-| `--ag-presets` | `best_quality`, `high_quality`, `good_quality`, `medium_quality` | AutoGluon preset bundle. |
-| `--per-gran` | flag | Train one model per granularity. |
-| `--all-grans` | flag | Train one model on all granularities together. |
-| `--comparison` | `PER_GRAN_DIR UNIFIED_DIR` | Build comparison outputs from two finished result directories. |
-| `--paradigm-comparison` | `DIR DIR ...` | Compare two or more completed paradigms side by side. |
-| `--thres` | `utility`, `OCP` | Use validation-set utility thresholding or SAOCP. |
-| `--ocp-alpha` | float | Target miscoverage for OCP. `0.10` means a nominal 90% coverage target. |
-| `--top5` | `true`, `false` | Whether to run top-5 feature analysis and top-5 backtests. |
-| `--features` | `true`, `false` | Whether to run feature analysis at all. |
+---
 
 Important constraint:
 
