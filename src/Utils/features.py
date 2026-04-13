@@ -7,6 +7,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -179,10 +180,7 @@ def plot_mutual_information(df: pd.DataFrame, labels: np.ndarray, save_dir: Path
         mi = mutual_info_classif(X, labels, discrete_features=False, random_state=42, n_neighbors=5)
 
     # ┏━━━━━━━━━━ Sort Results ━━━━━━━━━━┓
-    mi_df = pd.DataFrame({"feature": df.columns, "mutual_info": mi}).sort_values(
-        "mutual_info",
-        ascending=True,
-    )
+    mi_df = pd.DataFrame({"feature": df.columns, "mutual_info": mi}).sort_values("mutual_info", ascending=True)
 
     # ┏━━━━━━━━━━ Plot Bar Chart ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(8, max(5, len(mi_df) * 0.35)))
@@ -212,8 +210,8 @@ def plot_tree_importance(df:           pd.DataFrame,
                          file_prefix:  str = "5_feature_importance",
                          class_names:  list = None,
                          meta_mode:    str = "tp",
-                         model_builder = None,
-                         model_labeler = None):
+                         model_builder     = None,
+                         model_labeler     = None):
     """Returns ({feature: importance}, cv_metrics)."""
     # ┏━━━━━━━━━━ Build Model ━━━━━━━━━━┓
     if model_builder is None:
@@ -238,10 +236,7 @@ def plot_tree_importance(df:           pd.DataFrame,
     importances = model.feature_importances_
 
     # ┏━━━━━━━━━━ Sort Results ━━━━━━━━━━┓
-    imp_df = pd.DataFrame({"feature": df.columns, "importance": importances}).sort_values(
-        "importance",
-        ascending=True,
-    )
+    imp_df = pd.DataFrame({"feature": df.columns, "importance": importances}).sort_values("importance", ascending=True)
 
     # ┏━━━━━━━━━━ Plot Bar Chart ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(8, max(5, len(imp_df) * 0.35)))
@@ -433,18 +428,21 @@ def plot_class_distribution(dataset: Dict[str, torch.Tensor],
                   '1': '#4CAF50', '0': '#F44336',
                   'NaN': '#9E9E9E'}
     
+    # ┏━━━━━━━━━━ Iterate Over Splits ━━━━━━━━━━┓
     for ax, split_name, counts_dict in zip(axes, splits, all_counts):
         total = sum(v for k, v in counts_dict.items() if k != 'NaN') + counts_dict['NaN']
         
-        # Determine categories present
+        # ┏━━━━━━━━━━ Determine categories present ━━━━━━━━━━┓
         if 'UP' in counts_dict:
             categories = ['UP', 'FLAT', 'DN', 'NaN']
         else:
             categories = [c for c in counts_dict.keys() if c != 'NaN'] + ['NaN']
-            
+        
+        # ┏━━━━━━━━━━ Get values and colors ━━━━━━━━━━┓
         values = [counts_dict.get(c, 0) for c in categories]
         bar_colors = [colors_map.get(c, '#9E9E9E') for c in categories]
         
+        # ┏━━━━━━━━━━ Plot bars ━━━━━━━━━━┓
         bars = ax.bar(categories, values, color=bar_colors)
         ax.set_title(f'{split_name}')
         ax.set_ylabel('Count')
