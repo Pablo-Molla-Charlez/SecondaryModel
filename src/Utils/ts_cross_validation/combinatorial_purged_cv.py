@@ -53,54 +53,90 @@ class CombinatorialPurgedCV(BaseTimeSeriesCV):
             y: Optional[np.ndarray] = None,
             groups=None
     ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
-
+        
         n_samples = len(X)
         indices = np.arange(n_samples)
-
+        
         if isinstance(X, pd.DataFrame):
             time_index = X.index
         else:
-            # fallback: assume integer time
             time_index = pd.RangeIndex(start=0, stop=n_samples)
-
+        
         if not self.t1.index.equals(time_index):
             raise ValueError("t1 index must align with X index")
-
+        
         groups = np.array_split(indices, self.n_splits)
-
         embargo_size = int(n_samples * self.embargo_pct)
-
+        
         for test_group_ids in combinations(range(self.n_splits), self.n_test_splits):
-
-            test_idx = np.concatenate([groups[i] for i in test_group_ids])
-            test_idx = np.sort(test_idx)
-
+            
+            test_group_ids = sorted(test_group_ids)
+            test_idx = np.sort(np.concatenate([groups[i] for i in test_group_ids]))
             test_times = time_index[test_idx]
-
+            
             train_mask = np.ones(n_samples, dtype=bool)
-
-            # --- remove test samples ---
             train_mask[test_idx] = False
-
-            test_start_time = test_times[0]
-            test_end_time = test_times[-1]
-
-            overlap = (self.t1 >= test_start_time) & (time_index <= test_end_time)
-            train_mask[overlap.values] = False
-
+            
+            # Purge: per test block, remove training samples whose t1 overlaps that block
+            for gid in test_group_ids:
+                block_start_time = time_index[groups[gid][0]]
+                block_end_time = time_index[groups[gid][-1]]
+                overlap = (self.t1 >= block_start_time) & (time_index <= block_end_time)
+                train_mask[overlap.values] = False
+            
+            # Embargo: apply after each test block's trailing edge
             if embargo_size > 0:
                 embargo_mask = np.zeros(n_samples, dtype=bool)
-
-                for idx in test_idx:
-                    embargo_start = idx + 1
+                for gid in test_group_ids:
+                    embargo_start = groups[gid][-1] + 1
                     embargo_end = min(n_samples, embargo_start + embargo_size)
                     embargo_mask[embargo_start:embargo_end] = True
-
                 train_mask[embargo_mask] = False
-
+            
             train_idx = indices[train_mask]
-
+            
             if len(train_idx) == 0 or len(test_idx) == 0:
                 continue
-
+            
             yield train_idx, test_idx
+    
+    # def split(
+    #     self,
+    #     X: Union[np.ndarray, pd.DataFrame],
+    #     y: Optional[np.ndarray] = None,
+    #     groups=None
+    # ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+    #     """
+    #     Generate train/test splits as indices.
+    #
+    #     Yields
+    #     ------
+    #     train_idx : np.ndarray
+    #     test_idx : np.ndarray
+    #     """
+    #     for test_blocks in combinations(range(self.n_blocks), self.k_test):
+    #         test_set = set(test_blocks)
+    #         train_blocks = [b for b in range(self.n_blocks) if b not in test_set]
+    #
+    #         idx_test = np.where(np.isin(self.block_ids, list(test_blocks)))[0]
+    #         idx_train_raw = np.where(np.isin(self.block_ids, train_blocks))[0]
+    #         if len(idx_test) == 0 or len(idx_train_raw) == 0:
+    #             continue
+    #
+    #         test_boundaries = [self.boundaries[tb] for tb in test_blocks]
+    #         purged_mask = np.zeros(len(self.dates_arr), dtype=bool)
+    #         for tb_start, tb_end in test_boundaries:
+    #             for i in idx_train_raw:
+    #                 t = self.dates_arr[i]
+    #                 if (tb_start - self.purge_td) <= t < tb_start:
+    #                     purged_mask[i] = True
+    #                 elif tb_end < t <= (tb_end + self.purge_td):
+    #                     purged_mask[i] = True
+    #
+    #         idx_train = np.array([i for i in idx_train_raw if not purged_mask[i]])
+    #
+    #         # NOTE prevent empty splits!
+    #         if len(idx_train) == 0 or len(idx_test) == 0:
+    #             continue
+    #
+    #         yield idx_train, idx_test

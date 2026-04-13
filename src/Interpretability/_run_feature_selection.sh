@@ -6,7 +6,7 @@ for gran in "${grans[@]}"; do
   for m1 in "${m1s[@]}"; do
     for direction in "${directions[@]}"; do
       python feature_selection.py \
-              --output_root "/home/till/PycharmProjects/Secondary-Model/src/Output" \
+              --output_root "/Volumes/Data/other/2026_NII/Output" \
               --m1 $m1 \
               --gran $gran \
               --direction $direction \
