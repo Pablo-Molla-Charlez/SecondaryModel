@@ -1,21 +1,20 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Kronos Tree Configuration
+# Kronos Tree Configuration — FinCast M1
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
-# TODO make dynamic so its not causing merge conflicts
 paths:
-  csv_dir: "/Volumes/Data/other/2026_NII/Data_MLA/Fincast/Crypto/TP/horizon_7"
-  output_root: "/Volumes/Data/other/2026_NII/Output"
+  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
+  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
   load:
     symbol:          null          # or null for multi-asset or ["BTC", "ETH", "XRP", ...]
-    m1:              "fincast"      # M1 Meta-Labels Model (kronos or fincast)
+    m1:              "fincast"     # M1 Meta-Labels Model (kronos or fincast)
     target_col:      "meta_label"  # "meta_label" or "close" or "ground_truth"
     meta_label_mode: "tp"          # "fp" or "tp" or "og"
-    direction:       "up"        # "up" or "down"
+    direction:       "up"          # "up" or "down"
     granularity:     "all"         # "1d", "4h", etc. or "all" for multi-granularity
     forecast_horizon: 7
 
@@ -37,7 +36,7 @@ data:
 
     # ┏━━━━━━━━━━ Feature Selection (MDA / SHAP / LIME) ━━━━━━━━━━┓
     feature_selection:
-      enabled: false                    # set to false to skip MDA/SHAP/LIME
+      enabled: true                    # set to false to skip MDA/SHAP/LIME
       methods: ["mda", "shap", "lime"] # any subset of: mda, shap, lime
       top_k: null                      # null = rank only (no pruning), int = keep top-k
 

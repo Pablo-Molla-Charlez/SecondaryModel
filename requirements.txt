@@ -37,3 +37,7 @@ online_conformal
 # Feature selection (MDA/SHAP/LIME ranking)
 shap
 lime
+
+# TabPFN
+tabpfn
+tabpfn-client
