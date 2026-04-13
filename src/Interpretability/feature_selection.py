@@ -83,23 +83,38 @@ def do_sfs(clf,
         cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, t1=t1, embargo_pct=0.05,
                                    random_state=42)
         # debugging(cv, X_analysis, y_analysis)
-        sfs = SequentialFeatureSelector(clone(clf), n_features_to_select=n_features, direction=direction,
-                                        scoring=scorer, cv=cv, n_jobs=n_jobs)
-        sfs.fit(X_analysis, y_analysis)
+        if n_features == X_analysis.shape[1]:
+            # recalculate scoring
+            selected_features = [True for _ in range(X_analysis.shape[1])]
+            scores = cross_validate(
+                clone(clf),
+                X_analysis.iloc[:, selected_features],
+                y_analysis,
+                cv=cv,
+                scoring=scorer,
+                return_train_score=True,
+                n_jobs=n_jobs,
+            )
+            ret_dict["feature_set"].append(list(X_analysis.columns))
+            ret_dict["evaluation"].append(scores)
+        else:
+            sfs = SequentialFeatureSelector(clone(clf), n_features_to_select=n_features, direction=direction,
+                                            scoring=scorer, cv=cv, n_jobs=n_jobs)
+            sfs.fit(X_analysis, y_analysis)
 
-        # recalculate scoring
-        selected_features = sfs.get_support(indices=True)
-        scores = cross_validate(
-            clone(clf),
-            X_analysis.iloc[:, selected_features],
-            y_analysis,
-            cv=cv,
-            scoring=scorer,
-            return_train_score=True,
-            n_jobs=n_jobs,
-        )
-        ret_dict["feature_set"].append(sfs.get_feature_names_out())
-        ret_dict["evaluation"].append(scores)
+            # recalculate scoring
+            selected_features = sfs.get_support(indices=True)
+            scores = cross_validate(
+                clone(clf),
+                X_analysis.iloc[:, selected_features],
+                y_analysis,
+                cv=cv,
+                scoring=scorer,
+                return_train_score=True,
+                n_jobs=n_jobs,
+            )
+            ret_dict["feature_set"].append(sfs.get_feature_names_out())
+            ret_dict["evaluation"].append(scores)
 
         # get test score
         clf_fitted = clone(clf).fit(X_analysis.iloc[:, selected_features], y_analysis)
@@ -151,23 +166,38 @@ def do_rfecv(clf,
         cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, t1=t1, embargo_pct=0.05,
                                    random_state=42)
         # debugging(cv, X_analysis, y_analysis)
-        rfecv = RFECV(clone(clf), min_features_to_select=n_features,
-                                        scoring=scorer, cv=cv, n_jobs=n_jobs)
-        rfecv.fit(X_analysis, y_analysis)
+        if n_features == X_analysis.shape[1]:
+            # recalculate scoring
+            selected_features = [True for _ in range(X_analysis.shape[1])]
+            scores = cross_validate(
+                clone(clf),
+                X_analysis.iloc[:, selected_features],
+                y_analysis,
+                cv=cv,
+                scoring=scorer,
+                return_train_score=True,
+                n_jobs=n_jobs,
+            )
+            ret_dict["feature_set"].append(list(X_analysis.columns))
+            ret_dict["evaluation"].append(scores)
+        else:
+            rfecv = RFECV(clone(clf), min_features_to_select=n_features,
+                                            scoring=scorer, cv=cv, n_jobs=n_jobs)
+            rfecv.fit(X_analysis, y_analysis)
 
-        # recalculate scoring
-        selected_features = rfecv.get_support(indices=True)
-        scores = cross_validate(
-            clone(clf),
-            X_analysis.iloc[:, selected_features],
-            y_analysis,
-            cv=cv,
-            scoring=scorer,
-            return_train_score=True,
-            n_jobs=n_jobs,
-        )
-        ret_dict["feature_set"].append(rfecv.get_feature_names_out())
-        ret_dict["evaluation"].append(scores)
+            # recalculate scoring
+            selected_features = rfecv.get_support(indices=True)
+            scores = cross_validate(
+                clone(clf),
+                X_analysis.iloc[:, selected_features],
+                y_analysis,
+                cv=cv,
+                scoring=scorer,
+                return_train_score=True,
+                n_jobs=n_jobs,
+            )
+            ret_dict["feature_set"].append(rfecv.get_feature_names_out())
+            ret_dict["evaluation"].append(scores)
 
         # get test score
         clf_fitted = clone(clf).fit(X_analysis.iloc[:, selected_features], y_analysis)
