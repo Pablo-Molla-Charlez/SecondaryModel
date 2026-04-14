@@ -33,14 +33,14 @@ from sklearn.preprocessing import StandardScaler
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ┏━━━━━━━━━━ Pipeline Data Preprocessing ━━━━━━━━━━┓
-from Utils.data_preprocessing import (ENG_FEATURE_NAMES, 
-                                      ENG_FEATURE_GROUPS, 
-                                      resolve_feature_names,
-                                      split_by_global_time, 
-                                      load_dataset_from_config,
-                                      prepare_multi_asset_dataset, 
-                                      prepare_multi_gran_dataset,
-                                      GRAN_SEQ_LEN)
+from Utils.data import (ENG_FEATURE_NAMES,
+                        ENG_FEATURE_GROUPS,
+                        resolve_feature_names,
+                        split_by_global_time,
+                        load_dataset_from_config,
+                        prepare_multi_asset_dataset,
+                        prepare_multi_gran_dataset,
+                        GRAN_SEQ_LEN)
 
 # ┏━━━━━━━━━━ Financial Backtesting ━━━━━━━━━━┓
 from Utils.backtest import (_annualization_factor,
@@ -53,30 +53,30 @@ from Utils.backtest import (_annualization_factor,
                             run_combined_backtest)
 
 # ┏━━━━━━━━━━ Comparison of results between models and granularities ━━━━━━━━━━┓
-from Utils.comparison import (GRAN_ORDER, 
-                              run_comparison, 
-                              run_paradigm_comparison)
+from Utils.backtest import (GRAN_ORDER,
+                            run_comparison,
+                            run_paradigm_comparison)
 
 # ┏━━━━━━━━━━ Feature analysis ━━━━━━━━━━┓
-from Utils.features import (_plot_prob_distribution,
-                            plot_class_distributions,
-                            plot_correlation_heatmap,
-                            plot_mutual_information,
-                            plot_confusion_matrix,
-                            plot_ocp_threshold_evolution,
-                            plot_pointbiserial,
-                            plot_temporal_risk_coverage_curve,
-                            plot_tree_importance,
-                            compute_top_features,
-                            run_feature_selection,
-                            plot_selective_return_distribution)
+from Utils.feature_selection import (_plot_prob_distribution,
+                                     plot_class_distributions,
+                                     plot_correlation_heatmap,
+                                     plot_mutual_information,
+                                     plot_confusion_matrix,
+                                     plot_ocp_threshold_evolution,
+                                     plot_pointbiserial,
+                                     plot_temporal_risk_coverage_curve,
+                                     plot_tree_importance,
+                                     compute_top_features,
+                                     run_feature_selection,
+                                     plot_selective_return_distribution)
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
-from Utils.saocp import (_ocp_threshold_to_op,
-                         _run_saocp_online,
-                         _run_cost_deferral_online,
-                         calib_window_for_gran,
-                         plot_mondrian_diagnostics)
+from Utils.ocp import (_ocp_threshold_to_op,
+                       _run_saocp_online,
+                       _run_cost_deferral_online,
+                       calib_window_for_gran,
+                       plot_mondrian_diagnostics)
 
 # ┏━━━━━━━━━━ Utility-based Selective Classification [risk-coverage analysis] ━━━━━━━━━━┓   
 from Utils.selective_classification import (_find_best_utility_threshold,
@@ -96,11 +96,11 @@ from Utils.utils import (NumpyJSONEncoder,
                          _infer_direction,
                          _load_multi_cache)
 # ┏━━━━━━━━━━ Models ━━━━━━━━━━┓
-from Utils.models import (MODEL_CHOICES,
-                          MODELS_NO_SCALING,
-                          _AG_TIME_LIMIT,
-                          _AG_PRESETS,
-                          _build_tree_model)
+from Utils.classifier import (MODEL_CHOICES,
+                              MODELS_NO_SCALING,
+                              _build_tree_model)
+from Utils.classifier.factory import (_AG_TIME_LIMIT,
+                                      _AG_PRESETS)
 
 
 def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
@@ -927,6 +927,9 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     with open(save_dir / "analysis_summary.json", "w") as f:
         json.dump(summary, f, indent=2, cls=NumpyJSONEncoder)
+        
+    # TODO save model -- currently only the unified M2 is saved
+    
 
     print(f"\nDone ({direction}). Outputs in: {save_dir}")
 

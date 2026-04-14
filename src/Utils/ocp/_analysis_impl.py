@@ -39,7 +39,7 @@ import torch
 # ---------------------------------------------------------------------------
 # SAOCP re-run — canonical implementation lives in Utils.saocp
 # ---------------------------------------------------------------------------
-from Utils.saocp import _ocp_conformity_score, _run_saocp_online  # noqa: F401
+from Utils.ocp.saocp import _ocp_conformity_score, _run_saocp_online  # noqa: F401
 
 
 def _run_saocp(val_probs, val_labels, test_probs, test_labels, alpha=0.10,

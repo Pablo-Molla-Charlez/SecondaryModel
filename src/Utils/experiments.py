@@ -128,7 +128,7 @@ def run_experiments(config: str,
 
                 # ┏━━━━━━━━━━ Seeds ━━━━━━━━━━┓
                 label = f"Edge Seeds {model.upper()} {direction.upper()}"
-                cmd = [python, "Utils/edge.py",
+                cmd = [python, "-m", "Utils.edge",
                        "--config", cfg_path,
                        "--cache", cache,
                        "--mode", "seeds",
@@ -139,7 +139,7 @@ def run_experiments(config: str,
 
                 # ┏━━━━━━━━━━ CPCV ━━━━━━━━━━┓
                 label = f"Edge CPCV {model.upper()} {direction.upper()}"
-                cmd = [python, "Utils/edge.py",
+                cmd = [python, "-m", "Utils.edge",
                        "--config", cfg_path,
                        "--cache", cache,
                        "--mode", "cpcv",
@@ -151,7 +151,7 @@ def run_experiments(config: str,
 
                 # ┏━━━━━━━━━━ Convergence score ━━━━━━━━━━┓
                 label = f"Edge Convergence {model.upper()} {direction.upper()}"
-                cmd = [python, "Utils/edge.py",
+                cmd = [python, "-m", "Utils.edge",
                        "--config", cfg_path,
                        "--cache", cache,
                        "--convergence",

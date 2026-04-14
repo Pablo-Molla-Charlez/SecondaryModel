@@ -2,9 +2,9 @@
 """
 OCP Theoretical Experiments
 ===========================
-DEPRECATED: kept separate from `ocp_analysis.py` because the delayed-feedback
-setting breaks the intended coverage-theory story for the current M2 pipeline.
-Use `Utils/ocp_analysis.py` for practical diagnostics.
+DEPRECATED: kept separate from `ocp/_analysis_impl.py` because the delayed-
+feedback setting breaks the intended coverage-theory story for the current M2
+pipeline. Use `python -m Utils.ocp.analysis` for practical diagnostics.
 
 Empirical experiments to support the model-aware precision bound:
 
@@ -29,12 +29,12 @@ Experiments:
      the bi-normal assumption needed for the model-aware bound.
 
 Usage:
-  python Utils/ocp_theory.py --cache Output/Kronos/cache/multi_7_fee_up_*.pt \\
+  python -m Utils.ocp.theory --cache Output/Kronos/cache/multi_7_fee_up_*.pt \\
                               --cache Output/Kronos/cache/multi_7_fee_down_*.pt \\
                               [--grans 1d,6h] [--experiments A,B,C,D,E]
 
   # Run all experiments on all granularities for both directions:
-  python Utils/ocp_theory.py --cache Output/Kronos/cache/multi_7_fee_up_*.pt \\
+  python -m Utils.ocp.theory --cache Output/Kronos/cache/multi_7_fee_up_*.pt \\
                               --cache Output/Kronos/cache/multi_7_fee_down_*.pt
 """
 
@@ -59,7 +59,7 @@ from sklearn.preprocessing import StandardScaler
 
 # -- project imports -----------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from Utils.data_preprocessing import ENG_FEATURE_NAMES, split_by_global_time
+from Utils.data import ENG_FEATURE_NAMES, split_by_global_time
 from Utils.utils import _safe_json, _load_config, _infer_direction, _load_multi_cache
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -124,7 +124,7 @@ def _extract_split_data(dataset, train_end, val_end, direction, fee=0.002,
 
 
 # -- SAOCP: canonical implementation in Utils.saocp --------------------------
-from Utils.saocp import _ocp_conformity_score, _run_saocp_online  # noqa: F401
+from Utils.ocp.saocp import _ocp_conformity_score, _run_saocp_online  # noqa: F401
 
 
 def _run_saocp(val_probs, val_labels, test_probs, test_labels, alpha=0.10,

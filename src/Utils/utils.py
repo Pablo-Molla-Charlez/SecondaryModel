@@ -9,10 +9,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Any, Dict, Optional
-from Utils.data_preprocessing import (load_dataset_from_config, 
-                                      prepare_multi_gran_dataset, 
-                                      prepare_multi_asset_dataset, 
-                                      GRAN_SEQ_LEN)
+from Utils.data import (load_dataset_from_config,
+                        prepare_multi_gran_dataset,
+                        prepare_multi_asset_dataset,
+                        GRAN_SEQ_LEN)
 
 # ┏━━━━━━━━━━ Model Label ━━━━━━━━━━┓
 def model_label(model_name: str) -> str:
@@ -75,7 +75,6 @@ def _safe_json(v):
         return str(v)
 
 
-
 # ┏━━━━━━━━━━ Reproducibility ━━━━━━━━━━┓
 def seed_everything(seed: int):
     """Set all random seeds for reproducibility."""
@@ -97,9 +96,36 @@ def get_device() -> torch.device:
 
 
 # ┏━━━━━━━━━━ Config & Cache Helpers ━━━━━━━━━━┓
+def _expand_env_vars(obj):
+    """Recursively expand $VAR / ${VAR} in all string values of a config dict."""
+    import os
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(v) for v in obj]
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    return obj
+
+
 def _load_config(cfg_path: str = "config.yaml") -> dict:
+    import os
+    import yaml
+
+    # ┏━━━━━━━━━━ Determine M1 contexts BEFORE expansion ━━━━━━━━━━┓
+    # Set global defaults if not provided in env
+    os.environ.setdefault("M1_MODEL", "kronos")
+
+    # If M1_MODEL is provided in env, make sure M1_DIR is also set (capitalised)
+    # so the YAML path expansion ${M1_DIR} works automatically.
+    m1_model = os.environ.get("M1_MODEL")
+    if m1_model:
+        os.environ.setdefault("M1_DIR", m1_model.capitalize())
+
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
+
+    cfg = _expand_env_vars(cfg)
         
     # ┏━━━━━━━━━━ Validation: Ensure m1 matches csv_dir ━━━━━━━━━━┓
     m1_val = str(cfg.get("data", {}).get("load", {}).get("m1", "kronos")).strip().lower()
@@ -107,10 +133,12 @@ def _load_config(cfg_path: str = "config.yaml") -> dict:
     csv_dir = str(csv_dir_raw).lower()
     
     if m1_val not in csv_dir:
-        raise ValueError(f"\n\n[CONFIG ERROR] Mismatch between 'm1' model and 'csv_dir' in {cfg_path}!\n"
-                         f"  m1 is set to:      '{m1_val}'\n"
-                         f"  csv_dir points to: '{csv_dir_raw}'\n"
-                         f"Please ensure the 'm1' value matches the dataset in 'csv_dir' to avoid mixing data.\n")
+        # Special case: allow 'all' or if the path actually contains the model name
+        if not ("data_mla" in csv_dir and m1_val in csv_dir):
+            raise ValueError(f"\n\n[CONFIG ERROR] Mismatch between 'm1' model and 'csv_dir' in {cfg_path}!\n"
+                             f"  m1 is set to:      '{m1_val}'\n"
+                             f"  csv_dir points to: '{csv_dir_raw}'\n"
+                             f"Please ensure the 'm1' value matches the dataset in 'csv_dir' to avoid mixing data.\n")
         
     return cfg
 
@@ -130,20 +158,15 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     direction        = load_cfg.get("direction", "up")
     forecast_horizon = load_cfg.get("forecast_horizon", 7)
     is_multi_gran    = (granularity == "all")
-    seq_len          = GRAN_SEQ_LEN.get(granularity, split_cfg.get("context_length", 48))
-
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
-    data_signature = {
-        "granularity":      load_cfg.get("granularity"),
-        "meta_label_mode":  load_cfg.get("meta_label_mode"),
-        "direction":        direction,
-        "start_date":       split_cfg.get("start_date"),
-        "end_date":         split_cfg.get("end_date"),
-        "context_length":   seq_len,
-        "forecast_horizon": forecast_horizon,
-        "features":         feat_cfg,
-        "data_root":        str(Path(cfg.get("paths", {}).get("csv_dir", ".")).parent),
-    }
+    data_signature = {"granularity":      load_cfg.get("granularity"),
+                      "meta_label_mode":  load_cfg.get("meta_label_mode"),
+                      "direction":        direction,
+                      "start_date":       split_cfg.get("start_date"),
+                      "end_date":         split_cfg.get("end_date"),
+                      "forecast_horizon": forecast_horizon,
+                      "features":         feat_cfg,
+                      "data_root":        str(Path(cfg.get("paths", {}).get("csv_dir", ".")).parent)}
 
     # ┏━━━━━━━━━━ Dump hash ━━━━━━━━━━┓
     cfg_str  = json.dumps(data_signature, sort_keys=True)
@@ -175,10 +198,10 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     # ┏━━━━━━━━━━ Prepare dataset ━━━━━━━━━━┓
     if is_multi_gran:
         dataset = prepare_multi_gran_dataset(raw_df,
-                                            column_features  = column_features,
-                                            target_col       = load_cfg.get("target_col", "ground_truth"),
-                                            forecast_horizon = forecast_horizon,
-                                            cfg              = cfg)
+                                             column_features  = column_features,
+                                             target_col       = load_cfg.get("target_col", "ground_truth"),
+                                             forecast_horizon = forecast_horizon,
+                                             cfg              = cfg)
     else:
         dataset = prepare_multi_asset_dataset(raw_df,
                                               seq_len          = seq_len,

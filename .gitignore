@@ -25,3 +25,19 @@ src/Data_MLA/Fincast/Stocks/*
 src/Data_MLA/Fincast/Commodities/*
 !src/Data_MLA/Fincast/Commodities/.gitkeep
 
+src/Data_MLA/Tirex/Crypto/*
+!src/Data_MLA/Tirex/Crypto/.gitkeep
+src/Data_MLA/Tirex/Stocks/*
+!src/Data_MLA/Tirex/Stocks/.gitkeep
+src/Data_MLA/Tirex/Commodities/*
+!src/Data_MLA/Tirex/Commodities/.gitkeep
+
+src/Data_MLA/Chronos2/Crypto/*
+!src/Data_MLA/Chronos2/Crypto/.gitkeep
+src/Data_MLA/Chronos2/Stocks/*
+!src/Data_MLA/Chronos2/Stocks/.gitkeep
+src/Data_MLA/Chronos2/Commodities/*
+!src/Data_MLA/Chronos2/Commodities/.gitkeep
+
+# IDE specific files
+.idea
