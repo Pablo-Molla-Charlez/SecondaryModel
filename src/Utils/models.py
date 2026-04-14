@@ -9,11 +9,11 @@ from xgboost import XGBClassifier
 from Utils.utils import _safe_json
 
 # ┏━━━━━━━━━━ Model choices ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft")
+MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
 
 # ┏━━━━━━━━━━ TabPFN Parameters ━━━━━━━━━━┓
 # Models that must NOT receive StandardScaler-transformed data
-MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft"}
+MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl"}
 
 # Max training rows TabPFN handles comfortably (soft limit — we warn, not crash)
 _TABPFN_MAX_ROWS = 50_000
@@ -147,20 +147,24 @@ class _TabPFNWrapper:
     """
 
     def __init__(self,
-                 device:                str   = "auto",
-                 n_estimators:          int   = 16,
-                 softmax_temperature:   float = 0.9,
-                 balance_probabilities: bool  = False,
-                 fit_mode:              str   = "fit_preprocessors",
-                 random_state:          int   = 42):
-        self.device                = device
-        self.n_estimators          = n_estimators          # higher = better, costs linear RAM
-        self.softmax_temperature   = softmax_temperature   # <1 sharpens, >1 smooths predictions
-        self.balance_probabilities = balance_probabilities  # True corrects for class imbalance in prior
-        self.fit_mode              = fit_mode               # "fit_preprocessors" is the default; "fit_with_cache" not yet supported in v2.6
-        self.random_state          = random_state
-        self._clf                  = None
-        self.classes_              = None
+                 device:                 str   = "auto",
+                 n_estimators:           int   = 16,
+                 softmax_temperature:    float = 0.9,
+                 balance_probabilities:  bool  = False,
+                 average_before_softmax: bool  = False,
+                 fit_mode:               str   = "fit_preprocessors",
+                 inference_config:       dict | None = None,
+                 random_state:           int   = 42):
+        self.device                 = device
+        self.n_estimators           = n_estimators           # higher = better, costs linear RAM
+        self.softmax_temperature    = softmax_temperature    # <1 sharpens, >1 smooths predictions
+        self.balance_probabilities  = balance_probabilities  # True corrects for class imbalance in prior
+        self.average_before_softmax = average_before_softmax # ensemble averaging mode (logits vs probs)
+        self.fit_mode               = fit_mode               # "fit_preprocessors" is the default; "fit_with_cache" not yet supported in v2.6
+        self.inference_config       = inference_config       # dict of preprocessing knobs (PREPROCESS_TRANSFORMS, OUTLIER_REMOVAL_STD, ...)
+        self.random_state           = random_state
+        self._clf                   = None
+        self.classes_               = None
 
     # ┏━━━━━━━━━━ fit ━━━━━━━━━━┓
     def fit(self, X, y, sample_weight=None):
@@ -183,12 +187,16 @@ class _TabPFNWrapper:
         self.classes_ = np.unique(y)
 
         # ┏━━━━━━━━━━ Initialize TabPFNClassifier (local weights, downloaded once) ━━━━━━━━━━┓
-        self._clf = TabPFNClassifier(n_estimators          = self.n_estimators,
-                                     softmax_temperature   = self.softmax_temperature,
-                                     balance_probabilities = self.balance_probabilities,
-                                     fit_mode              = self.fit_mode,
-                                     device                = self.device,
-                                     random_state          = self.random_state)
+        clf_kwargs = dict(n_estimators           = self.n_estimators,
+                          softmax_temperature    = self.softmax_temperature,
+                          balance_probabilities  = self.balance_probabilities,
+                          average_before_softmax = self.average_before_softmax,
+                          fit_mode               = self.fit_mode,
+                          device                 = self.device,
+                          random_state           = self.random_state)
+        if self.inference_config is not None:
+            clf_kwargs["inference_config"] = self.inference_config
+        self._clf = TabPFNClassifier(**clf_kwargs)
         self._clf.fit(X, y)
         return self
 
@@ -305,6 +313,63 @@ class _TabPFNFineTunedWrapper:
         return np.ones(n_feat) / n_feat
 
 
+# ┏━━━━━━━━━━ TabICL wrapper ━━━━━━━━━━┓
+class _TabICLWrapper:
+    """Sklearn-compatible wrapper around TabICLClassifier.
+
+    TabICL is a tabular In-Context Learning model from INRIA/Soda that uses a
+    Transformer pre-trained on synthetic datasets for zero-shot classification.
+    Like TabPFN, it internally normalises features — do NOT pass StandardScaler-
+    transformed data.
+
+    Reference: https://github.com/soda-inria/tabicl
+    """
+
+    def __init__(self,
+                 n_estimators:        int   = 8,
+                 softmax_temperature: float = 0.9,
+                 random_state:        int   = 42,
+                 device:              str   = None):
+        self.n_estimators        = n_estimators
+        self.softmax_temperature = softmax_temperature
+        self.random_state        = random_state
+        self.device              = device
+        self._clf                = None
+        self.classes_            = None
+
+    # ┏━━━━━━━━━━ fit ━━━━━━━━━━┓
+    def fit(self, X, y, sample_weight=None):
+        import warnings
+        from tabicl import TabICLClassifier
+
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y)
+        self.n_features_in_ = X.shape[1]
+
+        self.classes_ = np.unique(y)
+
+        self._clf = TabICLClassifier(n_estimators        = self.n_estimators,
+                                     softmax_temperature = self.softmax_temperature,
+                                     random_state        = self.random_state,
+                                     device              = self.device)
+        self._clf.fit(X, y)
+        return self
+
+    # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
+    def predict(self, X):
+        return self._clf.predict(np.asarray(X, dtype=np.float32))
+
+    # ┏━━━━━━━━━━ Predict Probabilities ━━━━━━━━━━┓
+    def predict_proba(self, X):
+        return self._clf.predict_proba(np.asarray(X, dtype=np.float32))
+
+    # ┏━━━━━━━━━━ Feature Importance (uniform fallback) ━━━━━━━━━━┓
+    @property
+    def feature_importances_(self):
+        n_feat = getattr(self, "n_features_in_", 1)
+        return np.ones(n_feat) / n_feat
+
+
 # ┏━━━━━━━━━━ Build Tree Model [Random Forest, XGBoost, AutoGluon] ━━━━━━━━━━┓
 def _build_tree_model(model_name: str, n_samples: int, class_weight_ratio: float = 1.0,
                       feature_names=None, time_limit=None, presets="best_quality"):
@@ -358,6 +423,10 @@ def _build_tree_model(model_name: str, n_samples: int, class_weight_ratio: float
     # ┏━━━━━━━━━━ TabPFN (fine-tuned) ━━━━━━━━━━┓
     elif model_name == "tabpfn_ft":
         return _TabPFNFineTunedWrapper()
+
+    # ┏━━━━━━━━━━ TabICL (in-context learning) ━━━━━━━━━━┓
+    elif model_name == "tabicl":
+        return _TabICLWrapper()
 
     else:
         raise ValueError(f"Unknown model: {model_name}. Choose from {MODEL_CHOICES}")

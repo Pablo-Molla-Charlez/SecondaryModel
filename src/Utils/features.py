@@ -1810,6 +1810,120 @@ def run_feature_selection(df_train: pd.DataFrame,
             "per_method_scores": per_method}
 
 
+# ┏━━━━━━━━━━ M2 Selective Return Distribution (TP/FP vs M1) ━━━━━━━━━━┓
+def plot_selective_return_distribution(test_returns: np.ndarray,
+                                       test_labels: np.ndarray,
+                                       m2_approved: np.ndarray,
+                                       save_path,
+                                       fee: float = 0.002,
+                                       direction: str = "up",
+                                       granularity: str = "1d",
+                                       model_label: str = "RF"):
+    """Histogram of M2-selected trade returns split into TPs (green) and FPs (red),
+    with the full M1 distribution shown as a background layer in cyan.
+
+    Parameters
+    ----------
+    test_returns : np.ndarray
+        Net returns (already fee-adjusted and direction-flipped) for the test set.
+    test_labels : np.ndarray
+        Binary ground-truth labels (1 = TP, 0 = FP) for the test set.
+    m2_approved : np.ndarray (bool)
+        Boolean mask of M2-approved trades.
+    save_path : str or Path
+        Where to write the PNG.
+    fee : float
+        Fee per trade (for display only — returns should already be net).
+    direction : str
+        "up" or "down".
+    granularity : str
+        Granularity label for the title.
+    model_label : str
+        M2 model label (e.g. "RF", "XGB").
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    test_returns = np.asarray(test_returns, dtype=float)
+    test_labels  = np.asarray(test_labels, dtype=int)
+    m2_approved  = np.asarray(m2_approved, dtype=bool)
+
+    # Separate M2-approved into TPs and FPs
+    sel_mask   = m2_approved
+    sel_rets   = test_returns[sel_mask] * 100  # convert to pct
+    sel_labels = test_labels[sel_mask]
+    tp_rets    = sel_rets[sel_labels == 1]
+    fp_rets    = sel_rets[sel_labels == 0]
+
+    # Full M1 distribution (all trades, both approved and rejected)
+    m1_rets = test_returns * 100
+
+    # Dynamic binning
+    all_combined = np.concatenate([m1_rets, sel_rets]) if len(sel_rets) > 0 else m1_rets
+    low  = np.percentile(all_combined, 1) if len(all_combined) > 0 else -10
+    high = np.percentile(all_combined, 99) if len(all_combined) > 0 else 10
+    step = 0.15 if (high - low) < 20 else 0.3
+    bins = np.arange(low, high + step, step)
+
+    fig, ax = plt.subplots(figsize=(13, 7))
+
+    # Layer 1: M1 full distribution (navy, background)
+    ax.hist(m1_rets, bins=bins, alpha=0.25, color="navy", edgecolor="midnightblue",
+            linewidth=0.4, label=f"M1 Complete Test (N={len(m1_rets):,}, "
+                                 f"\u03BC={np.mean(m1_rets):.2f}%)", zorder=1)
+
+    # Layer 2: M2 FPs (red, foreground)
+    if len(fp_rets) > 0:
+        ax.hist(fp_rets, bins=bins, alpha=0.65, color="#e74c3c", edgecolor="#c0392b",
+                linewidth=0.4, label=f"M2 FP (n={len(fp_rets):,}, "
+                                     f"\u03BC={np.mean(fp_rets):.2f}%)", zorder=2)
+
+    # Layer 3: M2 TPs (green, foreground)
+    if len(tp_rets) > 0:
+        ax.hist(tp_rets, bins=bins, alpha=0.65, color="#2ecc71", edgecolor="#27ae60",
+                linewidth=0.4, label=f"M2 TP (n={len(tp_rets):,}, "
+                                     f"\u03BC={np.mean(tp_rets):.2f}%)", zorder=3)
+
+    # Mean lines
+    if len(m1_rets) > 0:
+        ax.axvline(np.mean(m1_rets), color="navy", linestyle="--", linewidth=1.5,
+                   alpha=0.8, label=f"M1 Mean ({np.mean(m1_rets):.2f}%)")
+    if len(tp_rets) > 0:
+        ax.axvline(np.mean(tp_rets), color="#27ae60", linestyle="-", linewidth=2.0,
+                   alpha=0.9, label=f"Mean TP ({np.mean(tp_rets):.2f}%)")
+    if len(fp_rets) > 0:
+        ax.axvline(np.mean(fp_rets), color="#c0392b", linestyle="-", linewidth=2.0,
+                   alpha=0.9, label=f"Mean FP ({np.mean(fp_rets):.2f}%)")
+
+    # Zero and fee lines
+    ax.axvline(0, color="black", linestyle="--", alpha=0.4, linewidth=0.8)
+    fee_pct = fee * 100
+    ax.axvline(fee_pct,  color="#8B008B", linestyle="--", alpha=0.8, linewidth=1.8,
+               label=f"Fee break-even (\u00B1{fee_pct:.2f}%)")
+    ax.axvline(-fee_pct, color="#8B008B", linestyle="--", alpha=0.8, linewidth=1.8)
+
+    # Title and labels
+    n_sel = int(sel_mask.sum())
+    cov = n_sel / len(test_returns) * 100 if len(test_returns) > 0 else 0
+    prec = len(tp_rets) / n_sel * 100 if n_sel > 0 else 0
+    ax.set_title(f"M2 {model_label} Selective Return Distribution — "
+                 f"{granularity.upper()} {direction.upper()} TP\n"
+                 f"Coverage: {cov:.1f}% ({n_sel:,}/{len(test_returns):,})  |  "
+                 f"Precision: {prec:.1f}%",
+                 fontsize=12, fontweight="bold")
+    ax.set_xlabel("Return (%)")
+    ax.set_ylabel("Number of Trades")
+    ax.set_xlim(low, high)
+    ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path), bbox_inches="tight", dpi=200)
+    plt.close(fig)
+    print(f"  Selective return distribution saved: {Path(save_path).name}")
+
+
 __all__ = [
     "plot_correlation_heatmap",
     "plot_pointbiserial",
@@ -1832,4 +1946,5 @@ __all__ = [
     "lime_rank",
     "combine_rankings",
     "run_feature_selection",
+    "plot_selective_return_distribution",
 ]

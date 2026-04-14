@@ -17,7 +17,7 @@ from Utils.data_preprocessing import (load_dataset_from_config,
 # ┏━━━━━━━━━━ Model Label ━━━━━━━━━━┓
 def model_label(model_name: str) -> str:
     """Canonical short label for a model name."""
-    return {"rf": "RF", "xgboost": "XGB", "autogluon": "AG"}.get(model_name, model_name.upper())
+    return {"rf": "RF", "xgboost": "XGB", "autogluon": "AG", "tabicl": "TabICL"}.get(model_name, model_name.upper())
 
 # ┏━━━━━━━━━━ M1 Model Name retrieval ━━━━━━━━━━┓
 def m1_model_name(cfg: dict | None) -> str:

@@ -75,11 +75,12 @@ CAL_SPLIT_RATIO = 0.40
 CPCV_OOB_CAL_RATIO = 0.40
 
 # ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
-_CLI_TO_MODEL_KEY = {"randforest": "rf", 
+_CLI_TO_MODEL_KEY = {"randforest": "rf",
                      "xgboost":    "xgboost",
-                     "autogluon":  "autogluon", 
-                     "tabpfn":     "tabpfn", 
-                     "tabpfn_ft":  "tabpfn_ft"}
+                     "autogluon":  "autogluon",
+                     "tabpfn":     "tabpfn",
+                     "tabpfn_ft":  "tabpfn_ft",
+                     "tabicl":     "tabicl"}
 
 
 # ┏━━━━━━━━━━ Embargo helper: 4-way split with purge at all boundaries ━━━━━━━━━━┓

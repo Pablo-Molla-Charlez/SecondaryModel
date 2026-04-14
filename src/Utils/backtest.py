@@ -865,6 +865,336 @@ def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, f
     return sharpes_sel, total_rets_sel
 
 
+# ┏━━━━━━━━━━ Combined UP + DOWN Backtest ━━━━━━━━━━┓
+def run_combined_backtest(up_dir: str | Path,
+                          dn_dir: str | Path,
+                          save_dir: str | Path,
+                          cfg: dict,
+                          model_name: str = "rf",
+                          file_prefix: str = "combined_backtest"):
+    """Combine UP and DOWN trade CSVs per granularity and produce a joint backtest.
+
+    Reads ``10_backtest_all_trades.csv`` from every ``{gran}_tp/`` subfolder in
+    *up_dir* and *dn_dir*, merges UP+DOWN trades, and writes per-granularity
+    equity curves + per-asset performance tables into *save_dir*.
+
+    The performance table splits M2 and M1 columns into UP | DOWN sub-columns
+    so each direction's contribution is visible at a glance.
+    """
+    up_dir  = Path(up_dir)
+    dn_dir  = Path(dn_dir)
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    mlabel = _model_label(model_name)
+    m1_label = _m1_display_label(cfg)
+    horizon = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7))
+
+    # Discover granularities present in both directions
+    up_grans = {p.name for p in up_dir.iterdir() if p.is_dir() and (p / "10_backtest_all_trades.csv").exists()}
+    dn_grans = {p.name for p in dn_dir.iterdir() if p.is_dir() and (p / "10_backtest_all_trades.csv").exists()}
+    common_grans = sorted(up_grans & dn_grans)
+
+    if not common_grans:
+        print(f"  [combined_backtest] No matching granularities found in UP ({up_dir}) and DOWN ({dn_dir})")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[combined_backtest] Merging UP+DOWN trades for: {', '.join(common_grans)}")
+    print(f"[combined_backtest] Output: {save_dir}")
+    print(f"{'='*60}\n")
+
+    for gran_folder in common_grans:
+        up_csv = up_dir / gran_folder / "10_backtest_all_trades.csv"
+        dn_csv = dn_dir / gran_folder / "10_backtest_all_trades.csv"
+
+        df_up = pd.read_csv(up_csv, parse_dates=["date"])
+        df_dn = pd.read_csv(dn_csv, parse_dates=["date"])
+
+        # Tag direction if missing
+        if "direction" not in df_up.columns:
+            df_up["direction"] = "up"
+        if "direction" not in df_dn.columns:
+            df_dn["direction"] = "down"
+
+        df_all = pd.concat([df_up, df_dn], ignore_index=True).sort_values("date").reset_index(drop=True)
+
+        # Gran name from folder (e.g. "6h_tp" -> "6h")
+        gran_name = gran_folder.split("_")[0]
+        ann_bar = _annualization_factor(gran_name)
+        ann_horizon = np.sqrt(ann_bar ** 2 / horizon)
+
+        # M2 approved vs all (M1) trades
+        m2_mask = df_all["m2_approved"].astype(bool)
+        df_m2 = df_all[m2_mask]
+        full_idx = pd.DatetimeIndex(sorted(df_all["date"].unique()))
+
+        # Build equity curves: combined M2, combined M1, and per-direction
+        m1_eq, _ = _build_spread_equity(df_all, full_idx, horizon)
+        m2_eq, _ = _build_spread_equity(df_m2,  full_idx, horizon)
+
+        df_m2_up = df_m2[df_m2["direction"] == "up"]
+        df_m2_dn = df_m2[df_m2["direction"] == "down"]
+        df_m1_up = df_all[df_all["direction"] == "up"]
+        df_m1_dn = df_all[df_all["direction"] == "down"]
+
+        m2_up_eq, _ = _build_spread_equity(df_m2_up, full_idx, horizon)
+        m2_dn_eq, _ = _build_spread_equity(df_m2_dn, full_idx, horizon)
+
+        # Buy & Hold
+        raw_close = _load_raw_close_prices(cfg, gran_name, direction="up")
+        has_bh = len(raw_close) > 0
+        if has_bh:
+            t_start, t_end = full_idx.min(), full_idx.max()
+            raw_close = raw_close[(raw_close["date"] >= t_start) & (raw_close["date"] <= t_end)]
+            bh_pivot = raw_close.pivot_table(index="date", columns="asset", values="close")
+            if len(bh_pivot) > 0:
+                bh_first = bh_pivot.apply(lambda c: c.dropna().iloc[0] if c.notna().any() else np.nan)
+                bh_equity = (bh_pivot / bh_first).mean(axis=1)
+            else:
+                has_bh = False
+
+        # Calculate metrics for each strategy
+        def _metrics(eq):
+            h_rets = _equity_horizon_returns(eq, horizon) if len(eq) > horizon else np.array([])
+            return {"total_ret": (eq.iloc[-1] - 1) * 100 if len(eq) > 0 else 0.0,
+                    "mdd": _calc_drawdown(eq.values) * 100 if len(eq) > 0 else 0.0,
+                    "sharpe": _calc_sharpe(h_rets, ann_horizon)}
+
+        # M1 per-direction equity curves
+        m1_up_eq, _ = _build_spread_equity(df_m1_up, full_idx, horizon)
+        m1_dn_eq, _ = _build_spread_equity(df_m1_dn, full_idx, horizon)
+
+        strats = {f"M2 {mlabel} (UP+DN)": _metrics(m2_eq),
+                  f"M2 {mlabel} UP":       _metrics(m2_up_eq),
+                  f"M2 {mlabel} DN":       _metrics(m2_dn_eq),
+                  f"{m1_label} (UP+DN)":   _metrics(m1_eq),
+                  f"{m1_label} UP":        _metrics(m1_up_eq),
+                  f"{m1_label} DN":        _metrics(m1_dn_eq)}
+        if has_bh:
+            strats["Buy & Hold"] = _metrics(bh_equity)
+
+        # ┏━━━━━━━━━━ Plot ━━━━━━━━━━┓
+        fig, ax = plt.subplots(figsize=(20, 9))
+        plt.subplots_adjust(right=0.52)
+
+        # M2 family: green palette
+        s_m2 = strats[f"M2 {mlabel} (UP+DN)"]
+        ax.plot((m2_eq - 1) * 100, label=f"M2 {mlabel} Combined (SR:{s_m2['sharpe']:.2f})",
+                color="#1a7a3a", linewidth=3.0)
+        s_up = strats[f"M2 {mlabel} UP"]
+        ax.plot((m2_up_eq - 1) * 100, label=f"M2 {mlabel} UP (SR:{s_up['sharpe']:.2f})",
+                color="#5cb85c", linewidth=1.6, linestyle="--")
+        s_dn = strats[f"M2 {mlabel} DN"]
+        ax.plot((m2_dn_eq - 1) * 100, label=f"M2 {mlabel} DN (SR:{s_dn['sharpe']:.2f})",
+                color="#a3d977", linewidth=1.6, linestyle=":")
+
+        # M1 family: blue palette
+        s_m1 = strats[f"{m1_label} (UP+DN)"]
+        ax.plot((m1_eq - 1) * 100, label=f"{m1_label} Combined (SR:{s_m1['sharpe']:.2f})",
+                color="#1a3a7a", linewidth=2.5)
+        s_m1_up = strats[f"{m1_label} UP"]
+        ax.plot((m1_up_eq - 1) * 100, label=f"{m1_label} UP (SR:{s_m1_up['sharpe']:.2f})",
+                color="#5b9bd5", linewidth=1.4, linestyle="--")
+        s_m1_dn = strats[f"{m1_label} DN"]
+        ax.plot((m1_dn_eq - 1) * 100, label=f"{m1_label} DN (SR:{s_m1_dn['sharpe']:.2f})",
+                color="#9dc3e6", linewidth=1.4, linestyle=":")
+
+        # B&H: neutral gray
+        if has_bh:
+            s_bh = strats["Buy & Hold"]
+            ax.plot((bh_equity - 1) * 100, label=f"B&H (SR:{s_bh['sharpe']:.2f})",
+                    color="#888888", linestyle="--", linewidth=1.5)
+
+        ax.set_title(f"Combined UP+DOWN — {mlabel} {gran_name.upper()} TP  |  horizon={horizon}",
+                     fontsize=13, fontweight="bold")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Cumulative Return (%)")
+        ax.legend(loc="upper left", fontsize=8.5)
+        ax.grid(True, alpha=0.3)
+
+        # ┏━━━━━━━━━━ Per-asset table with Combined + UP + DOWN sub-columns ━━━━━━━━━━┓
+        all_assets = sorted(df_all["asset"].unique())
+
+        # Precompute B&H per-asset
+        asset_bh_map = {}
+        if has_bh:
+            bh_pivot_close = raw_close.pivot_table(index="date", columns="asset", values="close")
+            for asset in all_assets:
+                if asset in bh_pivot_close.columns:
+                    c = bh_pivot_close[asset].dropna()
+                    asset_bh_map[asset] = (c.iloc[-1] / c.iloc[0] - 1) * 100 if len(c) > 1 else 0.0
+                else:
+                    asset_bh_map[asset] = 0.0
+
+        col_labels = ["Asset",
+                      f"M2 {mlabel}\n(UP+DN)", f"M2 {mlabel}\nUP", f"M2 {mlabel}\nDOWN",
+                      f"{m1_label}\n(UP+DN)", f"{m1_label}\nUP", f"{m1_label}\nDOWN",
+                      "B&H"]
+
+        table_data = []
+        for asset in all_assets:
+            m2u = df_m2_up[df_m2_up["asset"] == asset]
+            m2d = df_m2_dn[df_m2_dn["asset"] == asset]
+            m2c = df_m2[df_m2["asset"] == asset]
+            m1u = df_m1_up[df_m1_up["asset"] == asset]
+            m1d = df_m1_dn[df_m1_dn["asset"] == asset]
+            m1c = df_all[df_all["asset"] == asset]
+
+            m2c_ret = m2c["return"].mean() * 100 if len(m2c) > 0 else 0.0
+            m2u_ret = m2u["return"].mean() * 100 if len(m2u) > 0 else 0.0
+            m2d_ret = m2d["return"].mean() * 100 if len(m2d) > 0 else 0.0
+            m1c_ret = m1c["return"].mean() * 100 if len(m1c) > 0 else 0.0
+            m1u_ret = m1u["return"].mean() * 100 if len(m1u) > 0 else 0.0
+            m1d_ret = m1d["return"].mean() * 100 if len(m1d) > 0 else 0.0
+            bh_a = asset_bh_map.get(asset, 0.0)
+
+            table_data.append([asset,
+                               f"{m2c_ret:+.1f}% ({len(m2c)})",
+                               f"{m2u_ret:+.1f}% ({len(m2u)})",
+                               f"{m2d_ret:+.1f}% ({len(m2d)})",
+                               f"{m1c_ret:+.1f}% ({len(m1c)})",
+                               f"{m1u_ret:+.1f}% ({len(m1u)})",
+                               f"{m1d_ret:+.1f}% ({len(m1d)})",
+                               f"{bh_a:+.1f}%"])
+
+        # Summary rows
+        n_m2 = int(m2_mask.sum())
+        n_m2_up = len(df_m2_up); n_m2_dn = len(df_m2_dn)
+        n_m1 = len(df_all)
+        n_m1_up = len(df_m1_up); n_m1_dn = len(df_m1_dn)
+        avg_m2 = df_m2["return"].mean() * 100 if n_m2 > 0 else 0.0
+        avg_m2_up = df_m2_up["return"].mean() * 100 if n_m2_up > 0 else 0.0
+        avg_m2_dn = df_m2_dn["return"].mean() * 100 if n_m2_dn > 0 else 0.0
+        avg_m1 = df_all["return"].mean() * 100 if n_m1 > 0 else 0.0
+        avg_m1_up = df_m1_up["return"].mean() * 100 if n_m1_up > 0 else 0.0
+        avg_m1_dn = df_m1_dn["return"].mean() * 100 if n_m1_dn > 0 else 0.0
+        bh_avg = np.mean(list(asset_bh_map.values())) if asset_bh_map else 0.0
+
+        table_data.append(["Ptf Return",
+                           f"{s_m2['total_ret']:+.2f}%",
+                           f"{s_up['total_ret']:+.2f}%",
+                           f"{s_dn['total_ret']:+.2f}%",
+                           f"{s_m1['total_ret']:+.2f}%",
+                           f"{s_m1_up['total_ret']:+.2f}%",
+                           f"{s_m1_dn['total_ret']:+.2f}%",
+                           f"{strats.get('Buy & Hold', {}).get('total_ret', 0.0):+.2f}%"])
+        table_data.append(["Avg Ret/Trade",
+                           f"{avg_m2:+.2f}% ({n_m2})",
+                           f"{avg_m2_up:+.2f}% ({n_m2_up})",
+                           f"{avg_m2_dn:+.2f}% ({n_m2_dn})",
+                           f"{avg_m1:+.2f}% ({n_m1})",
+                           f"{avg_m1_up:+.2f}% ({n_m1_up})",
+                           f"{avg_m1_dn:+.2f}% ({n_m1_dn})",
+                           f"{bh_avg:+.2f}%"])
+        table_data.append(["Max DD",
+                           f"{s_m2['mdd']:+.2f}%",
+                           f"{s_up['mdd']:+.2f}%",
+                           f"{s_dn['mdd']:+.2f}%",
+                           f"{s_m1['mdd']:+.2f}%",
+                           f"{s_m1_up['mdd']:+.2f}%",
+                           f"{s_m1_dn['mdd']:+.2f}%",
+                           f"{strats.get('Buy & Hold', {}).get('mdd', 0.0):+.2f}%"])
+
+        # Render table
+        col_widths = [0.14, 0.13, 0.13, 0.13, 0.13, 0.13, 0.13, 0.08]
+        the_table = plt.table(cellText=table_data, colLabels=col_labels, loc="right",
+                              bbox=[1.03, 0.0, 0.92, 1.0], cellLoc="center", colWidths=col_widths)
+        the_table.auto_set_font_size(False)
+        the_table.set_fontsize(7)
+
+        n_data_rows = len(table_data)
+        first_summary_row = n_data_rows - 3 + 1
+
+        # Color coding
+        all_vals = []
+        for (r, c), cell in the_table.get_celld().items():
+            if r > 0 and c > 0:
+                v_str = cell.get_text().get_text().split("%")[0].strip()
+                try:
+                    all_vals.append(float(v_str))
+                except ValueError:
+                    pass
+        abs_max = max(abs(v) for v in all_vals) if all_vals else 1.0
+
+        def _val_color(val, scale):
+            intensity = min(abs(val) / scale, 1.0)
+            if val > 0:
+                r = int(255 - intensity * 209); g = int(255 - intensity * 116); b = int(255 - intensity * 168)
+            elif val < 0:
+                r = int(255 - intensity * 75); g = int(255 - intensity * 215); b = int(255 - intensity * 215)
+            else:
+                return "#ffffff"
+            return f"#{r:02x}{g:02x}{b:02x}"
+
+        for (r, c), cell in the_table.get_celld().items():
+            cell.get_text().set_weight("bold")
+            cell.set_text_props(ha="center", va="center")
+            if r > 0 and c > 0:
+                v_str = cell.get_text().get_text().split("%")[0].strip()
+                try:
+                    val = float(v_str)
+                    cell.set_facecolor(_val_color(val, abs_max))
+                    if abs(val) / abs_max > 0.55:
+                        cell.get_text().set_color("white")
+                except ValueError:
+                    pass
+            if r == 0:
+                cell.set_facecolor("#2b5797")
+                cell.get_text().set_color("white")
+            if r >= first_summary_row:
+                cell.set_fontsize(8)
+                if c == 0:
+                    cell.set_facecolor("#2b5797")
+                    cell.get_text().set_color("white")
+
+        ax.text(1.42, 1.02, "Per-Asset Performance (UP | DOWN)", transform=ax.transAxes,
+                fontsize=12, fontweight="bold", ha="center")
+
+        gran_save = save_dir / gran_folder
+        gran_save.mkdir(parents=True, exist_ok=True)
+        plot_path = gran_save / f"{file_prefix}_curve.png"
+        fig.savefig(str(plot_path), bbox_inches="tight", dpi=200)
+        plt.close(fig)
+
+        # Save combined trades CSV
+        trades_path = gran_save / f"{file_prefix}_trades.csv"
+        df_all.to_csv(trades_path, index=False, float_format="%.6f")
+
+        # Save text report
+        n_total = len(df_all)
+        n_m2 = int(m2_mask.sum())
+        m2_wr_up = df_m2_up["label"].mean() * 100 if len(df_m2_up) > 0 else 0
+        m2_wr_dn = df_m2_dn["label"].mean() * 100 if len(df_m2_dn) > 0 else 0
+        m1_wr_up = df_m1_up["label"].mean() * 100 if len(df_m1_up) > 0 else 0
+        m1_wr_dn = df_m1_dn["label"].mean() * 100 if len(df_m1_dn) > 0 else 0
+
+        lines = [
+            "=" * 70,
+            f"COMBINED UP+DOWN BACKTEST: {mlabel} {gran_name.upper()} TP",
+            f"Period: {df_all['date'].min().date()} to {df_all['date'].max().date()}",
+            "=" * 70,
+            f"Total Test Trades:  {n_total} (UP: {len(df_m1_up)}, DOWN: {len(df_m1_dn)})",
+            f"M2 Approved:        {n_m2} (UP: {n_m2_up}, DOWN: {n_m2_dn})",
+            f"M2 WinRate UP:      {m2_wr_up:.1f}%   |  M1 WinRate UP:   {m1_wr_up:.1f}%",
+            f"M2 WinRate DOWN:    {m2_wr_dn:.1f}%   |  M1 WinRate DOWN: {m1_wr_dn:.1f}%",
+            "-" * 70,
+            f"{'Strategy':<30} {'Total Ret':>10} {'MaxDD':>8} {'Sharpe':>8}",
+            "-" * 70,
+        ]
+        for name, s in strats.items():
+            lines.append(f"{name:<30} {s['total_ret']:>+9.2f}% {s['mdd']:>+7.2f}% {s['sharpe']:>7.2f}")
+        lines.append("=" * 70)
+
+        report_path = gran_save / f"{file_prefix}_ROI.txt"
+        report = "\n".join(lines)
+        print(report)
+        with open(report_path, "w") as f:
+            f.write(report)
+
+        print(f"  Saved: {plot_path.name}, {trades_path.name}, {report_path.name}\n")
+
+
 __all__ = [
     "_load_raw_close_prices",
     "_annualization_factor",
@@ -874,4 +1204,5 @@ __all__ = [
     "_equity_horizon_returns",
     "run_feature_backtest",
     "_plot_path_equity",
+    "run_combined_backtest",
 ]
