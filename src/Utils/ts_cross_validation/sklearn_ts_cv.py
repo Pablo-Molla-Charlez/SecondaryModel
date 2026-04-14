@@ -49,3 +49,7 @@ class SklearnTimeSeriesCV(BaseTimeSeriesCV):
                 continue  # skip invalid split
                 
             yield train_idx, test_idx
+
+    @property
+    def name(self):
+        return "TimeSeriesCV"

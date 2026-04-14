@@ -50,4 +50,3 @@ class TabPFN(BaseClassifier):
 
     def load_model(self, model_path: str, device="cpu") -> None:
         self._fitted_clf = load_fitted_tabpfn_model(f"{model_path}.tabpfn_fit", device=device)
-

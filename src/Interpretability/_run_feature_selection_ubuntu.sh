@@ -1,6 +1,6 @@
-grans=("12h")   # "1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m"
-m1s=("Kronos" "Fincast")
-directions=("up" "down")
+grans=("1d")   # "1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m"
+m1s=("Kronos") #  "Fincast"
+directions=("up")  #  "down"
 
 for gran in "${grans[@]}"; do
   for m1 in "${m1s[@]}"; do
@@ -12,7 +12,9 @@ for gran in "${grans[@]}"; do
               --direction $direction \
               --n_splits 3 \
               --min_features 1 \
-              --max_features 33
+              --max_features 3 \
+              --strategy "SFS+" \
+              --m2 "AutoGluon"
     done
   done
 done

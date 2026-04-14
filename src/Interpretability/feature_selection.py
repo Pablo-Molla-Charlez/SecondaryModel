@@ -1,21 +1,24 @@
-# load and split data into training, validation and test sets
+# NOTE Required to use methods form Utils
 import sys
-import os
 from pathlib import Path
 
-# NOTE Required to use methods form Utils
 sys.path.insert(0, str(Path.cwd()))  # try current dir
 sys.path.insert(0, str(Path.cwd().parent))  # or parent
+import Utils
+
+import os
+
+from Utils.classifier.autogluon_classifier import AutogluonClassifier
+from Utils.classifier.tabpfn_classifier import TabPFN
+from Utils.classifier.tabicl_classifier import TabICL
+from Utils.classifier.random_forest_classifier import RFClassifier
+from Utils.feature_selection.sequential_feature_selection import SequentialFeatureSelection
 
 import pandas as pd
-import numpy as np
 import time
-import torch
-from Utils.utils import _load_multi_cache
-from Utils.data_preprocessing import split_by_global_time, ENG_FEATURE_NAMES
+from Utils.data_loaders.tabular_data_loader import load_tabular_dataset_from_cache_to_DataFrame
 from sklearn.feature_selection import SequentialFeatureSelector, RFECV
 from Utils.ts_cross_validation.combinatorial_purged_cv import CombinatorialPurgedCV
-from Utils.classifier.random_forest_classifier import RFClassifier
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import cross_validate
 
@@ -127,17 +130,53 @@ def do_sfs(clf,
     return ret_dict
 
 
+def do_sfs_plus(clf,
+                X_analysis,
+                y_analysis,
+                X_test,
+                y_test,
+                args):
+    scorer = get_scorer(args.scoring)
+
+    # t1 = pd.Series(X_analysis.index)
+    cv = CombinatorialPurgedCV(n_splits=args.n_splits, n_test_splits=2, embargo_pct=0.05, random_state=42)
+    # cv = SklearnTimeSeriesCV(args.n_splits)
+    print(f"CV with {cv.get_n_splits()} splits")
+
+    can_be_parallelized = True if args.m2 == "RF" else False
+
+    save_path = f"{args.output_root}/{args.m1}/interpretability/feature_selection/{args.m2}/direction={args.direction}/{args.gran}/"
+    cache_name = f"{args.scoring}_{cv.name}_{args.n_splits}"
+    sfs = SequentialFeatureSelection(clf,
+                                     scorer,
+                                     cv,
+                                     cache_path=save_path,
+                                     cache_name=cache_name,
+                                     can_be_parallelized=can_be_parallelized)
+
+    res = sfs.select_features(X_analysis, y_analysis, n_features=args.max_features, X_test=X_test, y_test=y_test)
+
+    save_frame = []
+    for k, val in res.items():
+        best_row = val.loc[val['mean_val_scoring'].idxmax()]
+        # best_row['index'] = i
+        save_frame.append(best_row)
+    res = pd.DataFrame(save_frame)
+
+    return res
+
+
 def do_rfecv(clf,
-           X_analysis,
-           y_analysis,
-           X_test,
-           y_test,
-           scoring,
-           n_splits=10,
-           n_test_splits=2,
-           n_jobs=20,
-           min_features=1,
-           max_features=33) -> dict:
+             X_analysis,
+             y_analysis,
+             X_test,
+             y_test,
+             scoring,
+             n_splits=10,
+             n_test_splits=2,
+             n_jobs=20,
+             min_features=1,
+             max_features=33) -> dict:
     """
     Do recursive feature elimination with cross-validation for a given classifier and dataset (X, y)
     IMPORTANT: max_features is not considered here. You would need to pre-filter features that should not be considered
@@ -183,7 +222,7 @@ def do_rfecv(clf,
             ret_dict["evaluation"].append(scores)
         else:
             rfecv = RFECV(clone(clf), min_features_to_select=n_features,
-                                            scoring=scorer, cv=cv, n_jobs=n_jobs)
+                          scoring=scorer, cv=cv, n_jobs=n_jobs)
             rfecv.fit(X_analysis, y_analysis)
 
             # recalculate scoring
@@ -217,6 +256,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_root', type=str, default="/Volumes/Data/other/2026_NII/Output")
     parser.add_argument('--direction', type=str, default="up", choices=["down", "up"])
     parser.add_argument('--m1', type=str, default="Kronos", choices=["Kronos", "Fincast"])
+    parser.add_argument('--m2', type=str, default="RF", choices=["RF", "AutoGluon", "TabPFN", "TabICL"])
     parser.add_argument('--gran', type=str, default="1d",
                         choices=["1d", "1h", "2h", "4h", "6h", "8h", "12h", "15m", "30m", "unified"])
     parser.add_argument('--meta_label_mode', type=str, default="tp", choices=["tp", "fp", "og"])
@@ -243,29 +283,22 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unknown model {args.m1}")
 
-    multi = _load_multi_cache(
-        f'{args.output_root}/{args.m1}/cache/multi_{args.forecast_horizon}_fee_{args.direction}_{hash_val}.pt')
+    cache_path = f'{args.output_root}/{args.m1}/cache/multi_{args.forecast_horizon}_fee_{args.direction}_{hash_val}'
 
-    sub = multi.sub[args.gran]
-    idx_train, _, idx_val, idx_test = split_by_global_time(sub, train_end="2025-05-30", val_end="2025-10-01")
-    eng_raw = sub["eng_features"].numpy() if isinstance(sub["eng_features"], torch.Tensor) else sub["eng_features"]
-    labels_raw = sub["labels"].numpy() if isinstance(sub["labels"], torch.Tensor) else sub["labels"]
+    X_analysis, y_analysis, X_test, y_test = load_tabular_dataset_from_cache_to_DataFrame(cache_path=cache_path,
+                                                                                          gran=args.gran)
 
-    X_train = pd.DataFrame(eng_raw[idx_train], columns=ENG_FEATURE_NAMES)
-    y_train = labels_raw[idx_train].astype(int)
-
-    X_val = pd.DataFrame(eng_raw[idx_val], columns=ENG_FEATURE_NAMES)
-    y_val = labels_raw[idx_val].astype(int)
-
-    X_test = pd.DataFrame(eng_raw[idx_test], columns=ENG_FEATURE_NAMES)
-    y_test = labels_raw[idx_test].astype(int)
-
-    # merge X_train and X_val
-    X_analysis = pd.concat([X_train, X_val], axis=0).reset_index(drop=True)
-    y_analysis = np.concatenate([y_train, y_val])
-
-    # train model
-    clf = RFClassifier()
+    # select model
+    if args.m2 == "RF":
+        clf = RFClassifier()
+    elif args.m2 == "AutoGluon":
+        clf = AutogluonClassifier(args=args)
+    elif args.m2 == "TabPFN":
+        clf = TabPFN()
+    elif args.m2 == "TabICL":
+        clf = TabICL()
+    else:
+        raise ValueError(f"Unknown model {args.m2}")
 
     if args.strategy == "SFS":
         res = do_sfs(clf,
@@ -278,30 +311,30 @@ if __name__ == "__main__":
                      min_features=args.min_features,
                      max_features=args.max_features)
     elif args.strategy == "SFS+":
-        raise ValueError("SFS+ not implemented yet")
+        res = do_sfs_plus(clf,
+                          X_analysis,
+                          y_analysis,
+                          X_test,
+                          y_test,
+                          args)
     elif args.strategy == "RFECV":
         res = do_rfecv(clf,
-                     X_analysis,
-                     y_analysis,
-                     X_test,
-                     y_test,
-                     args.scoring,
-                     n_splits=args.n_splits,
-                     min_features=args.min_features,
-                     max_features=args.max_features)
+                       X_analysis,
+                       y_analysis,
+                       X_test,
+                       y_test,
+                       args.scoring,
+                       n_splits=args.n_splits,
+                       min_features=args.min_features,
+                       max_features=args.max_features)
     else:
         raise ValueError(f"Unknown strategy {args.strategy}")
 
-    # for features, score in zip(res["feature_set"], res["evaluation"]):
-    #     print(f"n_features: {len(features)} | score: {score} | features: {features}")
-
-    # save results to csv?
-    df = pd.DataFrame(res)
-
-    save_dir_path = (f"{args.output_root}/{args.m1}/interpretability/feature_selection/"
+    save_dir_path = (f"{args.output_root}/{args.m1}/interpretability/feature_selection/{args.m2}/"
                      f"direction={args.direction}/{args.gran}/")
     os.makedirs(save_dir_path, exist_ok=True)
-    df.to_parquet(os.path.join(save_dir_path,
-                               f"strategy={args.strategy}_scoring={args.scoring}_n_splits={args.n_splits}_min_max={args.min_features}_{args.max_features}.parquet"))
+    res.to_csv(os.path.join(save_dir_path,
+                            f"strategy={args.strategy}_scoring={args.scoring}_n_splits={args.n_splits}_min_max={args.min_features}_{args.max_features}.csv"),
+               index=False)
 
-    plot_scoring_over_features(res, args)
+    # plot_scoring_over_features(res, args)
