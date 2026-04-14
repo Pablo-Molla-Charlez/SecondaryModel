@@ -27,7 +27,7 @@
 
 <p>
   <img src="https://img.shields.io/badge/Data-Preprocessing-0f766e?style=flat-square" alt="Data Preprocessing" />
-  <img src="https://img.shields.io/badge/Models-RF%20%7C%20XGBoost%20%7C%20AutoGluon-2563eb?style=flat-square" alt="Models" />
+  <img src="https://img.shields.io/badge/Models-RF%20%7C%20XGBoost%20%7C%20AutoGluon%20%7C%20TabICL-2563eb?style=flat-square" alt="Models" />
   <img src="https://img.shields.io/badge/Factory-Utils%2Fmodels.py-1d4ed8?style=flat-square" alt="Factory Utils models py" />
   <img src="https://img.shields.io/badge/Selection-Utility%20or%20SAOCP-f59e0b?style=flat-square" alt="Selection" />
   <img src="https://img.shields.io/badge/Reports-Backtests%20%7C%20Comparisons%20%7C%20OCP-7c3aed?style=flat-square" alt="Reports" />
@@ -136,6 +136,11 @@ We've integrated **TabPFN**, a state-of-the-art foundation model for tabular dat
 - **Zero-Shot (`tabpfn`)**: Uses the pre-trained prior directly. Extremely fast and robust on small financial datasets.
 - **Fine-Tuned (`tabpfn_ft`)**: Leverages gradient-based fine-tuning to adapt to specific market distributions and sharpen probability calibration.
 
+### 4. TabICL (Tabular In-Context Learning)
+**TabICL** is a Transformer-based foundation model for tabular classification from INRIA/Soda. Like TabPFN, it uses in-context learning with a pre-trained prior, but with a different architecture and training procedure.
+- **Reference**: [soda-inria/tabicl](https://github.com/soda-inria/tabicl)
+- **Zero-Shot (`tabicl`)**: Uses the pre-trained TabICL checkpoint. Sklearn-compatible interface with `fit`/`predict`/`predict_proba`. Internally normalises features (no StandardScaler needed).
+
 ---
 
 ## Edge Convergence: The Gate Keeper
@@ -187,11 +192,12 @@ flowchart TD
 | `config_kronos.yaml` | Runtime configuration for the **Kronos** foundation path (paths, dates, features). |
 | `config_fincast.yaml` | Runtime configuration for the **Fincast** foundation path. |
 | `kronos_tree.py` | Main M2 analysis entrypoint; orchestrates 4-way splits, training, evaluation, and selective backtesting. |
-| `Utils/models.py` | Central model factory supporting `rf`, `xgboost`, `autogluon`, and `tabpfn_ft`. Includes model-info export helpers. |
+| `Utils/models.py` | Central model factory supporting `rf`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, and `tabicl`. Includes model-info export helpers. |
 | `Utils/edge.py` | **The Gate Keeper**: Stability engine (seeds) and regime-sensitivity analysis (CPCV). Computes the final Edge Convergence Score. |
 | `Utils/data_preprocessing.py` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, and embargo/purge logic. |
 | `Utils/features.py` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
-| `Utils/backtest.py` | Backtest helpers, equity construction, Sharpe / drawdown, and reporting. |
+| `Utils/backtest.py` | Backtest helpers, equity construction, Sharpe / drawdown, reporting, and combined UP+DOWN backtest. |
+| `Utils/experiments.py` | Experiment orchestrator: runs training, edge convergence, and combined backtests for all models and directions in sequence. |
 | `Utils/comparison.py` | Separate-vs-unified and cross-paradigm comparison builders. |
 | `Utils/ocp_analysis.py` | Practical OCP diagnostics for completed result folders. |
 | `Utils/saocp.py` | Strongly Adaptive Online Conformal Prediction logic. |
@@ -215,6 +221,8 @@ The primary analysis orchestrator. All runs now utilize the **Calibration-First*
 | **Kronos (Default)** | `python kronos_tree.py --config config_kronos.yaml --per-gran` |
 | **Fincast (Foundation)** | `python kronos_tree.py --config config_fincast.yaml --per-gran` |
 | **TabPFN on Fincast** | `python kronos_tree.py --config config_fincast.yaml --model tabpfn_ft` |
+| **TabICL on Kronos** | `python kronos_tree.py --config config_kronos.yaml --per-gran --model tabicl` |
+| **Combined UP+DN Backtest** | `python kronos_tree.py --config config_kronos.yaml --combined-backtest Output/Kronos/randforest/UP/Utility_Score Output/Kronos/randforest/DOWN/Utility_Score` |
 
 ### `Utils/edge.py`: Convergence Protocol
 The final check before model deployment. Runs combinatorial stress tests. Support for both foundation paths via `--config`.
@@ -224,6 +232,16 @@ The final check before model deployment. Runs combinatorial stress tests. Suppor
 | **Seeds** | `python Utils/edge.py --config config_fincast.yaml --mode seeds --trials 100` |
 | **CPCV** | `python Utils/edge.py --config config_fincast.yaml --mode cpcv --n-blocks 6` |
 | **Convergence** | `python Utils/edge.py --config config_fincast.yaml --convergence` |
+
+### `Utils/experiments.py`: Full Experiment Suite
+Orchestrates training, edge convergence, and combined backtests for all models and directions in a single command.
+
+| Use Case | Command |
+| --- | --- |
+| **Full Suite (all models)** | `python Utils/experiments.py --config config_kronos.yaml` |
+| **Subset of models** | `python Utils/experiments.py --config config_kronos.yaml --models rf tabicl` |
+| **Edge only (skip training)** | `python Utils/experiments.py --config config_kronos.yaml --skip-training` |
+| **Training only (skip edge)** | `python Utils/experiments.py --config config_kronos.yaml --skip-edge --skip-combined` |
 
 #### Example Convergence Chain:
 ```bash
