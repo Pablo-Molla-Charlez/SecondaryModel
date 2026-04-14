@@ -15,6 +15,7 @@ from Utils.utils import _load_multi_cache
 from Utils.data_preprocessing import split_by_global_time, ENG_FEATURE_NAMES
 from sklearn.feature_selection import SequentialFeatureSelector, RFECV
 from Utils.ts_cross_validation.combinatorial_purged_cv import CombinatorialPurgedCV
+from Utils.classifier.random_forest_classifier import RFClassifier
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import cross_validate
 
@@ -264,12 +265,7 @@ if __name__ == "__main__":
     y_analysis = np.concatenate([y_train, y_val])
 
     # train model
-    clf = RandomForestClassifier(n_estimators=500,
-                                 max_depth=6,
-                                 min_samples_leaf=20,
-                                 random_state=42,
-                                 n_jobs=-1,
-                                 class_weight="balanced")
+    clf = RFClassifier()
 
     if args.strategy == "SFS":
         res = do_sfs(clf,

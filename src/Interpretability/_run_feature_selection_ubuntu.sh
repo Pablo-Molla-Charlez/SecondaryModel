@@ -1,4 +1,4 @@
-grans=("1d")   # "1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m"
+grans=("12h")   # "1d" "1h" "2h" "4h" "6h" "8h" "12h" "15m" "30m"
 m1s=("Kronos" "Fincast")
 directions=("up" "down")
 

@@ -41,3 +41,4 @@ lime
 # TabPFN
 tabpfn
 tabpfn-client
+tabicl
