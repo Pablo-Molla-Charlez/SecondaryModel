@@ -8,41 +8,6 @@ from pathlib import Path
 from typing import List, Tuple, Union, Sequence, Optional, Dict, Any
 
 
-# ┏━━━━━━━━━━ Dataset Access Helpers ━━━━━━━━━━┓
-def _get_from_dataset(dataset: Any, key: str) -> Any:
-    """Helper to access keys from both dicts and MultiGranDataset objects."""
-    if isinstance(dataset, dict):
-        return dataset.get(key)
-    return getattr(dataset, key, None)
-
-# ┏━━━━━━━━━━ Dynamic Return Limits for Plotting ━━━━━━━━━━┓
-def get_dynamic_ret_limits(returns_list: List[np.ndarray], min_buffer: float = 5.0) -> Tuple[float, float]:
-    """
-    Calculate symmetric x-limits based on data percentiles (1st and 99th),
-    ensuring a minimum visibility range of +/- min_buffer%.
-    """
-    import numpy as np
-    # Filter out empty arrays or NaNs
-    valid_data = []
-    for r in returns_list:
-        if r is not None and len(r) > 0:
-            v = r[~np.isnan(r)]
-            if len(v) > 0:
-                valid_data.append(v)
-    
-    if not valid_data:
-        return -min_buffer, min_buffer
-    
-    all_data = np.concatenate(valid_data)
-    p1 = np.percentile(all_data, 1)
-    p99 = np.percentile(all_data, 99)
-    # Use symmetric limit for balanced view
-    limit = max(abs(p1), abs(p99), min_buffer)
-    # Round up to nearest integer for cleaner axis
-    limit = float(np.ceil(limit))
-    return -limit, limit
-
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MULTI-GRANULARITY SUPPORT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -57,6 +22,79 @@ GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m", "5m"]
 GRAN_TO_ID = {g: i for i, g in enumerate(GRAN_ORDER)}
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ENGINEERED WINDOW-LEVEL FEATURES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# ┏━━━━━━━━━━ Feature group → ordered names (must match compute_window_features output) ━━━━━━━━━━┓
+ENG_FEATURE_GROUPS = {
+    'window_stats': ['ret_mean', 'ret_std', 'ret_skew', 'ret_kurt', 'trend_slope', 'trend_r2', 'reversal_count', 'max_drawdown'],
+    'volatility':   ['atr_last', 'atr_norm_last', 'bb_pctb_last', 'bb_bw_last'],
+    'volume':       ['vol_spike_ratio', 'vol_trend_slope', 'vol_cv'],
+    'momentum':     ['rsi_last', 'macd_last', 'roc_5_last', 'roc_20_last', 'momentum_align'],
+    'regime':       ['adx_last', 'hurst', 'choppiness_idx'],
+    # Crypto external + 30-day volatility features (last value per window)
+    'xfeatures':    ['dvol_last', 'fear_greed_last', 'news_sentiment_last',
+                     'r_vol_30_last', 'r_vol_30_ann_last', 'atr_w30_last', 
+                     'rvi_30_last', 'massi_30_last', 'log_return_last', 'dcr_last'],
+}
+
+# ┏━━━━━━━━━━ Flat ordered list of all feature names ━━━━━━━━━━┓
+ENG_FEATURE_NAMES = []
+for _g in ['window_stats', 'volatility', 'volume', 'momentum', 'regime', 'xfeatures']:
+    ENG_FEATURE_NAMES.extend(ENG_FEATURE_GROUPS[_g])
+
+# ┏━━━━━━━━━━ Known indicator column names used by compute_window_features ━━━━━━━━━━┓
+# Base 9 technical indicators + Crypto extras.  Auto-discovered from CSV columns.
+from Data_MLA.indicators import BASE_INDICATOR_COLUMNS, CRYPTO_XFEATURE_COLUMNS
+INDICATOR_COLUMNS = BASE_INDICATOR_COLUMNS + CRYPTO_XFEATURE_COLUMNS
+
+
+
+
+# ┏━━━━━━━━━━ Dataset Access Helpers ━━━━━━━━━━┓
+def _get_from_dataset(dataset: Any, key: str) -> Any:
+    """Helper to access keys from both dicts and MultiGranDataset objects."""
+    if isinstance(dataset, dict):
+        return dataset.get(key)
+    return getattr(dataset, key, None)
+
+
+# ┏━━━━━━━━━━ Dynamic Return Limits for Plotting ━━━━━━━━━━┓
+def get_dynamic_ret_limits(returns_list: List[np.ndarray], min_buffer: float = 5.0) -> Tuple[float, float]:
+    """
+    Calculate symmetric x-limits based on data percentiles (1st and 99th),
+    ensuring a minimum visibility range of +/- min_buffer%.
+    """
+    import numpy as np
+    
+    # ┏━━━━━━━━━━ Filter out empty arrays or NaNs ━━━━━━━━━━┓
+    valid_data = []
+    for r in returns_list:
+        if r is not None and len(r) > 0:
+            v = r[~np.isnan(r)]
+            if len(v) > 0:
+                valid_data.append(v)
+    
+    # ┏━━━━━━━━━━ If no valid data, return default limits ━━━━━━━━━━┓
+    if not valid_data:
+        return -min_buffer, min_buffer
+    
+    # ┏━━━━━━━━━━ Calculate symmetric limits ━━━━━━━━━━┓
+    all_data = np.concatenate(valid_data)
+    p1 = np.percentile(all_data, 1)
+    p99 = np.percentile(all_data, 99)
+    
+    # ┏━━━━━━━━━━ Use symmetric limit for balanced view ━━━━━━━━━━┓
+    limit = max(abs(p1), abs(p99), min_buffer)
+    
+    # ┏━━━━━━━━━━ Round up to nearest integer for cleaner axis ━━━━━━━━━━┓
+    limit = float(np.ceil(limit))
+    
+    return -limit, limit
+
+
+# ┏━━━━━━━━━━ MultiGranDataset ━━━━━━━━━━┓
 class MultiGranDataset(torch.utils.data.Dataset):
     """
     Flat-indexed dataset that wraps per-granularity sub-datasets.
@@ -92,11 +130,19 @@ class MultiGranDataset(torch.utils.data.Dataset):
         flat_m1_pred_returns, flat_m1_pred_labels, flat_m1_true_labels = [], [], []
         flat_eng_features = []
         offset = 0
+
+        # ┏━━━━━━━━━━ Iterate over granularities ━━━━━━━━━━┓
         for g in GRAN_ORDER:
+            
+            # ┏━━━━━━━━━━ Skip if granularity not present ━━━━━━━━━━┓
             if g not in per_gran:
                 continue
+            
+            # ┏━━━━━━━━━━ Get dataset and number of samples ━━━━━━━━━━┓
             ds = per_gran[g]
             n  = len(ds['labels'])
+            
+            # ┏━━━━━━━━━━ Append to lists ━━━━━━━━━━┓
             self.grans.append(g)
             self.sub[g] = ds
             self._offsets.append(offset)
@@ -117,11 +163,11 @@ class MultiGranDataset(torch.utils.data.Dataset):
         self._total = offset
 
         # ┏━━━━━━━━━━ Flat public tensors ━━━━━━━━━━┓
-        self.labels    = torch.cat(flat_labels)
-        self.dates     = flat_dates
-        self.returns   = torch.cat(flat_returns)
-        self.gran_ids  = torch.cat(flat_gran_ids)
-        self.asset_ids = torch.cat(flat_asset_ids)
+        self.labels          = torch.cat(flat_labels)
+        self.dates           = flat_dates
+        self.returns         = torch.cat(flat_returns)
+        self.gran_ids        = torch.cat(flat_gran_ids)
+        self.asset_ids       = torch.cat(flat_asset_ids)
         self.m1_pred_returns = torch.cat(flat_m1_pred_returns)
         self.m1_pred_labels  = torch.cat(flat_m1_pred_labels)
         self.m1_true_labels  = torch.cat(flat_m1_true_labels)
@@ -145,9 +191,11 @@ class MultiGranDataset(torch.utils.data.Dataset):
                 return g, flat_idx - self._offsets[i]
         raise IndexError(f"Index {flat_idx} out of range (total={self._total})")
 
+    # ┏━━━━━━━━━━ Length ━━━━━━━━━━┓
     def __len__(self):
         return self._total
 
+    # ┏━━━━━━━━━━ Get item ━━━━━━━━━━┓
     def __getitem__(self, idx):
         g, local = self._resolve(idx)
         ds = self.sub[g]
@@ -160,21 +208,22 @@ class MultiGranDataset(torch.utils.data.Dataset):
                   'gran_id':   GRAN_TO_ID[g],
                   'orig_idx':  idx}
 
+        # ┏━━━━━━━━━━ Add M1 tokens if available ━━━━━━━━━━┓
         if 's1_ids' in ds and ds['s1_ids'] is not None:
             output['s1_ids'] = ds['s1_ids'][local]
             output['s2_ids'] = ds['s2_ids'][local]
 
-        # RRS (Regime Rarity Score) — attached by token_regime.attach_rrs_to_dataset()
+        # ┏━━━━━━━━━━ Add RRS if available ━━━━━━━━━━┓
         if hasattr(self, 'rrs') and self.rrs is not None:
             output['rrs'] = self.rrs[idx]
 
-        # Engineered window-level features
+        # ┏━━━━━━━━━━ Add engineered features if available ━━━━━━━━━━┓
         if self.eng_features is not None:
             output['eng_features'] = self.eng_features[idx]
 
         return output
 
-
+# ┏━━━━━━━━━━ Build MultiGranDataset from a DataFrame containing multiple granularities ━━━━━━━━━━┓
 def prepare_multi_gran_dataset(combined_df: pd.DataFrame,
                                column_features: Sequence[str],
                                target_col: str,
@@ -195,17 +244,29 @@ def prepare_multi_gran_dataset(combined_df: pd.DataFrame,
     -------
     MultiGranDataset
     """
+    # ┏━━━━━━━━━━ Check if DataFrame has a 'granularity' column ━━━━━━━━━━┓
     if 'granularity' not in combined_df.columns:
         raise ValueError("DataFrame must have a 'granularity' column for multi-gran mode.")
 
+    # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
     print(f"\n┏━━━━━━━━━━ Pre-Processing {combined_df['granularity'].unique()} Granularities: ━━━━━━━━━━┓")
+    
+    # ┏━━━━━━━━━━ Initialize per_gran dictionary ━━━━━━━━━━┓
     per_gran = {}
+    
+    # ┏━━━━━━━━━━ Iterate over granularities ━━━━━━━━━━┓
     for g, g_df in combined_df.groupby('granularity'):
         seq_len = GRAN_SEQ_LEN.get(g)
+        
+        # ┏━━━━━━━━━━ Skip if granularity not present ━━━━━━━━━━┓
         if seq_len is None:
             print(f"  [WARN] Unknown granularity '{g}', skipping.")
             continue
+        
+        # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
         print(f"[prepare_multi_gran_dataset] Processing {g} (seq_len={seq_len}, rows={len(g_df):,}).")
+        
+        # ┏━━━━━━━━━━ Prepare multi-asset dataset ━━━━━━━━━━┓
         ds = prepare_multi_asset_dataset(g_df,
                                          seq_len            = seq_len,
                                          column_features    = column_features,
@@ -217,10 +278,12 @@ def prepare_multi_gran_dataset(combined_df: pd.DataFrame,
     return MultiGranDataset(per_gran)
 
 
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MULTI-ASSET DATA LOADING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# ┏━━━━━━━━━━ Load all assets from a directory into a single DataFrame ━━━━━━━━━━┓
 def load_multi_asset_dataset(data_dir: Union[str, Path], 
                              direction: str = "up", 
                              assets: Optional[List[str]] = None,) -> pd.DataFrame:
@@ -283,78 +346,6 @@ def load_multi_asset_dataset(data_dir: Union[str, Path],
     return combined
 
 
-def compute_dynamic_labels(df: pd.DataFrame, 
-                           target_col: str = 'close', 
-                           horizon: int = 1, 
-                           lookback: int = 24, 
-                           percentile: float = 33) -> np.ndarray:
-    """
-    Compute tri-class labels based on rolling dynamic thresholds.
-    0: UP (return > rolling_pos_quantile)
-    1: FLAT (between thresholds)
-    2: DN (return < -rolling_neg_quantile)
-    """
-    prices = df[target_col]
-    
-    # ┏━━━━━━━━━━ 1. Compute Forward Returns (Target) ━━━━━━━━━━┓
-    future_returns = (prices.shift(-horizon) / prices) - 1.0
-    
-    # ┏━━━━━━━━━━ 2. Compute Past Returns for Thresholds (Rolling Distribution) ━━━━━━━━━━┓
-    # We use realized returns up to time t to determine the threshold for time t.
-    past_returns = prices.pct_change(periods=1) # 1-step returns for volatility measurement
-    
-    # ┏━━━━━━━━━━ Separate Positive and Negative returns ━━━━━━━━━━┓
-    pos_returns = past_returns.copy()
-    neg_returns = past_returns.copy()
-    pos_returns[pos_returns <= 0] = np.nan
-    neg_returns[neg_returns >= 0] = np.nan
-    neg_returns = neg_returns.abs()
-    
-    # ┏━━━━━━━━━━ 3. Rolling Quantiles (min_periods=lookback//2 to handle early data) ━━━━━━━━━━┓
-    rho_up   = pos_returns.rolling(window=lookback, min_periods=lookback//2).quantile(percentile / 100.0)
-    rho_down = neg_returns.rolling(window=lookback, min_periods=lookback//2).quantile(percentile / 100.0)
-    
-    # ┏━━━━━━━━━━ Fill early NaNs with first valid or fallback ━━━━━━━━━━┓
-    rho_up   = rho_up.bfill().fillna(0.005)   # Fallback 0.5%
-    rho_down = rho_down.bfill().fillna(0.005) # Fallback 0.5%
-    
-    # ┏━━━━━━━━━━ 4. Assign Labels ━━━━━━━━━━┓
-    labels = np.ones(len(df), dtype=np.float32) # Default FLAT (1.0)
-    
-    # ┏━━━━━━━━━━ UP: Future Return > Dynamic UP Threshold (and positive) ━━━━━━━━━━┓
-    labels[(future_returns > rho_up) & (future_returns > 0)] = 0.0
-    
-    # ┏━━━━━━━━━━ DN: Future Return < -Dynamic DOWN Threshold (and negative) ━━━━━━━━━━┓
-    labels[(future_returns < -rho_down) & (future_returns < 0)] = 2.0
-    
-    # ┏━━━━━━━━━━ Handle NaN comparisons (where future_returns is NaN at end of series) ━━━━━━━━━━┓
-    labels[np.isnan(future_returns)] = np.nan
-    
-    return labels
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ENGINEERED WINDOW-LEVEL FEATURES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# ┏━━━━━━━━━━ Feature group → ordered names (must match compute_window_features output) ━━━━━━━━━━┓
-ENG_FEATURE_GROUPS = {
-    'window_stats': ['ret_mean', 'ret_std', 'ret_skew', 'ret_kurt', 'trend_slope', 'trend_r2', 'reversal_count', 'max_drawdown'],
-    'volatility':   ['atr_last', 'atr_norm_last', 'bb_pctb_last', 'bb_bw_last'],
-    'volume':       ['vol_spike_ratio', 'vol_trend_slope', 'vol_cv'],
-    'momentum':     ['rsi_last', 'macd_last', 'roc_5_last', 'roc_20_last', 'momentum_align'],
-    'regime':       ['adx_last', 'hurst', 'choppiness_idx'],
-    # Crypto external + 30-day volatility features (last value per window)
-    'xfeatures':    ['dvol_last', 'fear_greed_last', 'news_sentiment_last',
-                     'r_vol_30_last', 'r_vol_30_ann_last', 'atr_w30_last', 
-                     'rvi_30_last', 'massi_30_last', 'log_return_last', 'dcr_last'],
-}
-
-# ┏━━━━━━━━━━ Flat ordered list of all feature names ━━━━━━━━━━┓
-ENG_FEATURE_NAMES = []
-for _g in ['window_stats', 'volatility', 'volume', 'momentum', 'regime', 'xfeatures']:
-    ENG_FEATURE_NAMES.extend(ENG_FEATURE_GROUPS[_g])
-
 # ┏━━━━━━━━━━ List of Features depending on Cache Dataset ━━━━━━━━━━┓
 def resolve_feature_names(n_cols: int) -> list:
     """Return ENG_FEATURE_NAMES sliced to match the actual tensor width.
@@ -369,10 +360,6 @@ def resolve_feature_names(n_cols: int) -> list:
     # More columns than expected — pad with generic names
     return list(ENG_FEATURE_NAMES) + [f"feat_{i}" for i in range(len(ENG_FEATURE_NAMES), n_cols)]
 
-# ┏━━━━━━━━━━ Known indicator column names used by compute_window_features ━━━━━━━━━━┓
-# Base 9 technical indicators + Crypto extras.  Auto-discovered from CSV columns.
-from Data_MLA.indicators import BASE_INDICATOR_COLUMNS, CRYPTO_XFEATURE_COLUMNS
-INDICATOR_COLUMNS = BASE_INDICATOR_COLUMNS + CRYPTO_XFEATURE_COLUMNS
 
 
 def compute_window_features(ohlcv_window: np.ndarray,
@@ -536,12 +523,12 @@ def compute_window_features(ohlcv_window: np.ndarray,
                      dtype=np.float32)
 
 
+
 def prepare_multi_asset_dataset(df: pd.DataFrame,
                                 seq_len: int = 96,
                                 column_features: Sequence[str] = ("open", "high", "low", "close", "volume"),
                                 extrinsic_features: Sequence[str] = (),
                                 target_col: str = "meta_label",
-                                task_type: str = "classification",
                                 forecast_horizon: int = 1,
                                 cfg: Dict[str, Any] = {}) -> Dict[str, torch.Tensor]:
     """
@@ -591,8 +578,8 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
     skip_nan_ohlcv         = 0
     skip_nan_extrinsic     = 0
     skip_short_asset       = 0
-    skip_nan_target        = 0  # only for ground_truth / forecasting
-    skip_boundary          = 0  # end >= n or forecasting horizon overflow
+    skip_nan_target        = 0
+    skip_boundary          = 0
 
     # ┏━━━━━━━━━━ Map assets to IDs ━━━━━━━━━━┓
     asset_to_id = {a: i for i, a in enumerate(sorted(assets))}
@@ -712,17 +699,6 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
         
         asset_id = asset_to_id[asset]
         
-        # ┏━━━━━━━━━━ Dynamic Labels (Pre-compute entire series) ━━━━━━━━━━┓
-        dynamic_labels = None
-        dt_cfg = cfg.get('data', {}).get('load', {}).get('dynamic_threshold', {})
-        if target_col == 'ground_truth' and dt_cfg.get('enabled', False):
-            print(f"  [Dynamic Labeling] Computing rolling thresholds for {asset}...")
-            dynamic_labels = compute_dynamic_labels(asset_df, 
-                                                    target_col='close', 
-                                                    horizon=forecast_horizon, 
-                                                    lookback=dt_cfg.get('lookback', 24), 
-                                                    percentile=dt_cfg.get('percentile', 33))
-        
         # ┏━━━━━━━━━━ Build sliding windows ━━━━━━━━━━┓
         for i in range(N):
             start, end = i, i + seq_len
@@ -734,45 +710,7 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
                     skip_nan_extrinsic += 1
                     continue  # Skip incomplete window
 
-            # ┏━━━━━━━━━━ Check for NaNs in target ━━━━━━━━━━┓
-            if target_col == 'ground_truth':
-                # Special 3-class logic
-                if end >= n:
-                    skip_boundary += 1
-                    continue
-                
-                if dynamic_labels is not None:
-                    # Use pre-computed dynamic label for this window end
-                    # The label at 'end' corresponds to the return from 'end' to 'end+h'
-                    target_val = dynamic_labels[end]
-                else:
-                    # Fallback to static 1% logic
-                    try:
-                        close_idx = list(column_features).index('close')
-                    except ValueError:
-                        close_idx = 3 if len(column_features) > 3 else 0
-                    
-                    last_close = ohlcv_vals[end - 1, close_idx]
-                    next_close = ohlcv_vals[end,     close_idx]
-                    
-                    change = (next_close - last_close) / (last_close + 1e-9)
-                    
-                    if change > 0.01:
-                        target_val = 0.0 # UP
-                    elif change < -0.01:
-                        target_val = 2.0 # DN
-                    else:
-                        target_val = 1.0 # FLAT
-            elif task_type == "forecasting":
-                if end + forecast_horizon > n:
-                    skip_boundary += 1
-                    continue
-                target_val = target_vals[end : end + forecast_horizon]
-                if np.isnan(target_val).any():
-                     skip_nan_target += 1
-                     continue # Skip incomplete window
-            else:
-                target_val = target_vals[end - 1]
+            target_val = target_vals[end - 1]
 
             # ┏━━━━━━━━━━ OHLCV window (raw, no normalization — handled by IN-Flow) ━━━━━━━━━━┓
             window = ohlcv_vals[start:end, :]  # (seq_len, C)
@@ -797,18 +735,6 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
             if return_series is not None:
                 # Use the pre-computed return from the CSV
                 ret = return_series[end - 1]
-            elif 'ground_truth' in asset_df.columns:
-                # ground_truth = close[t + horizon], pre-attached in the CSV
-                gt_val = asset_df['ground_truth'].iloc[end - 1]
-                try:
-                    close_idx = list(column_features).index('close')
-                except ValueError:
-                    close_idx = 3 if len(column_features) > 3 else 0
-                curr_close = ohlcv_vals[end - 1, close_idx]
-                if np.isnan(gt_val) or curr_close == 0:
-                    ret = np.nan
-                else:
-                    ret = (gt_val - curr_close) / curr_close
             else:
                 # Fallback: re-compute from prices (loses boundary rows)
                 try:
@@ -877,6 +803,7 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
     if nan_label_count:    print(f"    Windows with NaN label (filtered later in split_by_global_time): {nan_label_count:,} ({nan_label_count/created*100:.2f}%)")
     print(f"    Total Final Windows:                                             {total_possible_windows - nan_label_count:,} ({((total_possible_windows - nan_label_count)/total_possible_windows*100):.2f}%)\n")
     return result
+
 
 
 def split_by_global_time(dataset,
@@ -994,6 +921,7 @@ def split_by_global_time(dataset,
 
     return ((idx_train, idx_train_raw), (idx_meta, idx_meta_raw),
             (idx_val, idx_val_raw), (idx_test, idx_test_raw))
+
 
 
 def load_dataset_from_config(config: dict) -> pd.DataFrame:
@@ -1159,7 +1087,7 @@ def load_dataset_from_config(config: dict) -> pd.DataFrame:
                             freq_min = g_min
                 else:
                     # ┏━━━━━━━━━━ Single granularity: compute buffer from granularity string ━━━━━━━━━━┓
-                    max_ctx = int(config.get('data', {}).get('split', {}).get('context_length', 96))
+                    max_ctx = GRAN_SEQ_LEN.get(granularity, 96)
                     if granularity.endswith('m'):
                         freq_min = int(granularity[:-1])
                     elif granularity.endswith('h'):

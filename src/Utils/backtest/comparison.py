@@ -11,6 +11,11 @@ from Utils.utils import model_label as _model_label
 # ┏━━━━━━━━━━ Granularity Order ━━━━━━━━━━┓
 GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m"]
 
+
+__all__ = ["GRAN_ORDER", "run_comparison", "run_paradigm_comparison"]
+
+
+
 # ┏━━━━━━━━━━ Run Comparison ━━━━━━━━━━┓
 def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = None):
     """Build stacked comparison tables for per-gran vs unified results."""
@@ -465,6 +470,7 @@ def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = Non
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"\nComparison table saved: {save_path}")
+
 
 # ┏━━━━━━━━━━ Run Paradigm (between Model types) Comparison ━━━━━━━━━━┓
 def run_paradigm_comparison(dirs: list):
@@ -976,6 +982,3 @@ def run_paradigm_comparison(dirs: list):
                 rtype = "unified" if row_is_uni[i] else "per-gran"
                 writer.writerow([row_labels[i], rtype] + bt_rows[i] + [""] + val_rows[i] + [""] + test_rows[i])
         print(f"  CSV saved: {csv_path}")
-
-
-__all__ = ["GRAN_ORDER", "run_comparison", "run_paradigm_comparison"]

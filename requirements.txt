@@ -41,4 +41,6 @@ lime
 # TabPFN
 tabpfn
 tabpfn-client
+
+# TabICL (tabular in-context learning)
 tabicl

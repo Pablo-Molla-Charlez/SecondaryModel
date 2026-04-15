@@ -17,6 +17,8 @@ from Utils.feature_selection.sequential_feature_selection import SequentialFeatu
 import pandas as pd
 import time
 from Utils.data_loaders.tabular_data_loader import load_tabular_dataset_from_cache_to_DataFrame
+from Utils.utils import _load_multi_cache
+from Utils.data import split_by_global_time, ENG_FEATURE_NAMES
 from sklearn.feature_selection import SequentialFeatureSelector, RFECV
 from Utils.ts_cross_validation.combinatorial_purged_cv import CombinatorialPurgedCV
 from sklearn.metrics import get_scorer
@@ -84,8 +86,8 @@ def do_sfs(clf,
         print(f"Running SFS for {n_features} features", end="\t")
         start = time.time()
         t1 = pd.Series(X_analysis.index)
-        cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, t1=t1, embargo_pct=0.05,
-                                   random_state=42)
+        cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, mode="index",
+                                   t1=t1, embargo_pct=0.05, random_state=42)
         # debugging(cv, X_analysis, y_analysis)
         if n_features == X_analysis.shape[1]:
             # recalculate scoring
@@ -203,8 +205,8 @@ def do_rfecv(clf,
         print(f"Running SFS for {n_features} features", end="\t")
         start = time.time()
         t1 = pd.Series(X_analysis.index)
-        cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, t1=t1, embargo_pct=0.05,
-                                   random_state=42)
+        cv = CombinatorialPurgedCV(n_splits=n_splits, n_test_splits=n_test_splits, mode="index",
+                                   t1=t1, embargo_pct=0.05, random_state=42)
         # debugging(cv, X_analysis, y_analysis)
         if n_features == X_analysis.shape[1]:
             # recalculate scoring
