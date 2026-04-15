@@ -111,9 +111,6 @@ def _load_config(cfg_path: str = "config.yaml") -> dict:
     import os
 
     # ┏━━━━━━━━━━ Determine M1 contexts BEFORE expansion ━━━━━━━━━━┓
-    # Set global defaults if not provided in env
-    os.environ.setdefault("M1_MODEL", "kronos")
-
     # If M1_MODEL is provided in env, make sure M1_DIR is also set (capitalised)
     # so the YAML path expansion ${M1_DIR} works automatically.
     m1_model = os.environ.get("M1_MODEL")
@@ -247,8 +244,12 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     # ┏━━━━━━━━━━ Auto-detect: find caches for both directions ━━━━━━━━━━┓
     result = {}
     for direction in ("up", "down"):
-        candidates = sorted(cache_dir.glob(f"{gran_prefix}_*_{m1_name}_*_fee_{direction}_*.pt"),
-                            key=lambda p: p.stat().st_mtime, reverse=True)
+        if gran_prefix == "multi":
+            pattern = f"multi_{m1_name}_*_fee_{direction}_*.pt"
+        else:
+            pattern = f"{gran_prefix}_*_{m1_name}_*_fee_{direction}_*.pt"
+            
+        candidates = sorted(cache_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             result[direction] = candidates[0]
             print(f"[utils] Auto-selected cache ({direction}): {candidates[0].name}")
@@ -256,17 +257,18 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     if not result:
         # ┏━━━━━━━━━━ Fallback: try old naming without direction ━━━━━━━━━━┓
         candidates = sorted(cache_dir.glob(f"{gran_prefix}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if candidates:
+        if candidates and "legacy" not in [c.name for c in candidates]: # minor safety to avoid false positives
             direction = cfg["data"]["load"].get("direction", "up").lower()
             result[direction] = candidates[0]
             print(f"[utils] Auto-selected cache (legacy): {candidates[0].name}")
 
-    if not result:
-        # ┏━━━━━━━━━━ No cache found — build one from config ━━━━━━━━━━┓
-        print(f"[utils] No existing cache found for granularity={gran}. Building from config...")
+    # ┏━━━━━━━━━━ Always ensure config direction is built ━━━━━━━━━━┓
+    cfg_direction = cfg["data"]["load"].get("direction", "up").lower()
+    if cfg_direction not in result:
+        print(f"[utils] No existing cache found for config direction='{cfg_direction}'. Building from config...")
         cache_path, _ = _build_cache_from_config(cfg)
-        direction = cfg["data"]["load"].get("direction", "up").lower()
-        result[direction] = cache_path
+        result[cfg_direction] = cache_path
+
     return result
 
 

@@ -268,6 +268,8 @@ def _find_best_utility_threshold(probs: np.ndarray,
             n = int(sel.sum())
             if n < min_trades:
                 continue
+            if float(np.nanmean(returns[sel] - fee)) <= 0:
+                continue
             n_err = int((returns[sel] < fee).sum())
             risk = n_err / n
             cov = n / N_total
