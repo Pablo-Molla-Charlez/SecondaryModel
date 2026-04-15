@@ -448,25 +448,108 @@ conda run -n CTTS python -m Utils.ocp.theory --config config.yaml
 
 ### `Utils/experiments.py` — Full Experiment Suite
 
-Orchestrates training + edge convergence + combined backtests for all models and directions in one command. Useful for overnight batch runs.
+Orchestrates the full M2 pipeline for all models and directions in a single command. Three sequential phases:
+
+| Phase | What it does | Skip flag |
+| --- | --- | --- |
+| **1 — Training** | `kronos_tree.py --per-gran` for every model × direction | `--skip-training` |
+| **2 — Edge** | Seeds → CPCV → Convergence for every model × direction | `--skip-edge` |
+| **3 — Combined** | `kronos_tree.py --combined-backtest` (UP+DOWN) for every model | `--skip-combined` |
+
+**Key rule**: `experiments.py` always reads the config you pass via `--config`. Each of its subprocesses (`kronos_tree.py`, `Utils.edge`) also receives **that same config** — you do not need to edit `config.yaml` to switch M1 models. Use `--m1` instead.
+
+#### Config selection
+
+Each M1 has its own config file with the correct `csv_dir` and `m1:` field:
+
+| M1 model | Config file |
+| --- | --- |
+| Kronos | `config.yaml` |
+| Fincast | `config_fincast.yaml` |
+| Chronos2 | `config_chronos2.yaml` |
+| Tirex | `config_tirex.yaml` |
+
+#### Examples
 
 ```bash
-# All models, all directions
+# ── Full run ────────────────────────────────────────────────────────────────
+
+# All models (rf, xgboost, tabpfn, tabicl), both directions — Kronos signals
 conda run -n CTTS python Utils/experiments.py --config config.yaml
 
-# Subset of models
-conda run -n CTTS python Utils/experiments.py --config config.yaml --models rf tabicl
+# All models — Fincast signals (reads config_fincast.yaml; outputs → Output/Fincast/)
+conda run -n CTTS python Utils/experiments.py --config config_fincast.yaml
 
-# Skip training (re-run edge + backtest on existing results)
-conda run -n CTTS python Utils/experiments.py --config config.yaml --skip-training
+# All models — Chronos2 signals
+conda run -n CTTS python Utils/experiments.py --config config_chronos2.yaml
 
-# Training only (skip edge and combined backtest)
+# All models — Tirex signals
+conda run -n CTTS python Utils/experiments.py --config config_tirex.yaml
+
+# ── Model selection ─────────────────────────────────────────────────────────
+
+# Only RF and TabICL
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --models rf tabicl
+
+# Only TabPFN
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --models tabpfn
+
+# ── Phase control ───────────────────────────────────────────────────────────
+
+# Skip training — re-run edge + combined backtest on existing outputs
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --skip-training
+
+# Training only — skip edge and combined backtest
 conda run -n CTTS python Utils/experiments.py --config config.yaml \
   --skip-edge --skip-combined
 
-# Explicitly override the M1 model (e.g., target Fincast signals)
-conda run -n CTTS python Utils/experiments.py --config config.yaml --m1 fincast
+# Skip everything except the combined UP+DOWN backtest
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --skip-training --skip-edge
+
+# ── Feature analysis ────────────────────────────────────────────────────────
+
+# Enable feature analysis (steps 1-7 of kronos_tree) during training
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --features true
+
+# Enable feature analysis AND top-5 sub-analysis
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --features true --top5 true
+
+# ── Edge protocol tuning ────────────────────────────────────────────────────
+
+# More seed trials and CPCV blocks for tighter convergence verdict
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --edge-trials 200 --edge-blocks 8
+
+# ── M1 override (legacy / special cases) ────────────────────────────────────
+# Use --m1 only when you want to override the m1 field that is hardcoded in
+# the config. Prefer passing the correct config file (e.g. config_fincast.yaml)
+# over using --m1 whenever possible.
+
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --m1 fincast
 ```
+
+#### Full argument reference
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `--config` | *(required)* | Path to the YAML config file. |
+| `--models` | all (rf xgboost tabpfn tabicl) | Which models to run. |
+| `--skip-training` | off | Skip Phase 1 (per-gran training). |
+| `--skip-edge` | off | Skip Phase 2 (edge convergence). |
+| `--skip-combined` | off | Skip Phase 3 (combined UP+DOWN backtest). |
+| `--features` | `false` | Run feature analysis (steps 1-7) during training. |
+| `--top5` | `false` | Run top-5 feature sub-analysis (requires `--features true`). |
+| `--edge-trials` | 100 | Number of seed trials in Phase 2 seeds step. |
+| `--edge-blocks` | 6 | Number of CPCV blocks in Phase 2 CPCV step. |
+| `--edge-k-test` | 2 | Number of test blocks per CPCV split. |
+| `--m1` | *(from config)* | Override the M1 model name (sets `M1_MODEL` env var for subprocesses). |
 
 ---
 
