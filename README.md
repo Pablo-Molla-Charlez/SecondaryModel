@@ -288,19 +288,7 @@ Or prefix any command with `conda run -n CTTS` to run it without activating:
 conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran
 ```
 
-### 2. Data root
-
-Set `M2_DATA_ROOT` to point to your local data root before running any script. The config files use `${M2_DATA_ROOT}` as a placeholder that gets expanded at load time.
-
-```bash
-# macOS (external drive)
-export M2_DATA_ROOT=/Volumes/Data/other/2026_NII
-
-# Linux
-export M2_DATA_ROOT=/home/pablo/M2_DS/Secondary-Model/src
-```
-
-### 3. Working directory
+### 2. Working directory
 
 All commands below assume you are in `Secondary-Model/src/`:
 
@@ -389,15 +377,14 @@ conda run -n CTTS python -m Utils.edge \
 
 ### `Utils/hpo/` — Hyperparameter Optimization
 
-Runs an Optuna study to find the best hyperparameters for a given model/granularity/direction combination. Requires a cache `.pt` file.
+Runs an Optuna study to find the best hyperparameters for a given model/granularity/direction combination. The cache is auto-detected from the config if not passed explicitly.
 
 **Available `--models` values:** `rf`, `tabpfn`, `tabpfn_ft`, `tabicl`, `autogluon`
 
 ```bash
-# HPO for RF — up direction, 4h granularity, 50 trials
+# HPO for RF — up direction, 4h granularity, 50 trials (cache auto-detected)
 conda run -n CTTS python -m Utils.hpo \
   --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
   --models rf \
   --directions up \
   --grans 4h \
@@ -406,23 +393,29 @@ conda run -n CTTS python -m Utils.hpo \
 # HPO for TabPFN + TabICL — both directions, multiple granularities
 conda run -n CTTS python -m Utils.hpo \
   --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
   --models tabpfn tabicl \
   --directions up down \
   --grans 4h 1d 8h \
   --n-trials 100
 
-# HPO for all models
+# HPO for all models — explicit cache path
 conda run -n CTTS python -m Utils.hpo \
   --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt \
   --models rf tabpfn tabpfn_ft tabicl autogluon \
   --directions up down \
   --grans 4h \
   --n-trials 30
+
+# HPO on Fincast signals
+conda run -n CTTS python -m Utils.hpo \
+  --config config_fincast.yaml \
+  --models rf tabicl \
+  --directions up down \
+  --n-trials 100
 ```
 
-Results are saved to `Output/Kronos/hpo/<model>/<direction>/<gran>/best_params.json`.
+Results are saved to `Output/<M1>/hpo/<model>/<direction>/<gran>/best_params.json`.
 
 ---
 
@@ -440,8 +433,9 @@ conda run -n CTTS python -m Utils.ocp.analysis \
   --folder Output/Kronos/randforest/UP/OCP/unified_up_tp \
   --mode unified
 
-# Theory / simulation studies
-conda run -n CTTS python -m Utils.ocp.theory --config config.yaml
+# Theory / simulation studies (requires a cache .pt file)
+conda run -n CTTS python -m Utils.ocp.theory \
+  --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt
 ```
 
 ---
@@ -557,8 +551,7 @@ conda run -n CTTS python Utils/experiments.py --config config.yaml \
 
 | Path | Role |
 | --- | --- |
-| `config.yaml` | Unified runtime configuration for all models (paths, dates, features). |
-| | Control M1 choice via `export M1_MODEL=...` |
+| `config.yaml` / `config_<m1>.yaml` | Runtime configuration per M1 model (paths, dates, features). Pass via `--config` — no env vars needed. |
 | `kronos_tree.py` | Main M2 analysis entrypoint; orchestrates 4-way splits, training, evaluation, and selective backtesting. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
 | `Utils/edge/` | **The Gate Keeper**: Seeds stability engine + CPCV regime-sensitivity analysis. CLI: `python -m Utils.edge`. |
