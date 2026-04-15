@@ -1116,7 +1116,7 @@ def plot_temporal_risk_coverage_curve(save_path: Path,
     risk_05 = risks_raw[idx_05]
     op_cov = op["coverage"]
     op_risk = op.get("risk", 0)
-    thr_source = op.get("threshold_source", "OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
+    thr_source = op.get("threshold_source") or ("OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
     show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
     if show_baseline:
         ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)

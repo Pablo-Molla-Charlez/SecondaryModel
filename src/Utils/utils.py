@@ -157,6 +157,7 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     forecast_horizon = load_cfg.get("forecast_horizon", 7)
     is_multi_gran    = (granularity == "all")
     seq_len          = GRAN_SEQ_LEN.get(granularity, 96)
+    
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
     data_signature = {"granularity":      load_cfg.get("granularity"),
                       "meta_label_mode":  load_cfg.get("meta_label_mode"),
@@ -174,10 +175,11 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     # ┏━━━━━━━━━━ Build cache path ━━━━━━━━━━┓
     cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    m1_name = m1_model_name(cfg)
     if is_multi_gran:
-        cache_name = f"multi_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
+        cache_name = f"multi_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
     else:
-        cache_name = f"{granularity}_{seq_len}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
+        cache_name = f"{granularity}_{seq_len}_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
     cache_path = cache_dir / cache_name
 
     # ┏━━━━━━━━━━ Try loading existing cache ━━━━━━━━━━┓
@@ -225,6 +227,8 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     # ┏━━━━━━━━━━ Extract Configs ━━━━━━━━━━┓
     gran = cfg["data"]["load"]["granularity"]
     cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
+    m1_name = m1_model_name(cfg)
+    gran_prefix = "multi" if gran == "all" else gran
 
     # ┏━━━━━━━━━━ Explicit cache path ━━━━━━━━━━┓
     if explicit:
@@ -243,7 +247,7 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     # ┏━━━━━━━━━━ Auto-detect: find caches for both directions ━━━━━━━━━━┓
     result = {}
     for direction in ("up", "down"):
-        candidates = sorted(cache_dir.glob(f"{gran}_*_fee_{direction}_*.pt"),
+        candidates = sorted(cache_dir.glob(f"{gran_prefix}_*_{m1_name}_*_fee_{direction}_*.pt"),
                             key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             result[direction] = candidates[0]
@@ -251,7 +255,7 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
 
     if not result:
         # ┏━━━━━━━━━━ Fallback: try old naming without direction ━━━━━━━━━━┓
-        candidates = sorted(cache_dir.glob(f"{gran}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = sorted(cache_dir.glob(f"{gran_prefix}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             direction = cfg["data"]["load"].get("direction", "up").lower()
             result[direction] = candidates[0]

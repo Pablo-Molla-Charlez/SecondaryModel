@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from Utils.utils import _load_config
 
 
 # ┏━━━━━━━━━━ Constants ━━━━━━━━━━┓
@@ -56,27 +57,31 @@ def _run(cmd: list[str], label: str):
 # ┏━━━━━━━━━━ Find cache ━━━━━━━━━━┓
 def _find_cache(cfg_path: str, direction: str) -> str | None:
     """Resolve the multi-gran cache path for a direction from config."""
-    import yaml
+    from Utils.utils import m1_model_name, m1_output_bucket
     
-    # ┏━━━━━━━━━━ Load config ━━━━━━━━━━┓
-    with open(cfg_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    output_root = Path(cfg["paths"]["output_root"])
+    # ┏━━━━━━━━━━ Load config (expands ${ENV_VAR} placeholders) ━━━━━━━━━━┓
+    cfg = _load_config(cfg_path)
+    m1_bucket = m1_output_bucket(cfg)
+    m1_name = m1_model_name(cfg)
     
-    # ┏━━━━━━━━━━ Search all cache dirs for matching direction ━━━━━━━━━━┓
-    for cache_dir in sorted(output_root.glob("**/cache*")):
-        for pt in sorted(cache_dir.glob(f"multi_*_{direction}_*.pt")):
-            return str(pt)
+    # ┏━━━━━━━━━━ Search the specific M1 cache dir ━━━━━━━━━━┓
+    cache_dir = Path(cfg["paths"]["output_root"]) / m1_bucket / "cache"
+    if not cache_dir.exists():
+        return None
+        
+    for pt in sorted(cache_dir.glob(f"multi_{m1_name}_*_fee_{direction}_*.pt")):
+        return str(pt)
+        
     return None
 
 # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
 def run_experiments(config: str,
                     models: list[str],
                     skip_training: bool = False,
-                    skip_edge: bool = False,
+                    skip_edge:     bool = False,
                     skip_combined: bool = False,
-                    edge_trials: int = 100,
-                    edge_blocks: int = 6,
+                    edge_trials:   int = 100,
+                    edge_blocks:   int = 6,
                     edge_k_test: int = 2,
                     features: bool = True,
                     top5: bool = True):
@@ -161,16 +166,13 @@ def run_experiments(config: str,
 
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓
     if not skip_combined:
-        import yaml
-        
         # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
         print(f"\n{'#'*70}")
         print(f"# PHASE 3: Combined UP+DOWN Backtests")
         print(f"{'#'*70}")
 
-        # ┏━━━━━━━━━━ Load config ━━━━━━━━━━┓
-        with open(cfg_path, "r") as f:
-            cfg = yaml.safe_load(f)
+        # ┏━━━━━━━━━━ Load config (expands ${ENV_VAR} placeholders) ━━━━━━━━━━┓
+        cfg = _load_config(cfg_path)
 
         # ┏━━━━━━━━━━ Determine M1 bucket ━━━━━━━━━━┓
         m1 = cfg.get("data", {}).get("load", {}).get("m1", "kronos").lower()
@@ -221,9 +223,15 @@ def main():
     parser.add_argument("--edge-trials",   type=int, default=100,    help="Seed trials for edge analysis")
     parser.add_argument("--edge-blocks",   type=int, default=6,      help="CPCV blocks")
     parser.add_argument("--edge-k-test",   type=int, default=2,      help="CPCV test blocks per split")
-    parser.add_argument("--features",      type=str, default="true", choices=["true", "false"], help="Run feature analysis during training")
-    parser.add_argument("--top5",          type=str, default="true", choices=["true", "false"], help="Run top-5 feature analysis during training")
+    parser.add_argument("--features",      type=str, default="false", choices=["true", "false"], help="Run feature analysis during training")
+    parser.add_argument("--top5",          type=str, default="false", choices=["true", "false"], help="Run top-5 feature analysis during training")
+    parser.add_argument("--m1",            type=str, default=None, help="Override M1 model (e.g., kronos, fincast). Sets M1_MODEL env var.")
     args = parser.parse_args()
+
+    # ┏━━━━━━━━━━ Override M1 env var if provided ━━━━━━━━━━┓
+    if args.m1:
+        import os
+        os.environ["M1_MODEL"] = args.m1.strip().lower()
 
     # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
     run_experiments(config        = args.config,
@@ -234,8 +242,8 @@ def main():
                     edge_trials   = args.edge_trials,
                     edge_blocks   = args.edge_blocks,
                     edge_k_test   = args.edge_k_test,
-                    features      = args.features.lower() == "true",
-                    top5          = args.top5.lower() == "true")
+                    features      = args.features.lower() == "false",
+                    top5          = args.top5.lower() == "false")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ def calibrate_probabilities(val_probs: np.ndarray,
                             val_labels: np.ndarray,
                             test_probs: np.ndarray = None,
                             min_unique_out: int = 5,
-                            min_range_out: float = 0.10):
+                            min_range_out: float = 0.10,
+                            min_pos_frac_ratio: float = 0.25):
     """Calibrate predicted probabilities using isotonic regression with safety fallback.
 
     Fits isotonic regression on (val_probs, val_labels). If the fitted calibrator
@@ -44,12 +45,24 @@ def calibrate_probabilities(val_probs: np.ndarray,
     val_cal = iso.predict(val_probs)
 
     # ┏━━━━━━━━━━ Check for Degeneracy ━━━━━━━━━━┓
+    # Three failure modes:
+    #   (1) too few distinct output values (collapse to constant-ish)
+    #   (2) tiny output range
+    #   (3) isotonic squashes almost everything below 0.5 while the raw model
+    #       had a meaningful positive mass. Concretely, if raw had ≥5% of
+    #       samples at p≥0.5 but calibrated retains < min_pos_frac_ratio × that,
+    #       the calibrator has destroyed the decision boundary.
     n_unique = int(np.unique(np.round(val_cal, 6)).size)
     out_range = float(val_cal.max() - val_cal.min()) if val_cal.size else 0.0
-    degenerate = n_unique < min_unique_out or out_range < min_range_out
+    raw_pos_frac = float((val_probs >= 0.50).mean()) if val_probs.size else 0.0
+    cal_pos_frac = float((val_cal   >= 0.50).mean()) if val_cal.size  else 0.0
+    squashed = (raw_pos_frac >= 0.05 and cal_pos_frac < min_pos_frac_ratio * raw_pos_frac)
+    degenerate = (n_unique < min_unique_out or out_range < min_range_out or squashed)
     if degenerate:
-        print(f"    [calibrate] WARNING: isotonic degenerated "
-              f"(unique={n_unique}, range={out_range:.3f}) — falling back to identity.")
+        reason = ("squash" if squashed else f"unique={n_unique}, range={out_range:.3f}")
+        print(f"    [calibrate] WARNING: isotonic degenerated ({reason}, "
+              f"raw_pos={raw_pos_frac:.3f}, cal_pos={cal_pos_frac:.3f}) "
+              f"— falling back to identity (raw probs).")
         iso = _IdentityCalibrator()
         val_cal = iso.predict(val_probs)
 

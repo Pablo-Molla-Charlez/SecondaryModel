@@ -1239,7 +1239,7 @@ def run_unified_analysis(cache_path: Path,
                 thr_source = ocp_op.get("threshold_source", "OCP-SAOCP")
             else:
                 sel = probs_cal >= threshold
-                thr_source = "Utility-Opt" if split_name == "Val" else "Val-Utility"
+                thr_source = val_op.get("threshold_source", "Utility-Opt") if split_name == "Val" else val_op.get("threshold_source", "Val-Utility")
 
             # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
             sel_true = y_split

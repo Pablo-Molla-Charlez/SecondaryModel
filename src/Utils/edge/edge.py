@@ -37,7 +37,8 @@ from Utils.backtest import (_annualization_factor,
                             _calc_drawdown,
                             _calc_sharpe,
                             _equity_horizon_returns,
-                            _load_raw_close_prices)
+                            _load_raw_close_prices,
+                            _plot_path_equity)
 
 # ┏━━━━━━━━━━ Imports from Utils ━━━━━━━━━━┓
 from Utils.utils import (_load_config,
