@@ -45,10 +45,9 @@ class AutoGluon(BaseClassifier):
         if self.args is None:
             raise ValueError("Argument 'args' is None -- Please pass it!")
         self.model_cache_path = (
-            f"{self.args.output_root}/{self.args.m1}/interpretability/feature_selection/{self.args.m2}/"
+            f"{self.args.output_root}/{self.args.m1}/cache/autogluon/{self.args.m2}/"
             f"direction={self.args.direction}/{self.args.gran}")
-        self.time_limit = 60
-
+        
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray) -> object:
         # TODO the idea is to only run the hyperparameter optimization once
         #  cache the optimized model and retrain it on the subsplit

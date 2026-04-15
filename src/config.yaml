@@ -4,18 +4,18 @@
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "${M2_DATA_ROOT}/Data_MLA/${M1_DIR}/Crypto/TP/horizon_7"
-  output_root: "${M2_DATA_ROOT}/Output"
+  csv_dir: "/Volumes/Data/other/2026_NII/Data_MLA/Kronos/Crypto/TP/horizon_7"
+  output_root: "/Volumes/Data/other/2026_NII/Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
   load:
     symbol:          null          # or null for multi-asset or ["BTC", "ETH", "XRP", ...]
-    m1:              "${M1_MODEL}" # Derived from env M1_MODEL (e.g. kronos, fincast, tirex)
+    m1:              "kronos" # Derived from env M1_MODEL (e.g. kronos, fincast, tirex)
     target_col:      "meta_label"  # "meta_label" or "close" or "ground_truth"
     meta_label_mode: "tp"          # "fp" or "tp" or "og"
     direction:       "up"          # "up" or "down"
-    granularity:     "all"         # "1d", "4h", etc. or "all" for multi-granularity
+    granularity:     "1d"         # "1d", "4h", etc. or "all" for multi-granularity
     forecast_horizon: 7
 
   # ┏━━━━━━━━━━ Data Splits ━━━━━━━━━━┓

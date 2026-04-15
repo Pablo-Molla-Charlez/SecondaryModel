@@ -221,8 +221,8 @@ def main():
     parser.add_argument("--edge-trials",   type=int, default=100,    help="Seed trials for edge analysis")
     parser.add_argument("--edge-blocks",   type=int, default=6,      help="CPCV blocks")
     parser.add_argument("--edge-k-test",   type=int, default=2,      help="CPCV test blocks per split")
-    parser.add_argument("--features",      type=str, default="true", choices=["true", "false"], help="Run feature analysis during training")
-    parser.add_argument("--top5",          type=str, default="true", choices=["true", "false"], help="Run top-5 feature analysis during training")
+    parser.add_argument("--features",      type=str, default="false", choices=["true", "false"], help="Run feature analysis during training")
+    parser.add_argument("--top5",          type=str, default="false", choices=["true", "false"], help="Run top-5 feature analysis during training")
     args = parser.parse_args()
 
     # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓

@@ -15,7 +15,6 @@ Usage:
   python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv --model tabpfn_ft
   python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv --n-blocks 8 --k-test 2
 """
-
 import math
 import argparse, sys, json
 from pathlib import Path
@@ -32,7 +31,10 @@ from matplotlib.lines import Line2D
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+_SRC = Path(__file__).resolve().parent.parent.parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 # ┏━━━━━━━━━━ Imports from Data Preprocessing ━━━━━━━━━━┓
 from Utils.data import resolve_feature_names
@@ -44,21 +46,25 @@ from Utils.selective_classification import _find_best_utility_threshold, calibra
 from Utils.classifier import _build_tree_model, MODEL_CHOICES, MODELS_NO_SCALING
 
 # ┏━━━━━━━━━━ Imports from Backtest ━━━━━━━━━━┓
-from Utils.backtest import (_annualization_factor, 
+from Utils.backtest import (_annualization_factor,
                             _build_spread_equity,
-                            _calc_drawdown, 
-                            _calc_sharpe, 
+                            _calc_drawdown,
+                            _calc_sharpe,
                             _equity_horizon_returns,
                             _load_raw_close_prices,
                             _plot_path_equity)
 
 # ┏━━━━━━━━━━ Imports from Utils ━━━━━━━━━━┓
-from Utils.utils import (_load_config, 
-                         _infer_direction, 
+from Utils.utils import (_load_config,
+                         _infer_direction,
                          _load_multi_cache,
-                         _class_names, 
-                         m1_output_bucket, 
+                         _class_names,
+                         m1_output_bucket,
                          m1_display_label)
+
+from Utils.edge.plots import (_plot_split_matrix,
+                              _plot_path_boxplots,
+                              _plot_cross_gran_cpcv)
 
 # ┏━━━━━━━━━ Fixed seed for CPCV — variance measures regime sensitivity, not model noise ━━━━━━━━━━┓
 EDGE_SEED = 42
@@ -91,12 +97,6 @@ METRICS_TO_PLOT = [("accuracy",      "Accuracy (@0.5)"),
                    ("mean_ret",      "Mean Ret (@0.5)"),
                    ("sel_mean_ret",  "Selective Mean Ret"),
                    ("sel_coverage",  "Selective Coverage")]
-
-
-if __name__ == "__main__":
-    main()
-
-
 
 
 # ┏━━━━━━━━━━ Embargo helper: 4-way split with purge at all boundaries ━━━━━━━━━━┓
@@ -946,7 +946,7 @@ def run_cpcv_analysis(cache_path, cfg, n_blocks=6, k_test=2, output_root=None, m
         print(f"  {len(splits)} splits | Avg: train={avg_train:.0f}, test={avg_test:.0f}, purged={avg_purged:.0f}")
 
         # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
-        gran_dir = output_root / direction.upper() / gran
+        gran_dir = output_root / m1 / m2 / direction.upper() / gran
         gran_dir.mkdir(parents=True, exist_ok=True)
 
         # ┏━━━━━━━━━━ Reconstruct paths ━━━━━━━━━━┓
@@ -1283,9 +1283,9 @@ def main():
     parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")
     parser.add_argument("--cache",       type=str, required=True, help="Multi-granularity cache .pt")
     parser.add_argument("--config",      type=str, default="config.yaml", help="config.yaml path")
-    parser.add_argument("--mode",        type=str, default="seeds", choices=["seeds", "cpcv"], help="'seeds' = 100 seed trials, 'cpcv' = Combinatorial Purged CV")
+    parser.add_argument("--mode",        type=str, default="cpcv", choices=["seeds", "cpcv"], help="'seeds' = 100 seed trials, 'cpcv' = Combinatorial Purged CV")
     parser.add_argument("--trials",      type=int, default=100, help="[seeds] Number of trials")
-    parser.add_argument("--n-blocks",    type=int, default=6, help="[cpcv] Number of blocks (default: 6)")
+    parser.add_argument("--n-blocks",    type=int, default=3, help="[cpcv] Number of blocks (default: 6)")
     parser.add_argument("--k-test",      type=int, default=2, help="[cpcv] Test blocks per split (default: 2)")
     parser.add_argument("--model",       type=str, default="randforest", choices=_VALID_CLI_MODELS, help=f"Model to use: {_VALID_CLI_MODELS}")
     parser.add_argument("--convergence", action="store_true", help="Compute the 3-stage Edge Convergence Score from pre-calculated results")
@@ -1296,6 +1296,9 @@ def main():
     if not cache_path.exists():
         raise FileNotFoundError(f"Cache not found: {cache_path}")
     cfg = _load_config(args.config)
+    
+    # print(f"\n\n\ncfg\n\n\n{cfg}\n\n\n")
+    # exit(12)
 
     # ┏━━━━━━━━━━ Output directory (includes model name) ━━━━━━━━━━┓
     m1_bucket = m1_output_bucket(cfg)
@@ -1309,6 +1312,9 @@ def main():
     else:
         run_cpcv_analysis(cache_path, cfg, n_blocks=args.n_blocks,
                           k_test=args.k_test, output_root=output_root, model_name=args.model)
+
+if __name__ == "__main__":
+    main()
 
 # Back-import plot functions so topic-level code can call them.
 from .plots import *  # noqa: E402,F401,F403
