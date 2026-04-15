@@ -15,7 +15,6 @@ GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m"]
 __all__ = ["GRAN_ORDER", "run_comparison", "run_paradigm_comparison"]
 
 
-
 # ┏━━━━━━━━━━ Run Comparison ━━━━━━━━━━┓
 def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = None):
     """Build stacked comparison tables for per-gran vs unified results."""

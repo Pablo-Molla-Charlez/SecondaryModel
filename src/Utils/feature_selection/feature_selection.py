@@ -1,31 +1,20 @@
 """Feature analysis and plotting helpers extracted from kronos_tree.py."""
 
+import json
 import warnings
 import re
-import os
 import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from pathlib import Path
-from scipy import stats
-from xgboost import XGBClassifier
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional
 
-
-from sklearn.feature_selection import mutual_info_classif
-from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score,
-                             precision_recall_fscore_support, confusion_matrix, 
-                             ConfusionMatrixDisplay, fbeta_score, matthews_corrcoef)
-from sklearn.model_selection import TimeSeriesSplit
+from scipy.stats import spearmanr
+from sklearn.metrics import accuracy_score, fbeta_score, matthews_corrcoef, precision_recall_fscore_support
 from sklearn.preprocessing import StandardScaler
-
-from Utils.utils import model_label
-from Utils.data import _get_from_dataset, get_dynamic_ret_limits, MultiGranDataset
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -41,30 +30,15 @@ TOP_K = 5
 _RNG = np.random.default_rng(42)
 
 
-__all__ = [
-    "plot_correlation_heatmap",
-    "plot_pointbiserial",
-    "plot_class_distributions",
-    "plot_mutual_information",
-    "plot_tree_importance",
-    "_plot_prob_distribution",
-    "plot_class_distribution",
-    "plot_meta_label_returns_histogram",
-    "plot_prediction_returns_histogram",
-    "plot_m1_prediction_returns_histogram",
-    "compute_classification_metrics",
-    "plot_confusion_matrix",
-    "extract_time_features",
-    "plot_temporal_risk_coverage_curve",
-    "plot_ocp_threshold_evolution",
-    "compute_top_features",
-    "mda_rank",
-    "shap_rank",
-    "lime_rank",
-    "combine_rankings",
-    "run_feature_selection",
-    "plot_selective_return_distribution",
-]
+__all__ = ["compute_classification_metrics",
+           "extract_time_features",
+           "compute_top_features",
+           "mda_rank",
+           "shap_rank",
+           "lime_rank",
+           "combine_rankings",
+           "run_feature_selection",
+           "compute_asset_correlation"]
 
 
 
@@ -532,7 +506,7 @@ def combine_rankings(all_scores: Dict[str, dict],
     return combined
 
 
-
+# ┏━━━━━━━━━━ OG Feature Selection ━━━━━━━━━━┓
 def run_feature_selection(df_train: pd.DataFrame,
                           labels_train: np.ndarray,
                           df_val: pd.DataFrame,
@@ -623,7 +597,6 @@ def run_feature_selection(df_train: pd.DataFrame,
                "top_k": top_k,
                "selected_features": selected}
       
-    import json
     with open(save_dir / "fs_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
@@ -637,5 +610,304 @@ def run_feature_selection(df_train: pd.DataFrame,
             "combined_scores": combined,
             "per_method_scores": per_method}
 
-# Back-import plot functions so topic-level code can call them.
-from .plots import *  # noqa: E402,F401,F403
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CROSS-ASSET CORRELATION ANALYSIS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _build_return_matrix(dataset: dict) -> pd.DataFrame:
+    """Pivot dataset returns into a (date x asset) DataFrame.
+
+    Each cell is the window-level return for that asset at that timestamp.
+    Dates are sorted chronologically; assets with fewer observations than
+    the most-observed asset are left as NaN for those timestamps.
+
+    Parameters
+    ----------
+    dataset : dict
+        Multi-asset cache dict with keys ``returns``, ``asset_ids``,
+        ``asset_map``, ``dates`` (output of ``prepare_multi_asset_dataset``).
+
+    Returns
+    -------
+    pd.DataFrame
+        Shape (T, A) — rows are timestamps, columns are asset names.
+    """
+
+    # ┏━━━━━━━━━━ Extract Data ━━━━━━━━━━┓
+    returns   = dataset["returns"]
+    asset_ids = dataset["asset_ids"]
+    dates     = dataset["dates"]
+    asset_map = dataset["asset_map"]   # id → name
+
+    # ┏━━━━━━━━━━ Convert to numpy ━━━━━━━━━━┓
+    if isinstance(returns, torch.Tensor):
+        returns = returns.numpy()
+    if isinstance(asset_ids, torch.Tensor):
+        asset_ids = asset_ids.numpy().astype(int)
+
+    # ┏━━━━━━━━━━ Create DataFrame ━━━━━━━━━━┓
+    df = pd.DataFrame({"date":   pd.to_datetime(dates),
+                       "asset":  [asset_map.get(int(a), str(a)) for a in asset_ids],
+                       "return": returns})
+
+    # ┏━━━━━━━━━━ Pivot DataFrame ━━━━━━━━━━┓
+    pivot = (df.pivot_table(index="date", columns="asset", values="return", aggfunc="mean").sort_index())
+    pivot.columns.name = None
+    return pivot
+
+
+def _permutation_significance(pivot: pd.DataFrame, n_permutations: int = 5_000, seed: int = 42) -> dict:
+    """Test whether the mean pairwise Pearson correlation is significantly > 0.
+
+    Null distribution: for each iteration, independently permute every asset's
+    return time series (breaking temporal alignment across assets), recompute
+    the full Pearson correlation matrix, and record the mean off-diagonal
+    correlation. Repeating this *n_permutations* times builds the null
+    distribution under H0 = "assets are uncorrelated".
+
+    Parameters
+    ----------
+    pivot : pd.DataFrame
+        (T x A) return matrix from :func:`_build_return_matrix`, used both to
+        compute the observed correlation and to generate the null distribution.
+
+    Returns
+    -------
+    dict with keys ``observed_mean_r``, ``p_value``, ``null_mean``,
+    ``null_std``, ``z_score``.
+    """
+    # ┏━━━━━━━━━━ Drop rows with any NaN so correlation is well-defined ━━━━━━━━━━┓
+    mat = pivot.dropna().values          # shape (T, A)
+    T, A = mat.shape
+    off_diag = ~np.eye(A, dtype=bool)
+
+    # ┏━━━━━━━━━━ Observed mean pairwise Pearson correlation ━━━━━━━━━━┓
+    observed = float(np.corrcoef(mat, rowvar=False)[off_diag].mean())
+
+    # ┏━━━━━━━━━━ Build null distribution by permuting each asset independently ━━━━━━━━━━┓
+    rng = np.random.default_rng(seed)
+    null_means = np.empty(n_permutations)
+    for k in range(n_permutations):
+        # ┏━━━━━━━━━━ Shuffle every asset's time axis independently ━━━━━━━━━━┓
+        shuffled = np.empty_like(mat)
+        for a in range(A):
+            shuffled[:, a] = rng.permutation(mat[:, a])
+        null_means[k] = float(np.corrcoef(shuffled, rowvar=False)[off_diag].mean())
+
+    # ┏━━━━━━━━━━ One-sided p-value: fraction of null >= observed ━━━━━━━━━━┓
+    p_value = float((null_means >= observed).mean())
+
+    return {"observed_mean_r": observed,
+            "p_value":         p_value,
+            "null_mean":       float(null_means.mean()),
+            "null_std":        float(null_means.std()),
+            "z_score":         float((observed - null_means.mean()) / (null_means.std() + 1e-12))}
+
+
+def _lead_lag_matrix(pivot: pd.DataFrame, max_lag: int = 3) -> pd.DataFrame:
+    """Compute peak cross-correlation lag between every ordered asset pair.
+
+    Entry [i, j] is the lag l ∈ [-max_lag, max_lag] at which
+    corr(asset_i_t, asset_j_{t+l}) is maximised (absolute value).
+    A negative value means asset j leads asset i.
+
+    Parameters
+    ----------
+    pivot : pd.DataFrame
+        (T x A) return matrix from :func:`_build_return_matrix`.
+    max_lag : int
+        Maximum bar offset to search in each direction.
+
+    Returns
+    -------
+    pd.DataFrame
+        Shape (A, A) — integer lag values.
+    """
+    # ┏━━━━━━━━━━ Extract Data ━━━━━━━━━━┓
+    assets = list(pivot.columns)
+    A = len(assets)
+    T = len(pivot)
+    ret = pivot.values
+    lag_matrix = pd.DataFrame(np.zeros((A, A), dtype=float), index=assets, columns=assets)
+
+    # ┏━━━━━━━━━━ Compute Peak Cross-Correlation Lag ━━━━━━━━━━┓
+    for i, ai in enumerate(assets):
+        for j, aj in enumerate(assets):
+            if i == j:
+                continue
+            best_abs_r, best_lag = -np.inf, 0
+            xi, xj = ret[:, i], ret[:, j]
+            for lag in range(-max_lag, max_lag + 1):
+                if lag < 0:
+                    a, b = xi[-lag:], xj[:T + lag]
+                elif lag > 0:
+                    a, b = xi[:T - lag], xj[lag:]
+                else:
+                    a, b = xi, xj
+                valid = np.isfinite(a) & np.isfinite(b)
+                if valid.sum() < 10:
+                    continue
+                r = np.corrcoef(a[valid], b[valid])[0, 1]
+                if abs(r) > best_abs_r:
+                    best_abs_r, best_lag = abs(r), lag
+            lag_matrix.loc[ai, aj] = best_lag
+
+    return lag_matrix
+
+
+def compute_asset_correlation(dataset: dict,
+                              save_dir: Path,
+                              gran: str = "",
+                              direction: str = "",
+                              n_permutations: int = 5_000,
+                              max_lag: int = 3,
+                              min_overlap: int = 50) -> dict:
+    """Quantify and visualise cross-asset return correlation.
+
+    One-off diagnostic that justifies training M2 on all assets simultaneously
+    by demonstrating:
+
+    1. **Pearson & Spearman correlation matrices** are non-trivially positive —
+       assets share systematic crypto-market risk factors.
+    2. **Permutation test** confirms the mean pairwise correlation is
+       significantly above the null (p < 0.05).
+    3. **Hierarchical clustering** groups assets into regime clusters, showing
+       the joint dataset does not introduce contradictory labels.
+    4. **Lead-lag analysis** reveals directional information flow between
+       assets, supporting the use of cross-asset features.
+
+    Usage
+    -----
+        from Utils import _load_multi_cache               # or torch.load directly
+        from Utils.feature_selection import compute_asset_correlation
+        from pathlib import Path
+
+        multi = _load_multi_cache(Path("Output/.../multi_7_fee_up_*.pt"))
+        dataset = multi.sub["4h"]
+        results = compute_asset_correlation(dataset, Path("Output/Analysis/corr"), gran="4h", direction="up")
+
+    Parameters
+    ----------
+    dataset : dict
+        Multi-asset cache dict with keys ``returns``, ``asset_ids``,
+        ``asset_map``, ``dates`` (output of ``prepare_multi_asset_dataset``).
+    save_dir : Path
+        Directory where PNG figures and a JSON summary are written.
+    gran : str
+        Granularity label for plot titles / filenames (e.g. ``"4h"``).
+    direction : str
+        Direction label (``"up"`` / ``"down"``).
+    n_permutations : int
+        Permutation-test draws.
+    max_lag : int
+        Maximum bar offset for the lead-lag search.
+    min_overlap : int
+        Minimum non-NaN observations required to retain an asset.
+
+    Returns
+    -------
+    dict with keys:
+        - ``pearson``        — (AxA) Pearson correlation DataFrame
+        - ``spearman``       — (AxA) Spearman correlation DataFrame
+        - ``lag``            — (AxA) peak cross-correlation lag DataFrame
+        - ``significance``   — permutation-test results dict
+        - ``n_assets``       — int
+        - ``n_observations`` — int
+        - ``summary_path``   — :class:`pathlib.Path` to the saved JSON summary
+    """
+    # ┏━━━━━━━━━━ Save Directory ━━━━━━━━━━┓
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Build return matrix ━━━━━━━━━━┓
+    pivot = _build_return_matrix(dataset)
+    pivot = pivot.loc[:, pivot.notna().sum() >= min_overlap]
+    pivot = pivot.dropna(how="all")
+    n_assets = pivot.shape[1]
+    n_obs    = pivot.shape[0]
+
+    # ┏━━━━━━━━━━ Check if there are enough assets ━━━━━━━━━━┓
+    if n_assets < 2:
+        raise ValueError(f"Need ≥2 assets with ≥{min_overlap} observations; got {n_assets}.")
+
+    ret_filled = pivot.fillna(0.0)
+
+    # ┏━━━━━━━━━━ Pearson correlation ━━━━━━━━━━┓
+    pearson_corr = ret_filled.corr(method="pearson")
+
+    # ┏━━━━━━━━━━ Spearman correlation ━━━━━━━━━━┓
+    sp_values, _ = spearmanr(ret_filled.values)
+    if n_assets == 2:
+        sp_values = np.array([[1.0, float(sp_values)], [float(sp_values), 1.0]])
+    spearman_corr = pd.DataFrame(sp_values, index=pivot.columns, columns=pivot.columns)
+
+    # ┏━━━━━━━━━━ Permutation significance test (on Pearson) ━━━━━━━━━━┓
+    sig = _permutation_significance(pivot, n_permutations=n_permutations)
+
+    # ┏━━━━━━━━━━ Lead-lag matrix ━━━━━━━━━━┓
+    lag_mat = _lead_lag_matrix(pivot, max_lag=max_lag)
+
+    # ┏━━━━━━━━━━ Summary statistics ━━━━━━━━━━┓
+    off_diag = ~np.eye(n_assets, dtype=bool)
+    p_vals   = pearson_corr.values[off_diag]
+    s_vals   = spearman_corr.values[off_diag]
+
+    summary = {
+        "gran":           gran,
+        "direction":      direction,
+        "n_assets":       int(n_assets),
+        "n_observations": int(n_obs),
+        "pearson": {
+            "mean":         float(np.nanmean(p_vals)),
+            "median":       float(np.nanmedian(p_vals)),
+            "min":          float(np.nanmin(p_vals)),
+            "max":          float(np.nanmax(p_vals)),
+            "pct_positive": float((p_vals > 0).mean()),
+        },
+        "spearman": {
+            "mean":         float(np.nanmean(s_vals)),
+            "median":       float(np.nanmedian(s_vals)),
+            "min":          float(np.nanmin(s_vals)),
+            "max":          float(np.nanmax(s_vals)),
+            "pct_positive": float((s_vals > 0).mean()),
+        },
+        "permutation_test": sig,
+    }
+
+    # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓
+    summary_path = save_dir / "asset_correlation_summary.json"
+    with open(summary_path, "w") as fh:
+        json.dump(summary, fh, indent=2)
+
+    # ━━━━━━━━━━ Console digest ━━━━━━━━━━┓
+    tag = f"{gran} {direction}".strip() or "all"
+    print(f"\n[asset_correlation] {tag} | {n_assets} assets × {n_obs} bars")
+    print(f"  Pearson  : mean={summary['pearson']['mean']:+.3f}  "
+          f"median={summary['pearson']['median']:+.3f}  "
+          f"{summary['pearson']['pct_positive']*100:.0f}% positive pairs")
+    print(f"  Spearman : mean={summary['spearman']['mean']:+.3f}  "
+          f"median={summary['spearman']['median']:+.3f}")
+    print(f"  Perm-test: mean_r={sig['observed_mean_r']:+.3f}  "
+          f"p={sig['p_value']:.4f}  z={sig['z_score']:.2f}")
+
+    # ┏━━━━━━━━━━ Plots ━━━━━━━━━━┓
+    plot_asset_correlation(pearson_corr  = pearson_corr,
+                           spearman_corr = spearman_corr,
+                           lag_matrix    = lag_mat,
+                           pivot         = pivot,
+                           sig           = sig,
+                           save_dir      = save_dir,
+                           gran          = gran,
+                           direction     = direction)
+
+    return {"pearson":        pearson_corr,
+            "spearman":       spearman_corr,
+            "lag":            lag_mat,
+            "significance":   sig,
+            "n_assets":       n_assets,
+            "n_observations": n_obs,
+            "summary_path":   summary_path}
+
+
+from .plots import plot_asset_correlation

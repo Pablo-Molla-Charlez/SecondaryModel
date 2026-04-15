@@ -13,7 +13,6 @@ import torch
 from Utils.utils import m1_display_label as _m1_display_label
 from Utils.utils import model_label as _model_label
 from Utils.classifier import MODELS_NO_SCALING
-import matplotlib.gridspec as gridspec
 
 
 __all__ = [
@@ -24,7 +23,6 @@ __all__ = [
     "_build_spread_equity",
     "_equity_horizon_returns",
     "run_feature_backtest",
-    "_plot_path_equity",
     "run_combined_backtest",
 ]
 
@@ -947,6 +945,3 @@ def run_combined_backtest(up_dir: str | Path,
             f.write(report)
 
         print(f"  Saved: {plot_path.name}, {trades_path.name}, {report_path.name}\n")
-
-# Back-import plot functions so topic-level code can call them.
-from .plots import *  # noqa: E402,F401,F403

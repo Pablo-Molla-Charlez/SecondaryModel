@@ -6,9 +6,8 @@ import torch
 import yaml
 import hashlib
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from Utils.data import (load_dataset_from_config,
                         prepare_multi_gran_dataset,
                         prepare_multi_asset_dataset,
@@ -110,7 +109,6 @@ def _expand_env_vars(obj):
 
 def _load_config(cfg_path: str = "config.yaml") -> dict:
     import os
-    import yaml
 
     # ┏━━━━━━━━━━ Determine M1 contexts BEFORE expansion ━━━━━━━━━━┓
     # Set global defaults if not provided in env
@@ -158,6 +156,7 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     direction        = load_cfg.get("direction", "up")
     forecast_horizon = load_cfg.get("forecast_horizon", 7)
     is_multi_gran    = (granularity == "all")
+    seq_len          = GRAN_SEQ_LEN.get(granularity, 96)
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
     data_signature = {"granularity":      load_cfg.get("granularity"),
                       "meta_label_mode":  load_cfg.get("meta_label_mode"),
@@ -199,14 +198,14 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     if is_multi_gran:
         dataset = prepare_multi_gran_dataset(raw_df,
                                              column_features  = column_features,
-                                             target_col       = load_cfg.get("target_col", "ground_truth"),
+                                             target_col       = load_cfg.get("target_col", "meta_label"),
                                              forecast_horizon = forecast_horizon,
                                              cfg              = cfg)
     else:
         dataset = prepare_multi_asset_dataset(raw_df,
                                               seq_len          = seq_len,
                                               column_features  = column_features,
-                                              target_col       = load_cfg.get("target_col", "ground_truth"),
+                                              target_col       = load_cfg.get("target_col", "meta_label"),
                                               forecast_horizon = forecast_horizon,
                                               cfg              = cfg)
 

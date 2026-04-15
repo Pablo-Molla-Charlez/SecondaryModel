@@ -1,8 +1,5 @@
 """Data split preparation + Optuna objective closure."""
-from __future__ import annotations
-
 import warnings
-
 import numpy as np
 import optuna
 import torch

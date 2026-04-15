@@ -124,7 +124,7 @@ def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
     return df, labels
 
 # ------------------------------------------------------------------------------
-# Run analysis for a Single M2 (each granularity independently)
+# 
 # ------------------------------------------------------------------------------
 def temporal_eval(dataset: dict,
                   feature_cols: list,

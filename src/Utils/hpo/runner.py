@@ -1,18 +1,9 @@
 """HPO orchestrator + CLI entrypoint."""
-from __future__ import annotations
-
 import argparse
 import json
-import sys
 import time
-from pathlib import Path
-
 import optuna
-
-# ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
-_SRC = Path(__file__).resolve().parent.parent.parent
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
+from pathlib import Path
 
 # ┏━━━━━━━━━━ Utils ━━━━━━━━━━┓
 from Utils.utils import (_load_config,

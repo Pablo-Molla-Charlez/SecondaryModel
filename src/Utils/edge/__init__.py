@@ -15,16 +15,16 @@ to separate cleanly.
 Backward-compat: ``_compute_embargo_splits`` and ``_gran_to_timedelta``
 remain importable from ``Utils.edge`` for ``kronos_tree.py`` callers.
 """
-from Utils.edge.edge import *  # noqa: F401,F403
-from Utils.edge.edge import (
-    _compute_embargo_splits,
-    _gran_to_timedelta,
-    _compute_m1_baselines,
-    run_seeds_analysis,
-    run_cpcv_analysis,
-    compute_edge_convergence_score,
-    CAL_SPLIT_RATIO,
-    CPCV_OOB_CAL_RATIO,
-    EDGE_SEED,
-)
-from Utils.edge import plots  # noqa: F401 — ensure plot fns registered for internal calls
+# ┏━━━━━━━━━━ Edge ━━━━━━━━━━┓
+from Utils.edge.edge import (_compute_embargo_splits,
+                             _gran_to_timedelta,
+                             _compute_m1_baselines,
+                             run_seeds_analysis,
+                             run_cpcv_analysis,
+                             compute_edge_convergence_score,
+                             CAL_SPLIT_RATIO,
+                             CPCV_OOB_CAL_RATIO,
+                             EDGE_SEED)
+
+# ┏━━━━━━━━━━ Plotting from Edge ━━━━━━━━━━┓
+from Utils.edge import plots

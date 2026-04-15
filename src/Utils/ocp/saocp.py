@@ -29,17 +29,12 @@ _CANDLES_PER_DAY = {"1d": 1, "12h": 2, "8h": 3, "6h": 4, "4h": 6,
 _TAU_GRID = np.arange(0.50, 0.96, 0.01)  # search grid for deferral threshold
 
 
-__all__ = [
-    "_ocp_conformity_score",
-    "_run_saocp_online",
-    "_run_cost_deferral_online",
-    "_ocp_threshold_to_op",
-    "calib_window_for_gran",
-    "_candles_per_day",
-    "plot_mondrian_diagnostics",
-]
-
-
+__all__ = ["_ocp_conformity_score",
+           "_run_saocp_online",
+           "_run_cost_deferral_online",
+           "_ocp_threshold_to_op",
+           "calib_window_for_gran",
+           "_candles_per_day"]
 
 
 def _candles_per_day(granularity: str) -> int:
@@ -710,6 +705,3 @@ def _ocp_threshold_to_op(test_probs,
             op["tau_median"] = median_tau
             op["tau_std"] = float(np.std(conformal_stats["tau_trajectory"]))
     return op
-
-# Back-import plot functions so topic-level code can call them.
-from .plots import *  # noqa: E402,F401,F403

@@ -1,10 +1,5 @@
-"""CLI entrypoint — ``python -m Utils.hpo ...``.
-
-Delegates to :func:`Utils.hpo._impl.main` which preserves the exact argument
-surface of the pre-refactor ``Utils/HPO.py`` CLI.
-"""
+"""CLI entrypoint — ``python -m Utils.hpo ...``."""
 from Utils.hpo.runner import main
-
 
 if __name__ == "__main__":
     main()

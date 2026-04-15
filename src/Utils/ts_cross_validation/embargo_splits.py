@@ -4,8 +4,6 @@ Moved verbatim from ``Utils/edge.py::_compute_embargo_splits`` so it can be
 reused without depending on the (large) ``edge`` module. Return dict shape is
 preserved — ``{idx_train, idx_cal, idx_opt, idx_test, cal_end, purge_td}``.
 """
-from __future__ import annotations
-
 import numpy as np
 import pandas as pd
 

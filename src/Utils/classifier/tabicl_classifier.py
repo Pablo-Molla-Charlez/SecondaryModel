@@ -70,22 +70,18 @@ class TabICL(BaseClassifier):
         return np.ones(n_feat) / n_feat
 
     def get_params(self, deep: bool = True) -> dict:
-        return {
-            "n_estimators":        self.n_estimators,
-            "softmax_temperature": self.softmax_temperature,
-            "random_state":        self.random_state,
-            "device":              self.device,
-        }
+        return {"n_estimators":        self.n_estimators,
+                "softmax_temperature": self.softmax_temperature,
+                "random_state":        self.random_state,
+                "device":              self.device}
 
     def save_model(self, model_path: str) -> None:
         if self._clf is None:
             raise AttributeError("The model has not been fitted yet.")
-        self._clf.save(
-            f"{model_path}.pkl",
-            save_model_weights=False,
-            save_training_data=True,
-            save_kv_cache=True,
-        )
+        self._clf.save(f"{model_path}.pkl",
+                       save_model_weights = False,
+                       save_training_data = True,
+                       save_kv_cache      = True)
 
     def load_model(self, model_path: str) -> None:
         from tabicl import TabICLClassifier

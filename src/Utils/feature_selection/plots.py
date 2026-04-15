@@ -7,24 +7,27 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from pathlib import Path
 from scipy import stats
-from xgboost import XGBClassifier
 from typing import Dict, List, Optional, Any, Union
 
-
+# ┏━━━━━━━━━━ Feature Selection Methods ━━━━━━━━━━┓
 from sklearn.feature_selection import mutual_info_classif
+
+# ┏━━━━━━━━━━ SkLearn Metrics ━━━━━━━━━━┓
 from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score,
                              precision_recall_fscore_support, confusion_matrix, 
                              ConfusionMatrixDisplay, fbeta_score, matthews_corrcoef)
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
+# ┏━━━━━━━━━━ Utils ━━━━━━━━━━┓
 from Utils.utils import model_label
+
+# ┏━━━━━━━━━━ Data ━━━━━━━━━━┓
 from Utils.data import _get_from_dataset, get_dynamic_ret_limits, MultiGranDataset
 
 
@@ -52,24 +55,14 @@ __all__ = [
     "plot_meta_label_returns_histogram",
     "plot_prediction_returns_histogram",
     "plot_m1_prediction_returns_histogram",
-    "compute_classification_metrics",
     "plot_confusion_matrix",
-    "extract_time_features",
     "plot_temporal_risk_coverage_curve",
     "plot_ocp_threshold_evolution",
-    "compute_top_features",
-    "mda_rank",
-    "shap_rank",
-    "lime_rank",
-    "combine_rankings",
-    "run_feature_selection",
     "plot_selective_return_distribution",
+    "plot_asset_correlation",
 ]
 
 
-# Re-export ALL names (including _private helpers) from .feature_selection
-from . import feature_selection as _topic_mod  # noqa: F401
-globals().update({k: v for k, v in vars(_topic_mod).items() if not k.startswith('__')})
 
 
 
@@ -942,7 +935,18 @@ def plot_confusion_matrix(targets: np.ndarray,
     cm = confusion_matrix(targets, preds, labels=list(range(len(classes))))
     
     # ┏━━━━━━━━━━ Calculate macro metrics ━━━━━━━━━━┓
-    metrics = compute_classification_metrics(targets, preds)
+    unique_labels = np.unique(targets)
+    is_multiclass = len(unique_labels) > 2 or (len(unique_labels) == 2 and not np.array_equal(sorted(unique_labels), [0, 1]))
+    avg_mode = "weighted" if is_multiclass else "macro"
+    precision_m, recall_m, f1_m, _ = precision_recall_fscore_support(targets, preds, average=avg_mode, zero_division=0)
+    metrics = {
+        "accuracy":  accuracy_score(targets, preds),
+        "precision": precision_m,
+        "recall":    recall_m,
+        "f1":        f1_m,
+        "fbeta":     fbeta_score(targets, preds, beta=0.3, average=avg_mode, zero_division=0),
+        "mcc":       matthews_corrcoef(targets, preds),
+    }
 
     # ┏━━━━━━━━━━ Win-Rate (precision of the interested class) ━━━━━━━━━━┓
     interested_class = 0 if meta_mode == 'fp' else 1
@@ -1327,24 +1331,24 @@ def plot_selective_return_distribution(test_returns: np.ndarray,
     model_label : str
         M2 model label (e.g. "RF", "XGB").
     """
-    import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
+    # ┏━━━━━━━━━━ Convert to numpy arrays with canonical dtypes ━━━━━━━━━━┓
     test_returns = np.asarray(test_returns, dtype=float)
     test_labels  = np.asarray(test_labels, dtype=int)
     m2_approved  = np.asarray(m2_approved, dtype=bool)
 
-    # Separate M2-approved into TPs and FPs
+    # ┏━━━━━━━━━━ Separate M2-approved trades into TPs and FPs ━━━━━━━━━━┓
     sel_mask   = m2_approved
-    sel_rets   = test_returns[sel_mask] * 100  # convert to pct
+    sel_rets   = test_returns[sel_mask] * 100
     sel_labels = test_labels[sel_mask]
     tp_rets    = sel_rets[sel_labels == 1]
     fp_rets    = sel_rets[sel_labels == 0]
 
-    # Full M1 distribution (all trades, both approved and rejected)
+    # ┏━━━━━━━━━━ Full M1 distribution (all trades, approved and rejected) ━━━━━━━━━━┓
     m1_rets = test_returns * 100
 
-    # Dynamic binning
+    # ┏━━━━━━━━━━ Dynamic bin width based on the observed return range ━━━━━━━━━━┓
     all_combined = np.concatenate([m1_rets, sel_rets]) if len(sel_rets) > 0 else m1_rets
     low  = np.percentile(all_combined, 1) if len(all_combined) > 0 else -10
     high = np.percentile(all_combined, 99) if len(all_combined) > 0 else 10
@@ -1353,24 +1357,24 @@ def plot_selective_return_distribution(test_returns: np.ndarray,
 
     fig, ax = plt.subplots(figsize=(13, 7))
 
-    # Layer 1: M1 full distribution (navy, background)
+    # ┏━━━━━━━━━━ Layer 1: M1 full distribution (navy, background) ━━━━━━━━━━┓
     ax.hist(m1_rets, bins=bins, alpha=0.25, color="navy", edgecolor="midnightblue",
             linewidth=0.4, label=f"M1 Complete Test (N={len(m1_rets):,}, "
                                  f"\u03BC={np.mean(m1_rets):.2f}%)", zorder=1)
 
-    # Layer 2: M2 FPs (red, foreground)
+    # ┏━━━━━━━━━━ Layer 2: M2 FPs (red, foreground) ━━━━━━━━━━┓
     if len(fp_rets) > 0:
         ax.hist(fp_rets, bins=bins, alpha=0.65, color="#e74c3c", edgecolor="#c0392b",
                 linewidth=0.4, label=f"M2 FP (n={len(fp_rets):,}, "
                                      f"\u03BC={np.mean(fp_rets):.2f}%)", zorder=2)
 
-    # Layer 3: M2 TPs (green, foreground)
+    # ┏━━━━━━━━━━ Layer 3: M2 TPs (green, foreground) ━━━━━━━━━━┓
     if len(tp_rets) > 0:
         ax.hist(tp_rets, bins=bins, alpha=0.65, color="#2ecc71", edgecolor="#27ae60",
                 linewidth=0.4, label=f"M2 TP (n={len(tp_rets):,}, "
                                      f"\u03BC={np.mean(tp_rets):.2f}%)", zorder=3)
 
-    # Mean lines
+    # ┏━━━━━━━━━━ Mean lines ━━━━━━━━━━┓
     if len(m1_rets) > 0:
         ax.axvline(np.mean(m1_rets), color="navy", linestyle="--", linewidth=1.5,
                    alpha=0.8, label=f"M1 Mean ({np.mean(m1_rets):.2f}%)")
@@ -1381,14 +1385,14 @@ def plot_selective_return_distribution(test_returns: np.ndarray,
         ax.axvline(np.mean(fp_rets), color="#c0392b", linestyle="-", linewidth=2.0,
                    alpha=0.9, label=f"Mean FP ({np.mean(fp_rets):.2f}%)")
 
-    # Zero and fee lines
+    # ┏━━━━━━━━━━ Zero and fee lines ━━━━━━━━━━┓
     ax.axvline(0, color="black", linestyle="--", alpha=0.4, linewidth=0.8)
     fee_pct = fee * 100
     ax.axvline(fee_pct,  color="#8B008B", linestyle="--", alpha=0.8, linewidth=1.8,
                label=f"Fee break-even (\u00B1{fee_pct:.2f}%)")
     ax.axvline(-fee_pct, color="#8B008B", linestyle="--", alpha=0.8, linewidth=1.8)
 
-    # Title and labels
+    # ┏━━━━━━━━━━ Title and labels ━━━━━━━━━━┓
     n_sel = int(sel_mask.sum())
     cov = n_sel / len(test_returns) * 100 if len(test_returns) > 0 else 0
     prec = len(tp_rets) / n_sel * 100 if n_sel > 0 else 0
@@ -1407,4 +1411,155 @@ def plot_selective_return_distribution(test_returns: np.ndarray,
     Path(save_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(save_path), bbox_inches="tight", dpi=200)
     plt.close(fig)
-    print(f"  Selective return distribution saved: {Path(save_path).name}")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CROSS-ASSET CORRELATION PLOTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def plot_asset_correlation(pearson_corr:  pd.DataFrame,
+                           spearman_corr: pd.DataFrame,
+                           lag_matrix:    pd.DataFrame,
+                           pivot:         pd.DataFrame,
+                           sig:           dict,
+                           save_dir:      Path,
+                           gran:          str = "",
+                           direction:     str = "") -> None:
+    """Produce four publication-quality figures for the cross-asset correlation analysis.
+
+    Figures saved
+    -------------
+    1. ``asset_corr_pearson.png``   — annotated Pearson correlation heatmap
+    2. ``asset_corr_clustermap.png`` — seaborn clustermap (hierarchical clustering)
+    3. ``asset_corr_lag.png``       — lead-lag matrix heatmap (peak cross-corr lag)
+    4. ``asset_corr_rolling.png``   — rolling 30-bar mean pairwise correlation
+
+    Parameters
+    ----------
+    pearson_corr : pd.DataFrame
+        (AxA) Pearson correlation matrix.
+    spearman_corr : pd.DataFrame
+        (AxA) Spearman correlation matrix.
+    lag_matrix : pd.DataFrame
+        (AxA) peak cross-correlation lag matrix (integer bars).
+    pivot : pd.DataFrame
+        (TxA) return matrix used to build the rolling plot.
+    sig : dict
+        Output of ``_permutation_significance`` — used for subtitle annotation.
+    save_dir : Path
+        Directory to write PNG files.
+    gran : str
+        Granularity label for titles.
+    direction : str
+        Direction label for titles.
+    """
+    save_dir = Path(save_dir)
+    tag = f"{gran} {direction}".strip() or "all"
+    A   = pearson_corr.shape[0]
+
+    # ┏━━━━━━━━━━ Figure 1 — Pearson + Spearman heatmaps (side by side) ━━━━━━━━━━┓
+    fig, axes = plt.subplots(1, 2, figsize=(max(14, A * 0.9), max(6, A * 0.7)))
+
+    for ax, corr, title in zip(axes, [pearson_corr, spearman_corr], ["Pearson", "Spearman"]):
+        # ┏━━━━━━━━━━ Render correlation matrix as coloured image ━━━━━━━━━━┓
+        im = ax.imshow(corr.values, vmin=-1, vmax=1, cmap="RdYlGn", aspect="auto")
+        ax.set_xticks(range(A))
+        ax.set_yticks(range(A))
+        ax.set_xticklabels(corr.columns, rotation=45, ha="right", fontsize=8)
+        ax.set_yticklabels(corr.index, fontsize=8)
+        # ┏━━━━━━━━━━ Annotate each cell with its correlation value ━━━━━━━━━━┓
+        for i in range(A):
+            for j in range(A):
+                v = corr.values[i, j]
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center",
+                        fontsize=6, color="black" if abs(v) < 0.7 else "white")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(f"{title} Correlation — {tag}", fontsize=11, fontweight="bold")
+
+    # ┏━━━━━━━━━━ Shared suptitle with permutation-test digest ━━━━━━━━━━┓
+    mean_r  = sig["observed_mean_r"]
+    p_value = sig["p_value"]
+    z_score = sig["z_score"]
+    fig.suptitle(
+        f"Cross-Asset Return Correlation  |  mean Pearson r = {mean_r:+.3f}  "
+        f"p = {p_value:.4f}  z = {z_score:.1f}",
+        fontsize=10, y=1.01,
+    )
+    plt.tight_layout()
+    fig.savefig(save_dir / "asset_corr_pearson.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Figure 2 — Hierarchical clustermap (Ward linkage) ━━━━━━━━━━┓
+    cg = sns.clustermap(pearson_corr,
+                        cmap  = "RdYlGn",
+                        vmin  = -1,
+                        vmax  = 1,
+                        annot = A <= 25,
+                        fmt=".2f",
+                        annot_kws={"size": 6},
+                        linewidths=0.3,
+                        figsize=(max(10, A * 0.8), max(8, A * 0.8)))
+    cg.ax_heatmap.set_title(f"Clustered Pearson Correlation — {tag}\n"
+                            f"(Ward linkage on correlation distance)",
+                            fontsize=10, fontweight="bold", pad=12)
+    cg.figure.savefig(save_dir / "asset_corr_clustermap.png", dpi=150, bbox_inches="tight")
+    plt.close(cg.figure)
+
+    # ┏━━━━━━━━━━ Figure 3 — Lead-lag matrix ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(max(8, A * 0.7), max(6, A * 0.6)))
+    abs_max = max(abs(lag_matrix.values.min()), abs(lag_matrix.values.max()), 1)
+    im = ax.imshow(lag_matrix.values, vmin=-abs_max, vmax=abs_max, cmap="coolwarm", aspect="auto")
+    ax.set_xticks(range(A))
+    ax.set_yticks(range(A))
+    ax.set_xticklabels(lag_matrix.columns, rotation=45, ha="right", fontsize=8)
+    ax.set_yticklabels(lag_matrix.index, fontsize=8)
+    # ┏━━━━━━━━━━ Annotate each cell with its integer lag value ━━━━━━━━━━┓
+    for i in range(A):
+        for j in range(A):
+            v = int(lag_matrix.values[i, j])
+            ax.text(j, i, str(v), ha="center", va="center", fontsize=7,
+                    color="black" if abs(v) < abs_max * 0.6 else "white")
+    plt.colorbar(im, ax=ax, label="Lag (bars, + = row leads column)", fraction=0.046, pad=0.04)
+    ax.set_xlabel("Target asset (j)")
+    ax.set_ylabel("Leading asset (i)")
+    ax.set_title(f"Peak Cross-Correlation Lag — {tag}", fontsize=11, fontweight="bold")
+    plt.tight_layout()
+    fig.savefig(save_dir / "asset_corr_lag.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ Figure 4 — Rolling mean pairwise correlation ━━━━━━━━━━┓
+    window = min(30, max(5, len(pivot) // 10))
+    ret    = pivot.fillna(0.0)
+    T      = len(ret)
+    dates  = ret.index.tolist()
+
+    # ┏━━━━━━━━━━ Compute rolling mean off-diagonal correlation ━━━━━━━━━━┓
+    off_diag       = ~np.eye(A, dtype=bool)
+    rolling_mean_r = []
+    for t in range(window, T + 1):
+        chunk = ret.iloc[t - window:t].values
+        c = np.corrcoef(chunk.T)
+        rolling_mean_r.append(float(c[off_diag].mean()))
+
+    roll_dates = dates[window - 1:]
+
+    fig, ax = plt.subplots(figsize=(14, 4))
+    ax.plot(roll_dates, rolling_mean_r, color="#2b5797", lw=1.5, label=f"Rolling {window}-bar mean r")
+    ax.axhline(mean_r, color="red", ls="--", lw=1, alpha=0.7, label=f"Full-period mean r={mean_r:+.3f}")
+    ax.axhline(0, color="black", ls="-", lw=0.5, alpha=0.3)
+    
+    # ┏━━━━━━━━━━ Shade positive and negative correlation regimes ━━━━━━━━━━┓
+    ax.fill_between(roll_dates, rolling_mean_r, 0,
+                    where=[r > 0  for r in rolling_mean_r], alpha=0.15, color="green", label="Positive regime")
+    ax.fill_between(roll_dates, rolling_mean_r, 0,
+                    where=[r <= 0 for r in rolling_mean_r], alpha=0.15, color="red",   label="Negative regime")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Mean pairwise Pearson r")
+    ax.set_title(f"Rolling Cross-Asset Correlation — {tag}  "
+                 f"(window={window} bars, p={p_value:.4f})",
+                 fontsize=11, fontweight="bold")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    fig.savefig(save_dir / "asset_corr_rolling.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)

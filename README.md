@@ -272,93 +272,200 @@ CPCV uses **datetime-based block partitioning** by default (`CombinatorialPurged
 
 ---
 
----
-
 ## Setup
 
-Before running any script, you must set the `M2_DATA_ROOT` environment variable in your terminal to point to your local data directory. This allows the unified `config.yaml` to work across different machines without modification.
+### 1. Conda environment
 
-### macOS (External Drive example)
+All scripts must run inside the `CTTS` conda environment. Activate it once per terminal session:
+
 ```bash
-export M2_DATA_ROOT=/Volumes/Data/other/2026_NII
+conda activate CTTS
 ```
 
-### Linux / WSL (Local path example)
+Or prefix any command with `conda run -n CTTS` to run it without activating:
+
 ```bash
+conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran
+```
+
+### 2. Data root
+
+Set `M2_DATA_ROOT` to point to your local data root before running any script. The config files use `${M2_DATA_ROOT}` as a placeholder that gets expanded at load time.
+
+```bash
+# macOS (external drive)
+export M2_DATA_ROOT=/Volumes/Data/other/2026_NII
+
+# Linux
 export M2_DATA_ROOT=/home/pablo/M2_DS/Secondary-Model/src
 ```
 
-### Model Selection (Optional)
-You can also control which M1 model results to use via the `M1_MODEL` variable (defaults to `kronos` if not set):
+### 3. Working directory
+
+All commands below assume you are in `Secondary-Model/src/`:
+
 ```bash
-export M1_MODEL=fincast  # Options: kronos, fincast, tirex
+cd /home/pablo/M2_DS/Secondary-Model/src
+conda activate CTTS
 ```
 
 ---
 
 ## Run Guide
 
-### `kronos_tree.py`: Analysis Pipeline
+### `kronos_tree.py` — Main Analysis Pipeline
 
-| Use Case | Command |
-| --- | --- |
-| **Kronos (Default)** | `python kronos_tree.py --config config.yaml --per-gran` |
-| **Fincast (Foundation)** | `export M1_MODEL=fincast && python kronos_tree.py --config config.yaml --per-gran` |
-| **TabPFN on Fincast** | `export M1_MODEL=fincast && python kronos_tree.py --config config.yaml --model tabpfn_ft` |
-| **TabICL on Kronos** | `export M1_MODEL=kronos && python kronos_tree.py --config config.yaml --per-gran --model tabicl` |
-| **Combined UP+DN Backtest** | `python kronos_tree.py --config config.yaml --combined-backtest Output/Kronos/randforest/UP/Utility_Score Output/Kronos/randforest/DOWN/Utility_Score` |
+This is the primary entrypoint. It runs the full 4-way split → train → calibrate → threshold → backtest workflow for one or more granularities.
 
-### `Utils/edge/`: Convergence Protocol
+**Available `--model` values:** `rf` (default), `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`
 
-The `python -m Utils.edge` entrypoint replaces the old `python Utils/edge.py` invocation.
+**Run modes:**
+- `--per-gran` — runs independently for each granularity in the config
+- `--all-grans` — runs once across all granularities pooled
+- `--combined-backtest UP_DIR DN_DIR` — builds combined UP+DOWN equity curve from two existing result folders
 
-| Mode | Command |
-| --- | --- |
-| **Seeds** | `python -m Utils.edge --config config.yaml --mode seeds --trials 100` |
-| **CPCV** | `python -m Utils.edge --config config.yaml --mode cpcv --n-blocks 6` |
-| **Convergence** | `python -m Utils.edge --config config.yaml --convergence` |
-
-#### Full convergence chain:
 ```bash
-python -m Utils.edge --cache your_cache.pt --mode seeds --model randforest --trials 100
-python -m Utils.edge --cache your_cache.pt --mode cpcv --model randforest --n-blocks 6
-python -m Utils.edge --cache your_cache.pt --convergence --model randforest
+# Random Forest, all granularities, Kronos M1
+conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran
+
+# Random Forest, all granularities, Fincast M1
+conda run -n CTTS python kronos_tree.py --config config_fincast.yaml --per-gran
+
+# TabPFN (zero-shot) on Kronos
+conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model tabpfn
+
+# TabPFN fine-tuned on Kronos
+conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model tabpfn_ft
+
+# TabICL on Fincast
+conda run -n CTTS python kronos_tree.py --config config_fincast.yaml --per-gran --model tabicl
+
+# AutoGluon on Kronos (time_limit=300s per gran, best_quality preset)
+conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model autogluon
+
+# Combined UP+DOWN backtest from existing result folders
+conda run -n CTTS python kronos_tree.py --config config.yaml \
+  --combined-backtest \
+  Output/Kronos/randforest/UP/Utility_Score \
+  Output/Kronos/randforest/DOWN/Utility_Score
 ```
 
-### `Utils/hpo/`: Hyperparameter Optimization
+> **AutoGluon note**: `time_limit` (default 300 s) and `presets` (default `best_quality`) are set in `Utils/classifier/factory.py` constants `_AG_TIME_LIMIT` and `_AG_PRESETS`. Edit those to change the defaults globally.
 
-The `python -m Utils.hpo` entrypoint replaces the old `python Utils/HPO.py` invocation.
+---
+
+### `Utils/edge/` — Edge Convergence Protocol
+
+Tests whether a trained model's alpha is real (stable across seeds) and robust (stable across market regimes via CPCV). Requires a dataset cache `.pt` file produced by `kronos_tree.py`.
 
 ```bash
-python -m Utils.hpo \
+# Step 1 — Seeds stability (run 100 RF seeds, compare to baseline)
+conda run -n CTTS python -m Utils.edge \
   --config config.yaml \
   --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
-  --models rf tabpfn tabicl \
-  --directions up down \
-  --grans 4h 1d \
+  --model randforest \
+  --mode seeds \
+  --trials 100
+
+# Step 2 — CPCV regime sensitivity (6 blocks, combinatorial paths)
+conda run -n CTTS python -m Utils.edge \
+  --config config.yaml \
+  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --model randforest \
+  --mode cpcv \
+  --n-blocks 6
+
+# Step 3 — Final convergence verdict (GREEN / AMBER / RED)
+conda run -n CTTS python -m Utils.edge \
+  --config config.yaml \
+  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --model randforest \
+  --convergence
+```
+
+> Replace `<hash>` with the actual MD5 suffix shown when `kronos_tree.py` builds the cache, e.g. `multi_7_fee_up_d2f3ef77ba.pt`.
+
+---
+
+### `Utils/hpo/` — Hyperparameter Optimization
+
+Runs an Optuna study to find the best hyperparameters for a given model/granularity/direction combination. Requires a cache `.pt` file.
+
+**Available `--models` values:** `rf`, `tabpfn`, `tabpfn_ft`, `tabicl`, `autogluon`
+
+```bash
+# HPO for RF — up direction, 4h granularity, 50 trials
+conda run -n CTTS python -m Utils.hpo \
+  --config config.yaml \
+  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --models rf \
+  --directions up \
+  --grans 4h \
   --n-trials 50
+
+# HPO for TabPFN + TabICL — both directions, multiple granularities
+conda run -n CTTS python -m Utils.hpo \
+  --config config.yaml \
+  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --models tabpfn tabicl \
+  --directions up down \
+  --grans 4h 1d 8h \
+  --n-trials 100
+
+# HPO for all models
+conda run -n CTTS python -m Utils.hpo \
+  --config config.yaml \
+  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
+  --models rf tabpfn tabpfn_ft tabicl autogluon \
+  --directions up down \
+  --grans 4h \
+  --n-trials 30
 ```
 
-### `Utils/ocp/`: OCP Diagnostics
+Results are saved to `Output/Kronos/hpo/<model>/<direction>/<gran>/best_params.json`.
 
-The CLI dispatchers replace the old `python Utils/ocp_analysis.py` and `python Utils/ocp_theory.py` invocations.
+---
+
+### `Utils/ocp/` — OCP Diagnostics
+
+Post-hoc analysis of completed OCP runs. Requires a result folder produced by `kronos_tree.py` with OCP enabled.
 
 ```bash
-# Practical diagnostics on a completed OCP run folder
-python -m Utils.ocp.analysis --folder Output/Kronos/randforest/8h_down_tp
-python -m Utils.ocp.analysis --folder Output/Kronos/randforest/unified_down_tp --mode unified
+# Practical diagnostics — per-granularity result folder
+conda run -n CTTS python -m Utils.ocp.analysis \
+  --folder Output/Kronos/randforest/UP/OCP/4h_up_tp
 
-# Theory / simulation runs
-python -m Utils.ocp.theory --config config.yaml
+# Practical diagnostics — unified (all-grans) result folder
+conda run -n CTTS python -m Utils.ocp.analysis \
+  --folder Output/Kronos/randforest/UP/OCP/unified_up_tp \
+  --mode unified
+
+# Theory / simulation studies
+conda run -n CTTS python -m Utils.ocp.theory --config config.yaml
 ```
 
-### `Utils/experiments.py`: Full Experiment Suite
+---
+
+### `Utils/experiments.py` — Full Experiment Suite
+
+Orchestrates training + edge convergence + combined backtests for all models and directions in one command. Useful for overnight batch runs.
 
 ```bash
-python Utils/experiments.py --config config.yaml               # all models
-python Utils/experiments.py --config config.yaml --models rf tabicl
-python Utils/experiments.py --config config.yaml --skip-training
-python Utils/experiments.py --config config.yaml --skip-edge --skip-combined
+# All models, all directions
+conda run -n CTTS python Utils/experiments.py --config config.yaml
+
+# Subset of models
+conda run -n CTTS python Utils/experiments.py --config config.yaml --models rf tabicl
+
+# Skip training (re-run edge + backtest on existing results)
+conda run -n CTTS python Utils/experiments.py --config config.yaml --skip-training
+
+# Training only (skip edge and combined backtest)
+conda run -n CTTS python Utils/experiments.py --config config.yaml \
+  --skip-edge --skip-combined
+
+# Fincast M1
+conda run -n CTTS python Utils/experiments.py --config config_fincast.yaml
 ```
 
 ---

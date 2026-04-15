@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
-from typing import Iterator, Tuple, Optional, Union
+from typing import Optional
 
 
 class FeatureSelection(ABC):
@@ -13,15 +13,13 @@ class FeatureSelection(ABC):
         self.kwargs = kwargs
 
     @abstractmethod
-    def select_features(
-            self,
-            X: pd.DataFrame,
-            y: np.ndarray,
-            n_features: int,
-            X_test: Optional[pd.DataFrame] = None,
-            y_test: Optional[np.ndarray] = None,
-            **kwargs
-    ) -> pd.DataFrame:
+    def select_features(self,
+                        X: pd.DataFrame,
+                        y: np.ndarray,
+                        n_features: int,
+                        X_test: Optional[pd.DataFrame] = None,
+                        y_test: Optional[np.ndarray] = None,
+                        **kwargs) -> pd.DataFrame:
         """
 
         Args:

@@ -16,62 +16,55 @@ Usage:
   python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv --n-blocks 8 --k-test 2
 """
 
-import math
-import argparse, sys, json
+import argparse, json
 from pathlib import Path
 from itertools import combinations
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-# ┏━━━━━━━━━━ Imports from Data Preprocessing ━━━━━━━━━━┓
-from Utils.data import resolve_feature_names
 
 # ┏━━━━━━━━━━ Imports from Selective Classification ━━━━━━━━━━┓
 from Utils.selective_classification import _find_best_utility_threshold, calibrate_probabilities
 
 # ┏━━━━━━━━━━ Imports from Models ━━━━━━━━━━┓
-from Utils.classifier import _build_tree_model, MODEL_CHOICES, MODELS_NO_SCALING
+from Utils.classifier import _build_tree_model, MODELS_NO_SCALING
 
 # ┏━━━━━━━━━━ Imports from Backtest ━━━━━━━━━━┓
-from Utils.backtest import (_annualization_factor, 
+from Utils.backtest import (_annualization_factor,
                             _build_spread_equity,
-                            _calc_drawdown, 
-                            _calc_sharpe, 
+                            _calc_drawdown,
+                            _calc_sharpe,
                             _equity_horizon_returns,
-                            _load_raw_close_prices,
-                            _plot_path_equity)
+                            _load_raw_close_prices)
 
 # ┏━━━━━━━━━━ Imports from Utils ━━━━━━━━━━┓
-from Utils.utils import (_load_config, 
-                         _infer_direction, 
+from Utils.utils import (_load_config,
+                         _infer_direction,
                          _load_multi_cache,
-                         _class_names, 
-                         m1_output_bucket, 
-                         m1_display_label)
+                         _class_names,
+                         m1_output_bucket)
+
+# ┏━━━━━━━━━━ Imports from TS Cross-Validation ━━━━━━━━━━┓
+from Utils.ts_cross_validation import (_gran_to_timedelta,
+                                       _build_datetime_blocks,
+                                       _assign_blocks,
+                                       _generate_cpcv_splits,
+                                       _reconstruct_paths,
+                                       compute_embargo_splits as _compute_embargo_splits,
+                                       CAL_SPLIT_RATIO)
 
 # ┏━━━━━━━━━ Fixed seed for CPCV — variance measures regime sensitivity, not model noise ━━━━━━━━━━┓
 EDGE_SEED = 42
 
 # ┏━━━━━━━━━━ Calibration split ratios ━━━━━━━━━━┓
-# [XGBoost, TabpPFN or others] 
-# First 40% of Val (Calibration Set ~ Val-Cal)
-# Last 60% (Threshold Optimization Set ~ Val-Opt)
-CAL_SPLIT_RATIO = 0.40
-
-# [Random Forest] 
-# First 40% of OOB Train (Calibration Set ~ Val-Cal)
-# Last 60% (Threshold Optimization Set ~ Val-Opt) (CPCV only)
+# [XGBoost, TabpPFN or others]
+# First CAL_SPLIT_RATIO of Val (Calibration Set ~ Val-Cal) — imported from ts_cross_validation.
+# Remainder = Val-Opt (Threshold Optimization Set).
+#
+# [Random Forest]
+# First CPCV_OOB_CAL_RATIO of OOB Train = Val-Cal; remainder = Val-Opt (CPCV only).
 CPCV_OOB_CAL_RATIO = 0.40
 
 # ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
@@ -96,74 +89,6 @@ METRICS_TO_PLOT = [("accuracy",      "Accuracy (@0.5)"),
 if __name__ == "__main__":
     main()
 
-
-
-
-# ┏━━━━━━━━━━ Embargo helper: 4-way split with purge at all boundaries ━━━━━━━━━━┓
-def _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularity):
-    """Compute indices for Train / Val-Cal / Val-Opt / Test with embargo gaps.
-
-    Purge = horizon x bar_width at each boundary to prevent label leakage.
-    Cal/Opt split is determined by CAL_SPLIT_RATIO applied to the Val window.
-
-    Returns dict with keys: idx_train, idx_cal, idx_opt, idx_test, cal_end, purge_td
-    """
-    # ┏━━━━━━━━━━ Granularity to timedelta ━━━━━━━━━━┓
-    bar_td = _gran_to_timedelta(granularity)
-    purge_td = bar_td * horizon
-
-    # ┏━━━━━━━━━━ Train and Validation End Dates ━━━━━━━━━━┓
-    t_train_end = pd.Timestamp(train_end)
-    t_val_end   = pd.Timestamp(val_end)
-
-    # ┏━━━━━━━━━━ Val-Cal End = 40% of the Val window ━━━━━━━━━━┓
-    val_duration = t_val_end - t_train_end
-    t_cal_end = t_train_end + CAL_SPLIT_RATIO * val_duration
-
-    # ┏━━━━━━━━━━ Boundaries with embargo ━━━━━━━━━━┓
-    #   Train:   date <= train_end
-    #   (purge): train_end < date <= train_end + purge
-    #   Val-Cal:     train_end + purge < date <= cal_end
-    #   (purge): cal_end < date <= cal_end + purge
-    #   Val-Opt:     cal_end + purge < date <= val_end
-    #   (purge): val_end < date <= val_end + purge
-    #   Test:    date > val_end + purge
-    
-    # ┏━━━━━━━━━━ Split indices ━━━━━━━━━━┓
-    idx_train, idx_cal, idx_opt, idx_test = [], [], [], []
-    for i, d in enumerate(dates_valid):
-        # ┏━━━━━━━━━━ Train ━━━━━━━━━━┓
-        if d <= t_train_end:
-            idx_train.append(i)
-        
-        # ┏━━━━━━━━━━ Purge ━━━━━━━━━━┓
-        elif d <= t_train_end + purge_td:
-            continue  # purge zone
-        
-        # ┏━━━━━━━━━━ Val-Cal ━━━━━━━━━━┓
-        elif d <= t_cal_end:
-            idx_cal.append(i)
-        
-        # ┏━━━━━━━━━━ Purge ━━━━━━━━━━┓
-        elif d <= t_cal_end + purge_td:
-            continue  # purge zone
-        
-        # ┏━━━━━━━━━━ Val-Opt ━━━━━━━━━━┓
-        elif d <= t_val_end:
-            idx_opt.append(i)
-        
-        # ┏━━━━━━━━━━ Purge ━━━━━━━━━━┓
-        elif d <= t_val_end + purge_td:
-            continue  # purge zone
-        else:
-            idx_test.append(i)
-
-    return {"idx_train": np.array(idx_train),
-            "idx_cal":   np.array(idx_cal),
-            "idx_opt":   np.array(idx_opt),
-            "idx_test":  np.array(idx_test),
-            "cal_end":   t_cal_end,
-            "purge_td":  purge_td}
 
 
 
@@ -568,116 +493,10 @@ def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_na
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ██████  MODE: CPCV  ██████
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# ┏━━━━━━━━━━ Helper to convert granularity to timedelta ━━━━━━━━━━┓
-def _gran_to_timedelta(granularity: str) -> pd.Timedelta:
-    if granularity.endswith("m"):
-        return pd.Timedelta(minutes=int(granularity[:-1]))
-    elif granularity.endswith("h"):
-        return pd.Timedelta(hours=int(granularity[:-1]))
-    elif granularity.endswith("d"):
-        return pd.Timedelta(days=int(granularity[:-1]))
-    return pd.Timedelta(days=1)
-
-
-# ┏━━━━━━━━━━ Helper to build datetime blocks ━━━━━━━━━━┓
-def _build_datetime_blocks(dates: list, n_blocks: int) -> list:
-    """Divide dates into n_blocks by datetime boundaries (not row count)."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    ts_sorted = sorted(set(dates))
-    t_min, t_max = ts_sorted[0], ts_sorted[-1]
-    block_duration = (t_max - t_min) / n_blocks
-
-    # ┏━━━━━━━━━━ Create blocks ━━━━━━━━━━┓
-    return [(t_min + b * block_duration, t_min + (b + 1) * block_duration)
-            for b in range(n_blocks)]
-
-
-# ┏━━━━━━━━━━ Helper to assign blocks ━━━━━━━━━━┓
-def _assign_blocks(dates_arr, boundaries: list) -> np.ndarray:
-    """Assign each index to a block number based on its datetime."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    n = len(dates_arr)
-    n_blocks = len(boundaries)
-    block_ids = np.full(n, -1, dtype=int)
-    
-    # ┏━━━━━━━━━━ Assign blocks ━━━━━━━━━━┓
-    for i in range(n):
-        t = dates_arr[i]
-        for b in range(n_blocks):
-            b_start, b_end = boundaries[b]
-            if b == n_blocks - 1:
-                if b_start <= t <= b_end:
-                    block_ids[i] = b; break
-            else:
-                if b_start <= t < b_end:
-                    block_ids[i] = b; break
-    return block_ids
-
-
-# ┏━━━━━━━━━━ Helper to generate CPCV splits ━━━━━━━━━━┓
-def _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_arr,
-                          purge_td, boundaries):
-    """Generate all C(n_blocks, k_test) train/test splits with purge+embargo."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    splits = []
-    
-    # ┏━━━━━━━━━━ Generate splits ━━━━━━━━━━┓
-    for test_blocks in combinations(range(n_blocks), k_test):
-        # ┏━━━━━━━━━━ Create test and train sets ━━━━━━━━━━┓
-        test_set = set(test_blocks)
-        train_blocks = [b for b in range(n_blocks) if b not in test_set]
-
-        # ┏━━━━━━━━━━ Get indices for test and train sets ━━━━━━━━━━┓
-        idx_test = np.where(np.isin(block_ids, list(test_blocks)))[0]
-        idx_train_raw = np.where(np.isin(block_ids, train_blocks))[0]
-        if len(idx_test) == 0 or len(idx_train_raw) == 0:
-            continue
-
-        # ┏━━━━━━━━━━ Purge training samples near test boundaries ━━━━━━━━━━┓
-        test_boundaries = [boundaries[tb] for tb in test_blocks]
-        purged_mask = np.zeros(len(dates_arr), dtype=bool)
-        for tb_start, tb_end in test_boundaries:
-            for i in idx_train_raw:
-                t = dates_arr[i]
-                if (tb_start - purge_td) <= t < tb_start:
-                    purged_mask[i] = True
-                elif tb_end < t <= (tb_end + purge_td):
-                    purged_mask[i] = True
-
-        # ┏━━━━━━━━━━ Get indices for purged and train sets ━━━━━━━━━━┓
-        idx_purged = np.where(purged_mask)[0]
-        idx_train = np.array([i for i in idx_train_raw if not purged_mask[i]])
-
-        # ┏━━━━━━━━━━ Append split to list ━━━━━━━━━━┓
-        splits.append({"test_blocks": test_blocks, 
-                       "idx_train": idx_train, 
-                       "idx_test": idx_test, 
-                       "idx_purged": idx_purged})
-    return splits
-
-
-# ┏━━━━━━━━━━ Helper to reconstruct paths ━━━━━━━━━━┓
-def _reconstruct_paths(splits, n_blocks, k_test):
-    """Reconstruct C(N-1, k-1) chronological paths from CPCV splits."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    n_paths = math.comb(n_blocks - 1, k_test - 1)
-    block_to_splits = {b: [] for b in range(n_blocks)}
-    
-    # ┏━━━━━━━━━━ Map each block to the splits that test it ━━━━━━━━━━┓
-    for si, sp in enumerate(splits):
-        for b in sp["test_blocks"]:
-            block_to_splits[b].append(si)
-
-    # ┏━━━━━━━━━━ Create paths by picking the p-th split for every block ━━━━━━━━━━┓
-    paths = []
-    for p in range(n_paths):
-        path_entries = []
-        for b in range(n_blocks):
-            split_idx = block_to_splits[b][p]
-            path_entries.append({"block": b, "split_idx": split_idx})
-        paths.append(path_entries)
-    return paths
+# Block/path/purge helpers (_gran_to_timedelta, _build_datetime_blocks,
+# _assign_blocks, _generate_cpcv_splits, _reconstruct_paths) are imported
+# from Utils.ts_cross_validation at the top of this module — single source
+# of truth shared with the CombinatorialPurgedCV class.
 
 
 # ┏━━━━━━━━━━ Helper to run CPCV split (with & without OOB-calibrated threshold) ━━━━━━━━━━┓
@@ -1310,5 +1129,11 @@ def main():
         run_cpcv_analysis(cache_path, cfg, n_blocks=args.n_blocks,
                           k_test=args.k_test, output_root=output_root, model_name=args.model)
 
-# Back-import plot functions so topic-level code can call them.
-from .plots import *  # noqa: E402,F401,F403
+from .plots import (
+    _plot_edge_curves,
+    _plot_summary_boxplots,
+    _plot_cross_gran_seeds,
+    _plot_split_matrix,
+    _plot_path_boxplots,
+    _plot_cross_gran_cpcv,
+)
