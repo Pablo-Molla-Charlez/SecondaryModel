@@ -446,9 +446,9 @@ Orchestrates the full M2 pipeline for all models and directions in a single comm
 
 | Phase | What it does | Skip flag |
 | --- | --- | --- |
-| **1 — Training**   | `kronos_tree.py --per-gran` for every model × direction | `--skip-training` |
-| **2 — Edge**   | Seeds → CPCV → Convergence for every model × direction | `--skip-edge` |
-| **3 — Combined**   | `kronos_tree.py --combined-backtest` (UP+DOWN) for every model | `--skip-combined` |
+| **1. Training**   | `kronos_tree.py --per-gran` for every model × direction | `--skip-training` |
+| **2. Edge**   | Seeds → CPCV → Convergence for every model × direction | `--skip-edge` |
+| **3. Combined**   | `kronos_tree.py --combined-backtest` (UP+DOWN) for every model | `--skip-combined` |
 
 **Key rule**: `experiments.py` always reads the config you pass via `--config`. Each of its subprocesses (`kronos_tree.py`, `Utils.edge`) also receives **that same config** — you do not need to edit `config.yaml` to switch M1 models. Use `--m1` instead.
 
