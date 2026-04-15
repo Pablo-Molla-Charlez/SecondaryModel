@@ -464,8 +464,8 @@ conda run -n CTTS python Utils/experiments.py --config config.yaml --skip-traini
 conda run -n CTTS python Utils/experiments.py --config config.yaml \
   --skip-edge --skip-combined
 
-# Fincast M1
-conda run -n CTTS python Utils/experiments.py --config config_fincast.yaml
+# Explicitly override the M1 model (e.g., target Fincast signals)
+conda run -n CTTS python Utils/experiments.py --config config.yaml --m1 fincast
 ```
 
 ---
