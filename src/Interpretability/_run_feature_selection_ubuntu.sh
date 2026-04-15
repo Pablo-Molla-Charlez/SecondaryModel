@@ -10,11 +10,12 @@ for gran in "${grans[@]}"; do
               --m1 $m1 \
               --gran $gran \
               --direction $direction \
-              --n_splits 3 \
+              --n_splits 10 \
+              --n_test_splits 3 \
               --min_features 1 \
-              --max_features 3 \
+              --max_features 33 \
               --strategy "SFS+" \
-              --m2 "AutoGluon"
+              --m2 "RF"
     done
   done
 done

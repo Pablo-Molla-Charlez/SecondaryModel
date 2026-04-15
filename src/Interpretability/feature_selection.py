@@ -17,8 +17,6 @@ from Utils.feature_selection.sequential_feature_selection import SequentialFeatu
 import pandas as pd
 import time
 from Utils.data_loaders.tabular_data_loader import load_tabular_dataset_from_cache_to_DataFrame
-from Utils.utils import _load_multi_cache
-from Utils.data import split_by_global_time, ENG_FEATURE_NAMES
 from sklearn.feature_selection import SequentialFeatureSelector, RFECV
 from Utils.ts_cross_validation.combinatorial_purged_cv import CombinatorialPurgedCV
 from sklearn.metrics import get_scorer
@@ -27,13 +25,8 @@ from sklearn.model_selection import cross_validate
 # make learning curves for all models
 import matplotlib
 import argparse
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.base import clone
-from matplotlib.colors import ListedColormap
-import matplotlib.patches as mpatches
 
-import matplotlib.pyplot as plt
-import numpy as np
 from Interpretability.plotting_scripts.plotting_feature_selection import plot_cv_splits, plot_scoring_over_features
 
 
@@ -140,8 +133,7 @@ def do_sfs_plus(clf,
                 args):
     scorer = get_scorer(args.scoring)
 
-    # t1 = pd.Series(X_analysis.index)
-    cv = CombinatorialPurgedCV(n_splits=args.n_splits, n_test_splits=2, embargo_pct=0.05, random_state=42)
+    cv = CombinatorialPurgedCV(n_splits=args.n_splits, n_test_splits=args.n_test_splits, embargo_pct=0.05, random_state=42)
     # cv = SklearnTimeSeriesCV(args.n_splits)
     print(f"CV with {cv.get_n_splits()} splits")
 
@@ -267,6 +259,7 @@ if __name__ == "__main__":
 
     # Specific to feature selection
     parser.add_argument('--n_splits', type=int, default=10)
+    parser.add_argument('--n_test_splits', type=int, default=2)
     parser.add_argument('--strategy', type=str, default="SFS", choices=["SFS", "SFS+", "RFECV"])
     parser.add_argument('--scoring', type=str, default="accuracy", choices=["accuracy", "precision", "roc_auc"])
     parser.add_argument('--min_features', type=int, default=1)
