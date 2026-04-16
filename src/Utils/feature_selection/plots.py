@@ -60,6 +60,8 @@ __all__ = [
     "plot_ocp_threshold_evolution",
     "plot_selective_return_distribution",
     "plot_asset_correlation",
+    "plot_dataset_size_distribution",
+    "plot_return_quality_distribution",
 ]
 
 
@@ -1563,3 +1565,650 @@ def plot_asset_correlation(pearson_corr:  pd.DataFrame,
     plt.tight_layout()
     fig.savefig(save_dir / "asset_corr_rolling.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Dataset size & TP/FP distribution across M1 models × granularities × directions
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def plot_dataset_size_distribution(cache_roots: Optional[Dict[str, Path]] = None,
+                                   save_dir: Optional[Path] = None) -> pd.DataFrame:
+    """Summarise and plot TP vs FP window counts per (M1 model, granularity, direction).
+
+    For every MultiGranDataset cache in the provided roots, the binary
+    `meta_label` is interpreted as:
+        label == 1  →  True Positive  (M1 prediction aligned with realised direction)
+        label == 0  →  False Positive (M1 prediction contradicted by outcome)
+
+      1. ``size_stacked_counts.png``    — grouped-and-stacked bars of absolute TP/FP
+                                          counts per granularity, split by direction,
+                                          one panel per M1 model.
+      2. ``size_tp_rate.png``           — TP-rate (base-rate) heatmap across models
+                                          × granularities × directions.
+      3. ``size_total_windows.png``     — total window count per model/gran/direction
+                                          (log scale) — dataset-size comparison.
+
+    Returns the long-format DataFrame of counts for downstream use.
+    """
+
+    # ┏━━━━━━━━━━ Default cache roots ━━━━━━━━━━┓
+    if cache_roots is None:
+        base = Path(__file__).resolve().parents[2] / "Output"
+        cache_roots = {"Kronos":   base / "Kronos"   / "cache",
+                       "Fincast":  base / "Fincast"  / "cache",
+                       "Chronos2": base / "Chronos2" / "cache",
+                       "Tirex":    base / "Tirex"    / "cache"}
+
+    # ┏━━━━━━━━━━ Default save dir ━━━━━━━━━━┓
+    if save_dir is None:
+        save_dir = Path(__file__).resolve().parents[2] / "Output" / "Analysis" / "Size"
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Direction extractor ━━━━━━━━━━┓
+    _DIR_RE = re.compile(r"_fee_(up|down)_", re.IGNORECASE)
+    def _infer_direction(p: Path) -> Optional[str]:
+        m = _DIR_RE.search(p.name)
+        return m.group(1).lower() if m else None
+
+    # ┏━━━━━━━━━━ Collect counts ━━━━━━━━━━┓
+    rows: List[Dict[str, Any]] = []
+    for m1_name, cdir in cache_roots.items():
+        cdir = Path(cdir)
+        if not cdir.is_dir():
+            warnings.warn(f"[size-plot] Cache dir missing for {m1_name}: {cdir}")
+            continue
+        for pt in sorted(cdir.glob("*.pt")):
+            direction = _infer_direction(pt)
+            if direction is None:
+                continue
+            try:
+                ds = torch.load(pt, weights_only=False, map_location="cpu")
+            except Exception as e:
+                warnings.warn(f"[size-plot] Failed to load {pt.name}: {e}")
+                continue
+            grans = getattr(ds, "grans", None) or (list(ds.keys()) if isinstance(ds, dict) else None)
+            if not grans:
+                warnings.warn(f"[size-plot] No grans found in {pt.name}")
+                continue
+            for g in grans:
+                sub = ds.sub[g] if hasattr(ds, "sub") else ds[g]
+                labels = sub["labels"] if isinstance(sub, dict) else getattr(sub, "labels", None)
+                if labels is None:
+                    continue
+                lab = np.asarray(labels.cpu() if hasattr(labels, "cpu") else labels).ravel()
+                lab = lab[~np.isnan(lab)] if lab.dtype.kind == "f" else lab
+                lab = lab.astype(int)
+                n_tp = int((lab == 1).sum())
+                n_fp = int((lab == 0).sum())
+                rows.append({"m1_model":    m1_name,
+                             "granularity": g,
+                             "direction":   direction.upper(),
+                             "n_tp":        n_tp,
+                             "n_fp":        n_fp,
+                             "n_total":     n_tp + n_fp,
+                             "tp_rate":     n_tp / max(n_tp + n_fp, 1)})
+
+    if not rows:
+        warnings.warn("[size-plot] No data collected — aborting.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # ┏━━━━━━━━━━ Persist raw counts ━━━━━━━━━━┓
+    df.sort_values(["m1_model", "direction", "granularity"]).to_csv(save_dir / "size_counts.csv",
+                                                                    index=False)
+
+    # ┏━━━━━━━━━━ Ordering helpers (fixed canonical order, no 15m) ━━━━━━━━━━┓
+    CANONICAL_GRANS = ["30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
+    grans_present = [g for g in CANONICAL_GRANS if g in df["granularity"].unique().tolist()]
+    # Filter dataframe to only those grans (drops 15m and anything else outside canonical set)
+    df = df[df["granularity"].isin(grans_present)].copy()
+    
+    # Order models exactly as requested rather than strictly alphabetically
+    _found = df["m1_model"].unique().tolist()
+    pref_order = ["Chronos2", "Tirex", "Fincast", "Kronos"]
+    models_present = [m for m in pref_order if m in _found] + sorted([m for m in _found if m not in pref_order])
+    directions = ["UP", "DOWN"]
+
+    # ┏━━━━━━━━━━ Academic style ━━━━━━━━━━┓
+    plt.rcParams.update({"font.family":      "DejaVu Sans",
+                         "axes.titlesize":   11,
+                         "axes.labelsize":   10,
+                         "xtick.labelsize":  9,
+                         "ytick.labelsize":  9,
+                         "legend.fontsize":  9,
+                         "axes.spines.top":   False,
+                         "axes.spines.right": False})
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Figure 1 — grouped stacked bars: TP/FP counts per gran × direction
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ┏━━━━━━━━━━ Set up figure ━━━━━━━━━━┓
+    n_models = len(models_present)
+    fig, axes = plt.subplots(nrows   = n_models,
+                             ncols   = 1,
+                             figsize = (max(9, 0.8 * len(grans_present) * 2 + 2), 3.0 * n_models),
+                             sharex  = True)
+    if n_models == 1:
+        axes = [axes]
+
+    # ┏━━━━━━━━━━ Colors and bar width ━━━━━━━━━━┓
+    TP_COLOR = "#2E7D32"
+    FP_COLOR = "#C62828"
+    bar_w = 0.38
+    x = np.arange(len(grans_present))
+
+    # ┏━━━━━━━━━━ Plot bars ━━━━━━━━━━┓
+    for ax, m1 in zip(axes, models_present):
+        sub = df[df["m1_model"] == m1]
+        for i, d in enumerate(directions):
+            offset = (i - 0.5) * bar_w
+            sub_d = sub[sub["direction"] == d].set_index("granularity").reindex(grans_present)
+            n_fp = sub_d["n_fp"].fillna(0).to_numpy()
+            n_tp = sub_d["n_tp"].fillna(0).to_numpy()
+            hatch = "" if d == "UP" else "///"
+            ax.bar(x + offset, n_fp, bar_w,
+                   color=FP_COLOR, edgecolor="black", linewidth=0.5,
+                   hatch=hatch, label=f"FP ({d})" if ax is axes[0] else None)
+            ax.bar(x + offset, n_tp, bar_w, bottom=n_fp,
+                   color=TP_COLOR, edgecolor="black", linewidth=0.5,
+                   hatch=hatch, label=f"TP ({d})" if ax is axes[0] else None)
+            totals = n_fp + n_tp
+            for xi, tot in zip(x + offset, totals):
+                if tot > 0:
+                    # Provide a significantly higher vertical offset to lift the labels off the top of the bars
+                    ax.text(xi, tot + (sub["n_tp"].max() + sub["n_fp"].max()) * 0.06, 
+                            f"{int(tot):,}",
+                            ha="center", va="bottom", fontsize=7)
+        
+        # Add extra headroom so labels aren't clipped
+        ax.relim()
+        ax.autoscale_view()
+        ax.set_ylim(0, ax.get_ylim()[1] * 1.18)
+        
+        ax.set_title(f"M1 = {m1}", loc="left", fontweight="bold")
+        ax.set_ylabel("Window count")
+        ax.set_yscale("function", functions=(np.sqrt, lambda x: x**2))
+        ax.set_xticks(x)
+        ax.set_xticklabels(grans_present)
+        ax.grid(axis="y", linestyle=":", alpha=0.4)
+
+    # ┏━━━━━━━━━━ Final touches ━━━━━━━━━━┓
+    axes[-1].set_xlabel("Granularity")
+    axes[0].legend(loc="upper right", ncol=2, frameon=True, framealpha=0.9)
+    fig.suptitle("Dataset Distribution — True Positives vs False Positives Windows\nper M1 Model, Granularity and Direction", fontsize=13, fontweight="bold", y=0.995)
+    fig.tight_layout()
+    
+    # ┏━━━━━━━━━━ Save figure ━━━━━━━━━━┓
+    fig.savefig(save_dir / "size_stacked_counts.png", dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Figure 2 — TP-rate heatmap (class balance)
+    # Single combined matrix: rows = models, columns = (gran, direction)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Figure 2 — TP-rate heatmap (class balance)
+    # Single combined matrix: rows = models, columns = (gran, direction)
+    # One shared colorbar on the right symmetrically extracted.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ┏━━━━━━━━━━ Set up figure ━━━━━━━━━━┓
+    fig, axes_h = plt.subplots(nrows   = 1,
+                               ncols   = len(directions),
+                               figsize = (max(7, 0.75 * len(grans_present) + 1) * len(directions), 0.6 * n_models + 2.5),
+                               sharey  = True,
+                               layout  = "constrained")
+    if len(directions) == 1:
+        axes_h = [axes_h]
+    
+    # ┏━━━━━━━━━━ Plot heatmaps ━━━━━━━━━━┓
+    for i, (ax, d) in enumerate(zip(axes_h, directions)):
+        mat = (df[df["direction"] == d]
+               .pivot(index="m1_model", columns="granularity", values="tp_rate")
+               .reindex(index=models_present, columns=grans_present))
+        
+        # Don't let seaborn allocate the colorbar so we can do it symmetrically later
+        sns.heatmap(mat, ax=ax, annot=True, fmt=".2%", cmap="RdYlGn",
+                    vmin=0.40, vmax=0.55, center=0.50,
+                    square=True,
+                    cbar=False,
+                    linewidths=0.4, linecolor="white",
+                    annot_kws={"size": 9})
+        
+        ax.set_title(f"Direction: {d}", fontweight="bold")
+        
+        # Add a bit of separation for Granularity as requested
+        ax.set_xlabel("Granularity", labelpad=12)
+        ax.set_ylabel("M1 model" if i == 0 else "")
+        if i > 0:
+            ax.tick_params(left=False, labelleft=False)
+            
+    # Extract the image from the first axes to supply to the colorbar
+    mappable = axes_h[0].collections[0]
+    # layout="constrained" flawlessly integrates this shared colorbar without overlapping
+    cbar = fig.colorbar(mappable, ax=axes_h, shrink=0.65, pad=0.02, fraction=0.05)
+    cbar.set_label("TP rate")
+    
+    # Pull title slightly closer to the tables (from y=1.02 -> y=0.97)
+    fig.suptitle("True Positive Rate of Meta-Labels across M1 Models, Granularities and Directions", fontsize=12, fontweight="bold", y=0.96)
+
+    # ┏━━━━━━━━━━ Save figure ━━━━━━━━━━┓
+    fig.savefig(save_dir / "size_tp_rate.png", dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Figure 3 — stacked FP (dim) + TP (full) bars, model colours kept.
+    # FP segment: alpha=0.35 (same model colour, washed out)
+    # TP segment: alpha=1.0  (full model colour, stacked on top)
+    # White rotated labels inside each segment; total in black above bar.
+    # Two-row layout splits fine (30m–4h) from coarse (6h–1d) grans.
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    n_series = n_models * len(directions)
+    inner_w  = 0.92 / n_series
+    FP_ALPHA = 0.35   # washed-out model colour → FP segment
+    TP_ALPHA = 1.00   # full model colour        → TP segment
+
+    row_grans = [[g for g in ["30m", "1h", "2h", "4h"] if g in grans_present],
+                 [g for g in ["6h", "8h", "12h", "1d"] if g in grans_present]]
+    row_grans = [rg for rg in row_grans if rg]
+
+    fig, axes = plt.subplots(nrows=len(row_grans), ncols=1,
+                             figsize=(20, 7 * len(row_grans)), sharey=False)
+    if len(row_grans) == 1:
+        axes = [axes]
+
+    palette = sns.color_palette("Set2", n_colors=n_models)
+
+    for row_idx, r_grans in enumerate(row_grans):
+        ax   = axes[row_idx]
+        x    = np.arange(len(r_grans))
+        bar_meta = []   # (xpos_arr, fp_arr, tp_arr) for annotation pass
+
+        # ┏━━━━━━━━━━ Draw stacked FP + TP bars ━━━━━━━━━━┓
+        for mi, m1 in enumerate(models_present):
+            for di, d in enumerate(directions):
+                sub    = (df[(df["m1_model"] == m1) & (df["direction"] == d)]
+                          .set_index("granularity").reindex(r_grans))
+                fp_arr = sub["n_fp"].fillna(0).to_numpy()
+                tp_arr = sub["n_tp"].fillna(0).to_numpy()
+                offset = (mi * len(directions) + di - (n_series - 1) / 2) * inner_w
+                hatch  = "" if d == "UP" else "///"
+                col    = palette[mi]
+                lbl    = f"{m1} — {d}" if row_idx == 0 else ""
+
+                # FP — dim alpha, no label duplication
+                ax.bar(x + offset, fp_arr, inner_w * 0.92,
+                       color=col, alpha=FP_ALPHA,
+                       edgecolor="black", linewidth=0.45,
+                       hatch=hatch, label=lbl)
+                # TP — full alpha stacked on top (no label; colour shared)
+                ax.bar(x + offset, tp_arr, inner_w * 0.92, bottom=fp_arr,
+                       color=col, alpha=TP_ALPHA,
+                       edgecolor="black", linewidth=0.45,
+                       hatch=hatch)
+                bar_meta.append((x + offset, fp_arr, tp_arr))
+
+        # ┏━━━━━━━━━━ Establish ylim before annotations ━━━━━━━━━━┓
+        ax.relim(); ax.autoscale_view()
+        ymax = ax.get_ylim()[1]
+        ax.set_ylim(0, ymax * 1.10)   # Giant headroom canopy to protect long exported text!
+
+        # ┏━━━━━━━━━━ Annotate: white labels inside, black total above ━━━━━━━━━━┓
+        min_seg = ymax * 0.020   # strict 2% height check; if it's smaller, it exports its text outside
+        for (xpos_arr, fp_arr, tp_arr) in bar_meta:
+            for xp, fp, tp in zip(xpos_arr, fp_arr, tp_arr):
+                total = fp + tp
+                if total == 0:
+                    continue
+                
+                # Base floating total text
+                total_str = f"{int(total):,}"
+                needs_export = False
+                
+                # FP label — centred vertically inside FP segment
+                if fp >= min_seg:
+                    ax.text(xp, fp / 2, f"{int(fp):,}",
+                            ha="center", va="center",
+                            fontsize=5.5, fontweight="bold",
+                            color="white", rotation=25)
+                else:
+                    needs_export = True
+
+                # TP label — centred vertically inside TP segment
+                if tp >= min_seg:
+                    ax.text(xp, fp + tp / 2, f"{int(tp):,}",
+                            ha="center", va="center",
+                            fontsize=5.5, fontweight="bold",
+                            color="white", rotation=25)
+                else:
+                    needs_export = True
+
+                # Fallback purely for scientifically microscopic chunks!
+                if needs_export:
+                    total_str += f"  (TP:{int(tp):,} | FP:{int(fp):,})"
+
+                # Total above bar (90-degree spine so it can safely grow vertically indefinitely!)
+                ax.text(xp, total + ymax * 0.02, total_str,
+                        ha="center", va="bottom",
+                        fontsize=7.2, color="black", rotation=28)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(r_grans)
+        ax.set_ylabel("Window count")
+        # Linear scaling is MANDATORY for stacked bar charts. Non-linear scaling (e.g. sqrt) 
+        # destroys area proportionality because f(A+B) - f(A) != f(B). This ensures a 24k 
+        # segment looks identically sized to a 22k segment regardless of where it stacks!
+        ax.grid(axis="y", linestyle=":", alpha=0.4)
+        if row_idx == 0:
+            ax.set_title("Dataset Size per M1 Model, Granularity and Direction",
+                         fontweight="bold", fontsize=15)
+
+    axes[-1].set_xlabel("Granularity")
+
+    # ┏━━━━━━━━━━ Legend: model colours + opacity key ━━━━━━━━━━┓
+    from matplotlib.patches import Patch
+    from matplotlib.lines   import Line2D
+    
+    # ┏━━━━━━━━━━ Matplotlib populates legends DOWN columns first! ━━━━━━━━━━┓
+    # To get Row 1 = [UP] and Row 2 = [DOWN], we must pair them adjacently!
+    all_handles = []
+    sep = Line2D([0], [0], color="none", label="")
+    
+    for mi, m1 in enumerate(models_present):
+        all_handles.append(Patch(facecolor=palette[mi], edgecolor="black", linewidth=0.5, hatch="", label=f"{m1} UP"))
+        all_handles.append(Patch(facecolor=palette[mi], edgecolor="black", linewidth=0.5, hatch="///", label=f"{m1} DOWN"))
+
+    tp_handle = Patch(facecolor="grey", alpha=TP_ALPHA, edgecolor="black", linewidth=0.5, label="TP")
+    fp_handle = Patch(facecolor="grey", alpha=FP_ALPHA, edgecolor="black", linewidth=0.5, label="FP")
+    
+    # Insert visual separation column, then the TP/FP column
+    all_handles.extend([sep, sep, tp_handle, fp_handle])
+
+    fig.legend(handles=all_handles,
+               ncol=(len(models_present) + 2),
+               loc="lower center", bbox_to_anchor=(0.5, 0.0),
+               frameon=False, fontsize=12)
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
+    fig.savefig(save_dir / "size_total_windows.png", dpi=400, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"[size-plot] Wrote {len(df)} rows and 3 figures to {save_dir}")
+    return df
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Return quality: TP vs FP return distributions per model × gran × direction
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def plot_return_quality_distribution(cache_roots: Optional[Dict[str, Path]] = None,
+                                     save_dir: Optional[Path] = None,
+                                     clip_pct: float = 0.2) -> pd.DataFrame:
+    """Split-violin plot of TP vs FP returns per M1 model × granularity × direction.
+
+    Layout: rows = M1 models, columns = granularities (canonical order, no 15m).
+    Within each cell: one split violin per direction (UP / DOWN).
+    Left half = FP returns (red), right half = TP returns (green).
+    A horizontal reference line marks zero return.
+    Median is shown as a white dot; IQR box overlaid.
+
+    Parameters
+    ----------
+    cache_roots : dict {model_name: Path}, optional
+        Paths to cache dirs. Defaults to Output/{Kronos,Fincast,Chronos2,Tirex}/cache.
+    save_dir : Path, optional
+        Where to write the figure. Defaults to Output/Analysis/Quality.
+    clip_pct : float
+        Y-axis is clipped to [-clip_pct, +clip_pct] to suppress extreme outliers.
+        Default 0.15 (±15 %).
+
+    Returns the long-format DataFrame used for plotting.
+    """
+    import warnings
+
+    # ┏━━━━━━━━━━ Default paths ━━━━━━━━━━┓
+    if cache_roots is None:
+        base = Path(__file__).resolve().parents[2] / "Output"
+        cache_roots = {"Kronos":   base / "Kronos"   / "cache",
+                       "Fincast":  base / "Fincast"  / "cache",
+                       "Chronos2": base / "Chronos2" / "cache",
+                       "Tirex":    base / "Tirex"    / "cache"}
+    if save_dir is None:
+        save_dir = Path(__file__).resolve().parents[2] / "Output" / "Analysis" / "Quality"
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Direction regex ━━━━━━━━━━┓
+    _DIR_RE = re.compile(r"_fee_(up|down)_", re.IGNORECASE)
+    def _infer_dir(p: Path) -> Optional[str]:
+        m = _DIR_RE.search(p.name)
+        return m.group(1).upper() if m else None
+
+    # ┏━━━━━━━━━━ Collect returns ━━━━━━━━━━┓
+    rows: List[Dict[str, Any]] = []
+    for m1_name, cdir in cache_roots.items():
+        cdir = Path(cdir)
+        if not cdir.is_dir():
+            warnings.warn(f"[quality-plot] Missing cache dir: {cdir}")
+            continue
+        for pt in sorted(cdir.glob("*.pt")):
+            direction = _infer_dir(pt)
+            if direction is None:
+                continue
+            try:
+                ds = torch.load(pt, weights_only=False, map_location="cpu")
+            except Exception as e:
+                warnings.warn(f"[quality-plot] Failed to load {pt.name}: {e}")
+                continue
+            grans = getattr(ds, "grans", None)
+            if not grans:
+                continue
+            for g in grans:
+                sub     = ds.sub[g]
+                labels  = np.asarray(sub["labels"].cpu()).ravel()
+                returns = np.asarray(sub["returns"].cpu()).ravel()
+                valid   = ~(np.isnan(labels) | np.isnan(returns))
+                lab     = labels[valid].astype(int)
+                ret     = returns[valid]
+                for lv, lname in ((1, "TP"), (0, "FP")):
+                    mask = lab == lv
+                    if mask.sum() == 0:
+                        continue
+                    for r in ret[mask]:
+                        rows.append({"m1_model":    m1_name,
+                                     "granularity": g,
+                                     "direction":   direction,
+                                     "label":       lname,
+                                     "return":      float(r)})
+
+    if not rows:
+        warnings.warn("[quality-plot] No data — aborting.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # ┏━━━━━━━━━━ Canonical ordering (no 15m) ━━━━━━━━━━┓
+    CANONICAL_GRANS = ["30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
+    grans_present  = [g for g in CANONICAL_GRANS if g in df["granularity"].unique()]
+    df = df[df["granularity"].isin(grans_present)].copy()
+    models_present = sorted(df["m1_model"].unique())
+    directions     = ["UP", "DOWN"]
+
+    n_rows = len(models_present)
+    n_cols = len(grans_present)
+
+    # ┏━━━━━━━━━━ Colour palette ━━━━━━━━━━┓
+    TP_COLOR = "#2E7D32"   # dark green
+    FP_COLOR = "#C62828"   # dark red
+    DIR_PAL  = {"UP": "black", "DOWN": "black"}   # neutral x-ticks
+
+    # ┏━━━━━━━━━━ Academic rcParams ━━━━━━━━━━┓
+    plt.rcParams.update({"font.family":       "DejaVu Sans",
+                          "axes.titlesize":    8,
+                          "axes.labelsize":    7,
+                          "xtick.labelsize":   7,
+                          "ytick.labelsize":   6.5,
+                          "legend.fontsize":   9,
+                          "axes.spines.top":   False,
+                          "axes.spines.right": False})
+
+    fig, axes = plt.subplots(nrows   = n_rows,
+                             ncols   = n_cols,
+                             figsize = (2.6 * n_cols, 3.2 * n_rows),
+                             sharey  = "row",
+                             sharex  = False)
+    # Ensure 2-D array even for single row/col
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]
+    if n_cols == 1:
+        axes = axes[:, np.newaxis]
+
+    for ri, m1 in enumerate(models_present):
+        for ci, gran in enumerate(grans_present):
+            ax  = axes[ri, ci]
+            sub = df[(df["m1_model"] == m1) & (df["granularity"] == gran)]
+
+            # ┏━━━━━━━━━━ Build per-direction split-violin data ━━━━━━━━━━┓
+            # seaborn split violin: x=direction, y=return, hue=label, split=True
+            sub_plot = sub[sub["direction"].isin(directions)].copy()
+            sub_plot["direction"] = pd.Categorical(sub_plot["direction"],
+                                                   categories=directions, ordered=True)
+            sub_plot["label"]     = pd.Categorical(sub_plot["label"],
+                                                   categories=["FP", "TP"], ordered=True)
+
+            if sub_plot.empty:
+                ax.set_visible(False)
+                continue
+
+            # ┏━━━━━━━━━━ Clip returns for display ━━━━━━━━━━┓
+            sub_plot["return_clipped"] = sub_plot["return"].clip(-clip_pct, clip_pct)
+
+            # ┏━━━━━━━━━━ Split violin ━━━━━━━━━━┓
+            try:
+                sns.violinplot(data    = sub_plot,
+                               x       = "direction",
+                               y       = "return_clipped",
+                               hue     = "label",
+                               split   = True,
+                               order   = directions,
+                               hue_order = ["FP", "TP"],
+                               palette = {"FP": FP_COLOR, "TP": TP_COLOR},
+                               inner   = None,
+                               linewidth = 0.6,
+                               cut     = 0,
+                               ax      = ax,
+                               legend  = False)
+            except Exception:
+                # Fallback: plain box if violin KDE fails (too few points)
+                sns.boxplot(data    = sub_plot,
+                            x       = "direction",
+                            y       = "return_clipped",
+                            hue     = "label",
+                            order   = directions,
+                            hue_order = ["FP", "TP"],
+                            palette = {"FP": FP_COLOR, "TP": TP_COLOR},
+                            linewidth = 0.6,
+                            ax      = ax,
+                            legend  = False)
+
+            # ┏━━━━━━━━━━ IQR box + median dot + median label overlay ━━━━━━━━━━┓
+            # Violin halves (x-centre of each half relative to violin x-position):
+            #   FP = −0.22  (left half),  TP = +0.22  (right half)
+            # Label placement — all labels point INWARD (toward the gap between violins):
+            #   UP  violin (di=0): TP label on the left  of its dot (ha="right")
+            #                      FP label on the right of its dot (ha="left")
+            #   DOWN violin (di=1): FP label on the right of its dot (ha="left")
+            #                       TP label on the left  of its dot (ha="right")
+            # → TP always ha="right", FP always ha="left" → labels face inward, no overlap.
+            half_offsets = {"FP": -0.22, "TP":  0.22}
+            # IQR box half-width = 0.045; label sits just outside the box edge
+            BOX_HW = 0.055   # slightly beyond the box edge
+            text_side = {"FP": +4.5, "TP": -4.5}   # FP: text to the right (+), TP: to the left (−)
+            text_ha   = {"FP": "left",  "TP": "right"}
+            label_colors = {"FP": FP_COLOR, "TP": TP_COLOR}
+            for di, d in enumerate(directions):
+                for lname, x_off in half_offsets.items():
+                    seg = sub_plot[(sub_plot["direction"] == d) &
+                                   (sub_plot["label"] == lname)]["return_clipped"]
+                    if len(seg) < 4:
+                        continue
+                    # Raw median for the displayed number (unclipped)
+                    seg_raw = sub_plot[(sub_plot["direction"] == d) &
+                                       (sub_plot["label"] == lname)]["return"]
+                    q1, _, q3 = np.percentile(seg, [25, 50, 75])
+                    med_raw  = float(np.median(seg_raw))
+                    med_disp = float(np.median(seg))
+                    xc = di + x_off
+                    # IQR box
+                    ax.add_patch(plt.Rectangle((xc - 0.045, q1), 0.09, q3 - q1,
+                                               facecolor="white", edgecolor="black",
+                                               linewidth=0.5, zorder=3))
+                    # Median dot
+                    ax.plot(xc, med_disp, "o", color="white",
+                            markersize=3.5, zorder=4,
+                            markeredgecolor="black", markeredgewidth=0.5)
+                    # Median value label — anchored inward from the IQR box edge
+                    sign  = "+" if med_raw >= 0 else ""
+                    label = f"{sign}{med_raw*100:.2f}%"
+                    tx = xc + text_side[lname] * BOX_HW
+                    ax.text(tx, med_disp, label,
+                            ha=text_ha[lname], va="center",
+                            fontsize=5.0, fontweight="bold",
+                            color=label_colors[lname], zorder=5)
+
+            # ┏━━━━━━━━━━ Reference lines: zero + fee break-even ━━━━━━━━━━┓
+            FEE = 0.002   # 0.2% round-trip (0.1% taker + 0.1% maker)
+            ax.axhline(0,    color="black",   linewidth=0.7, linestyle="--", alpha=0.50, zorder=2)
+            ax.axhline( FEE, color="purple", linewidth=0.7, linestyle=":",  alpha=0.75, zorder=2)
+            ax.axhline(-FEE, color="purple", linewidth=0.7, linestyle=":",  alpha=0.75, zorder=2)
+
+            # ┏━━━━━━━━━━ Cell formatting ━━━━━━━━━━┓
+            ax.set_ylim(-clip_pct * 1.05, clip_pct * 1.05)
+            ax.set_xlabel("")
+            ax.set_xticks([0, 1])
+            ax.set_xticklabels(directions, fontsize=7)
+            # Colour x-tick labels by direction
+            for tick, d in zip(ax.get_xticklabels(), directions):
+                tick.set_color(DIR_PAL[d])
+                tick.set_fontweight("bold")
+            ax.grid(axis="y", linestyle=":", alpha=0.35, linewidth=0.5)
+
+            # Column header (gran) on top row only
+            if ri == 0:
+                ax.set_title(gran, fontweight="bold", fontsize=9, pad=4)
+            # Y-label (model) on leftmost column only
+            if ci == 0:
+                ax.set_ylabel(f"{m1}\nReturn", fontsize=8, fontweight="bold")
+            else:
+                ax.set_ylabel("")
+            # Hide redundant y-ticks on non-left cells (sharey handles scale)
+            if ci > 0:
+                ax.tick_params(labelleft=False)
+
+    # ┏━━━━━━━━━━ Global title ━━━━━━━━━━┓
+    fig.suptitle("Return Quality of True Positives vs False Positives per M1 Model, Granularity and Direction\n"
+                 f"Y-Axis Clipped to ±{int(clip_pct*100)}%",
+                 fontsize=11, fontweight="bold", y=1.01)
+
+    # ┏━━━━━━━━━━ Shared legend ━━━━━━━━━━┓
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Patch(facecolor=FP_COLOR, edgecolor="black", linewidth=0.6, label="FP"),
+        Patch(facecolor=TP_COLOR, edgecolor="black", linewidth=0.6, label="TP"),
+        Patch(facecolor="white",  edgecolor="black", linewidth=0.6, label="IQR box (25th-75th pct)"),
+        Line2D([0], [0], marker="o", color="none", markerfacecolor="white",
+               markeredgecolor="black", markeredgewidth=0.5,
+               markersize=7, label="Median (Value %)"),
+        Line2D([0], [0], color="black",   linewidth=0.9, linestyle="--",
+               alpha=0.6, label="Zero return"),
+        Line2D([0], [0], color="purple", linewidth=0.9, linestyle=":",
+               alpha=0.8, label="Fee break-even (±0.2%)"),
+    ]
+    fig.legend(handles=legend_handles, ncol=6,
+               loc="lower center", bbox_to_anchor=(0.5, -0.01),
+               frameon=False, fontsize=10)
+
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+    out_path = save_dir / "return_quality_distribution.png"
+    fig.savefig(out_path, dpi=400, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[quality-plot] Saved → {out_path}  ({len(df):,} return observations)")
+    return df

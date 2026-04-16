@@ -74,10 +74,19 @@ def _annualization_factor(granularity: str) -> float:
 
 # ┏━━━━━━━━━━ Calculate Sharpe Ratio ━━━━━━━━━━┓
 def _calc_sharpe(returns: np.ndarray, ann: float) -> float:
-    """Sharpe = mean / std * ann, where ann = sqrt(observations_per_year)."""
-    if len(returns) < 2 or np.std(returns) == 0:
+    """Sharpe = mean / std * ann, where ann = sqrt(observations_per_year).
+
+    NaN-safe: drops NaN entries before computing (mean/std would otherwise
+    propagate NaN and poison the result even when only a few entries are NaN).
+    """
+    r = np.asarray(returns, dtype=float)
+    r = r[~np.isnan(r)]
+    if len(r) < 2:
         return 0.0
-    return float(np.mean(returns) / np.std(returns) * ann)
+    std = np.std(r)
+    if std == 0:
+        return 0.0
+    return float(np.mean(r) / std * ann)
 
 
 # ┏━━━━━━━━━━ Calculate Max Drawdown ━━━━━━━━━━┓
