@@ -22,6 +22,7 @@ __all__ = ["_plot_path_equity"]
 
 
 # ┏━━━━━━━━━━ Plot path equity ━━━━━━━━━━┓
+# TODO consider to merge gran and gran_name because it should be the same?!
 def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, fee, horizon, gran_name, cfg):
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     n_paths = len(path_metrics)

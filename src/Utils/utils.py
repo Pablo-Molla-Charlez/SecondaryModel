@@ -27,6 +27,7 @@ def m1_model_name(cfg: dict | None) -> str:
 # ┏━━━━━━━━━━ M1 Output Bucket ━━━━━━━━━━┓
 def m1_output_bucket(cfg: dict | None) -> str:
     """Folder name under Output/ for the configured M1 model."""
+    # TODO missing m1 models
     name = m1_model_name(cfg)
     if name == "kronos":
         return "Kronos"
@@ -138,45 +139,37 @@ def _load_config(cfg_path: str = "config.yaml") -> dict:
     return cfg
 
 # ┏━━━━━━━━━━ Build cache from config ━━━━━━━━━━┓
-def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
+def _build_cache_from_config(config: dict, direction: str) -> tuple[Path, object]:
     """Build dataset cache from config.yaml, mirroring kronos_clas.py cache logic.
-
+    
+    Inputs:
+    config: full config dict (the one and only)
+    direction: "up" or "down" (this needs to be passed explicitly because we allow iterating over both)
+    
     Returns (cache_path, dataset).  If the cache already exists on disk it is
     loaded; otherwise the dataset is compiled from CSVs and saved.
     """
     # ┏━━━━━━━━━━ Extract Configs ━━━━━━━━━━┓
-    data_cfg         = cfg.get("data", {})
-    load_cfg         = data_cfg.get("load", {})
-    split_cfg        = data_cfg.get("split", {})
-    feat_cfg         = data_cfg.get("features", {})
-    granularity      = load_cfg.get("granularity", "1h")
-    direction        = load_cfg.get("direction", "up")
-    forecast_horizon = load_cfg.get("forecast_horizon", 7)
-    is_multi_gran    = (granularity == "all")
-    seq_len          = GRAN_SEQ_LEN.get(granularity, 96)
+    forecast_horizon = config['data']['load']["forecast_horizon"]
     
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
-    data_signature = {"granularity":      load_cfg.get("granularity"),
-                      "meta_label_mode":  load_cfg.get("meta_label_mode"),
+    data_signature = {"granularity":      "all",
+                      "meta_label_mode":  config["data"]["meta_label_mode"],
                       "direction":        direction,
-                      "start_date":       split_cfg.get("start_date"),
-                      "end_date":         split_cfg.get("end_date"),
+                      "start_date":       config['data']['split']["start_date"],
+                      "end_date":         config['data']['split']["end_date"],
                       "forecast_horizon": forecast_horizon,
-                      "features":         feat_cfg,
-                      "data_root":        str(Path(cfg.get("paths", {}).get("csv_dir", ".")).parent)}
+                      "features":         config["data"]["features"],
+                      "data_root":        str(Path(config["paths"]["csv_dir"]).parent)}
 
     # ┏━━━━━━━━━━ Dump hash ━━━━━━━━━━┓
     cfg_str  = json.dumps(data_signature, sort_keys=True)
     cfg_hash = hashlib.md5(cfg_str.encode()).hexdigest()[:10]
 
     # ┏━━━━━━━━━━ Build cache path ━━━━━━━━━━┓
-    cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
+    cache_dir = Path(config["paths"]["output_root"]) / config["data"]["load"]["m1"].capitalize() / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    m1_name = m1_model_name(cfg)
-    if is_multi_gran:
-        cache_name = f"multi_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
-    else:
-        cache_name = f"{granularity}_{seq_len}_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
+    cache_name = f"multi_{config['data']['load']['m1']}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
     cache_path = cache_dir / cache_name
 
     # ┏━━━━━━━━━━ Try loading existing cache ━━━━━━━━━━┓
@@ -190,23 +183,15 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
 
     # ┏━━━━━━━━━━ Build from CSVs ━━━━━━━━━━┓
     print("[utils] Cache not found — compiling dataset from CSVs...\n")
-    raw_df = load_dataset_from_config(cfg)
-    column_features = feat_cfg.get("input", ["open", "high", "low", "close", "volume"])
+    raw_df = load_dataset_from_config(config)
+    column_features = config["data"]["features"]["input"]
 
     # ┏━━━━━━━━━━ Prepare dataset ━━━━━━━━━━┓
-    if is_multi_gran:
-        dataset = prepare_multi_gran_dataset(raw_df,
-                                             column_features  = column_features,
-                                             target_col       = load_cfg.get("target_col", "meta_label"),
-                                             forecast_horizon = forecast_horizon,
-                                             cfg              = cfg)
-    else:
-        dataset = prepare_multi_asset_dataset(raw_df,
-                                              seq_len          = seq_len,
-                                              column_features  = column_features,
-                                              target_col       = load_cfg.get("target_col", "meta_label"),
-                                              forecast_horizon = forecast_horizon,
-                                              cfg              = cfg)
+    dataset = prepare_multi_gran_dataset(raw_df,
+                                         column_features  = column_features,
+                                         target_col       = config['data']['load']['target_col'],
+                                         forecast_horizon = forecast_horizon,
+                                         cfg              = config)
 
     # ┏━━━━━━━━━━ Save cache ━━━━━━━━━━┓
     try:

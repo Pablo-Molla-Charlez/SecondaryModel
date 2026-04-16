@@ -67,6 +67,15 @@ from Utils.ts_cross_validation import (_gran_to_timedelta,
 from Utils.edge.plots import (_plot_split_matrix,
                               _plot_path_boxplots,
                               _plot_cross_gran_cpcv)
+from .plots import (
+    _plot_edge_curves,
+    _plot_summary_boxplots,
+    _plot_cross_gran_seeds,
+    _plot_split_matrix,
+    _plot_path_boxplots,
+    _plot_cross_gran_cpcv,
+)
+
 
 # ┏━━━━━━━━━ Fixed seed for CPCV — variance measures regime sensitivity, not model noise ━━━━━━━━━━┓
 EDGE_SEED = 42
@@ -81,12 +90,12 @@ EDGE_SEED = 42
 CPCV_OOB_CAL_RATIO = 0.40
 
 # ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
-_CLI_TO_MODEL_KEY = {"randforest": "rf",
-                     "xgboost":    "xgboost",
-                     "autogluon":  "autogluon",
-                     "tabpfn":     "tabpfn",
-                     "tabpfn_ft":  "tabpfn_ft",
-                     "tabicl":     "tabicl"}
+# _CLI_TO_MODEL_KEY = {"randforest": "rf",
+#                      "xgboost":    "xgboost",
+#                      "autogluon":  "autogluon",
+#                      "tabpfn":     "tabpfn",
+#                      "tabpfn_ft":  "tabpfn_ft",
+#                      "tabicl":     "tabicl"}
 
 
 # ┏━━━━━━━━━━ Metrics to plot ━━━━━━━━━━┓
@@ -164,10 +173,6 @@ def _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularit
             "idx_test":  np.array(idx_test),
             "cal_end":   t_cal_end,
             "purge_td":  purge_td}
-
-if __name__ == "__main__":
-    main()
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Shared: M1 baselines and model builder
@@ -321,7 +326,7 @@ def _run_single_trial(eng, labels, returns, split_indices, direction, fee, seed,
     ann_horizon = np.sqrt(_annualization_factor(granularity) ** 2 / max(horizon, 1))
 
     # ┏━━━━━━━━━━ Scale features (skip for TabPFN) ━━━━━━━━━━┓
-    if model_key not in MODELS_NO_SCALING:
+    if model_key not in MODELS_NO_SCALING:  # TODO this is very questionable to only scale for some models?! Why is that?
         scaler = StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_cal   = scaler.transform(X_cal)
@@ -384,20 +389,14 @@ def _run_single_trial(eng, labels, returns, split_indices, direction, fee, seed,
 
 
 # ┏━━━━━━━━━━ Seeds: main runner ━━━━━━━━━━┓
-def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_name="randforest"):
+def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="randforest", direction="up", granularity="1d"):
     # ┏━━━━━━━━━━ Extract config ━━━━━━━━━━┓
-    split_cfg  = cfg["data"]["split"]
-    train_end  = split_cfg.get("train_end")
-    val_end    = split_cfg.get("val_end")
-    fee        = cfg.get("evaluation", {}).get("fee_per_trade", 0.0)
-    horizon    = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7))
-    direction  = _infer_direction(cache_path)
-    m1_bucket  = m1_output_bucket(cfg)
-    model_key  = _CLI_TO_MODEL_KEY.get(model_name, model_name)
-
-    # ┏━━━━━━━━━━ Set output root ━━━━━━━━━━┓
-    if output_root is None:
-        output_root = Path(cfg["paths"]["output_root"]) / "Analysis" / "Edge" / m1_bucket / model_name
+    train_end  = config["data"]["split"]["train_end"]
+    val_end    = config["data"]["split"]["val_end"]
+    fee        = config["evaluation"]["fee_per_trade"]
+    horizon    = config["data"]["load"]["forecast_horizon"]
+    
+    # model_key  = _CLI_TO_MODEL_KEY.get(model_name, model_name)
 
     # ┏━━━━━━━━━━ Load cache ━━━━━━━━━━┓
     print(f"\n[edge-seeds] Loading cache: {cache_path.name}")
@@ -409,156 +408,155 @@ def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_na
     # ┏━━━━━━━━━━ Initialize summary ━━━━━━━━━━┓
     summary_all = {}
 
-    # ┏━━━━━━━━━━ Loop over granularities ━━━━━━━━━━┓
-    for gran in multi.grans:
-        print(f"\n{'='*60}")
-        print(f"[edge-seeds] {gran} — {direction.upper()} — {n_trials} trials")
-        print(f"{'='*60}")
+    print(f"\n{'='*60}")
+    print(f"[edge-seeds] {granularity} — {direction.upper()} — {n_trials} trials")
+    print(f"{'='*60}")
 
-        # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
-        sub = multi.sub[gran]
-        eng = sub["eng_features"]
-        if isinstance(eng, torch.Tensor): eng = eng.numpy()
-        labels = sub["labels"]
-        if isinstance(labels, torch.Tensor): labels = labels.numpy()
-        returns = sub["returns"]
-        if isinstance(returns, torch.Tensor): returns = returns.numpy()
+    # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
+    sub = multi.sub[granularity]
+    eng = sub["eng_features"]
+    if isinstance(eng, torch.Tensor): eng = eng.numpy()
+    labels = sub["labels"]
+    if isinstance(labels, torch.Tensor): labels = labels.numpy()
+    returns = sub["returns"]
+    if isinstance(returns, torch.Tensor): returns = returns.numpy()
 
-        # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
-        valid = ~np.isnan(labels)
-        eng, labels, returns = eng[valid], labels[valid], returns[valid]
+    # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
+    valid = ~np.isnan(labels)
+    eng, labels, returns = eng[valid], labels[valid], returns[valid]
 
-        # ┏━━━━━━━━━━ Get dates ━━━━━━━━━━┓
-        dates_all = sub["dates"]
-        dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid[i]]
+    # ┏━━━━━━━━━━ Get dates ━━━━━━━━━━┓
+    dates_all = sub["dates"]
+    dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid[i]]
 
-        # ┏━━━━━━━━━━ 4-way split with embargo ━━━━━━━━━━┓
-        splits = _compute_embargo_splits(dates_valid, train_end, val_end, horizon, gran)
-        idx_train = splits["idx_train"]
-        idx_cal   = splits["idx_cal"]
-        idx_opt   = splits["idx_opt"]
-        idx_test  = splits["idx_test"]
-        cal_end   = splits["cal_end"]
-        purge_td  = splits["purge_td"]
+    # ┏━━━━━━━━━━ 4-way split with embargo ━━━━━━━━━━┓
+    splits = _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularity)
+    idx_train = splits["idx_train"]
+    idx_cal   = splits["idx_cal"]
+    idx_opt   = splits["idx_opt"]
+    idx_test  = splits["idx_test"]
+    cal_end   = splits["cal_end"]
+    purge_td  = splits["purge_td"]
 
-        # ┏━━━━━━━━━━ Check for empty splits ━━━━━━━━━━┓
-        if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_test]):
-            print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} opt={len(idx_opt)} test={len(idx_test)})"); continue
+    # ┏━━━━━━━━━━ Check for empty splits ━━━━━━━━━━┓
+    if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_test]):
+        print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} opt={len(idx_opt)} test={len(idx_test)})")
+        return
 
-        print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  opt={len(idx_opt):,}  test={len(idx_test):,}")
-        print(f"  Cal end: {cal_end.strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
-        print(f"  Features: {eng.shape[1]}")
+    print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  opt={len(idx_opt):,}  test={len(idx_test):,}")
+    print(f"  Cal end: {cal_end.strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
+    print(f"  Features: {eng.shape[1]}")
 
-        # ┏━━━━━━━━━━ Compute M1 baselines ━━━━━━━━━━┓
-        # Use Val-cal + Val-Opt combined as "val" for M1 baseline purposes
-        idx_val_combined = np.concatenate([idx_cal, idx_opt])
-        m1_baselines = _compute_m1_baselines(sub, dates_all, train_end, val_end, returns, idx_val_combined, idx_test, direction, fee)
-        m1_acc_test  = m1_baselines["test"]["m1_acc"]
-        m1_prec_test = m1_baselines["test"]["m1_prec"]
-        m1_ret_test  = m1_baselines["test"]["m1_mean_ret"]
+    # ┏━━━━━━━━━━ Compute M1 baselines ━━━━━━━━━━┓
+    # Use Val-cal + Val-Opt combined as "val" for M1 baseline purposes
+    idx_val_combined = np.concatenate([idx_cal, idx_opt])
+    m1_baselines = _compute_m1_baselines(sub, dates_all, train_end, val_end, returns, idx_val_combined, idx_test, direction, fee)
+    m1_acc_test  = m1_baselines["test"]["m1_acc"]
+    m1_prec_test = m1_baselines["test"]["m1_prec"]
+    m1_ret_test  = m1_baselines["test"]["m1_mean_ret"]
 
-        # ┏━━━━━━━━━━ Print M1 baselines ━━━━━━━━━━┓
-        if m1_acc_test is not None:
-            print(f"  M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}  mean_ret={m1_ret_test:.6f}")
-        else:
-            print(f"  M1 Baselines — not available | Mean Ret Test: {m1_ret_test:.6f}")
+    # ┏━━━━━━━━━━ Print M1 baselines ━━━━━━━━━━┓
+    if m1_acc_test is not None:
+        print(f"  M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}  mean_ret={m1_ret_test:.6f}")
+    else:
+        print(f"  M1 Baselines — not available | Mean Ret Test: {m1_ret_test:.6f}")
 
-        # ┏━━━━━━━━━━ Run trials ━━━━━━━━━━┓
-        all_trials = []
-        for trial_i in range(n_trials):
-            seed = trial_i * 7 + 1
-            result = _run_single_trial(eng, labels, returns,
-                                       (idx_train, idx_cal, idx_opt, idx_test),
-                                       direction, fee, seed, gran, horizon,
-                                       model_key=model_key)
-            all_trials.append(result)
-            if (trial_i + 1) % 10 == 0 or trial_i == 0:
-                t = result["test"]
-                print(f"    Trial {trial_i+1:3d}/{n_trials}: test_acc={t['accuracy']:.4f}  "
-                      f"sel_prec={t['sel_precision']:.4f}  sel_μ={t['sel_mean_ret']:+.5f}  τ={t['sel_threshold']:.3f}")
+    # ┏━━━━━━━━━━ Run trials ━━━━━━━━━━┓
+    all_trials = []
+    for trial_i in range(n_trials):
+        seed = trial_i * 7 + 1
+        result = _run_single_trial(eng, labels, returns,
+                                   (idx_train, idx_cal, idx_opt, idx_test),
+                                   direction, fee, seed, granularity, horizon,
+                                   model_key=m2_name)
+        all_trials.append(result)
+        if (trial_i + 1) % 10 == 0 or trial_i == 0:
+            t = result["test"]
+            print(f"    Trial {trial_i+1:3d}/{n_trials}: test_acc={t['accuracy']:.4f}  "
+                  f"sel_prec={t['sel_precision']:.4f}  sel_μ={t['sel_mean_ret']:+.5f}  τ={t['sel_threshold']:.3f}")
 
-        # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
-        gran_dir = output_root / direction.upper() / gran
-        gran_dir.mkdir(parents=True, exist_ok=True)
+    # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
+    gran_dir = output_root / direction.upper() / granularity
+    gran_dir.mkdir(parents=True, exist_ok=True)
 
-        # ┏━━━━━━━━━━ Plot ━━━━━━━━━━┓
-        _plot_edge_curves(all_trials, "test", gran_dir / "edge_test.png", gran, direction, n_trials, m1_baselines)
-        _plot_summary_boxplots(all_trials, gran_dir / "edge_summary.png", gran, direction, n_trials, m1_baselines)
+    # ┏━━━━━━━━━━ Plot ━━━━━━━━━━┓
+    _plot_edge_curves(all_trials, "test", gran_dir / "edge_test.png", granularity, direction, n_trials, m1_baselines)
+    _plot_summary_boxplots(all_trials, gran_dir / "edge_summary.png", granularity, direction, n_trials, m1_baselines)
 
-        # ┏━━━━━━━━━━ Save trial results ━━━━━━━━━━┓
-        rows = []
-        for i, t in enumerate(all_trials):
-            row = {"trial": i, "seed": i * 7 + 1}
-            for k, v in t["test"].items():
-                row[f"test_{k}"] = v
-            rows.append(row)
-        pd.DataFrame(rows).to_csv(gran_dir / "edge_trials.csv", index=False)
+    # ┏━━━━━━━━━━ Save trial results ━━━━━━━━━━┓
+    rows = []
+    for i, t in enumerate(all_trials):
+        row = {"trial": i, "seed": i * 7 + 1}
+        for k, v in t["test"].items():
+            row[f"test_{k}"] = v
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(gran_dir / "edge_trials.csv", index=False)
 
-        # ┏━━━━━━━━━━ Compute summary statistics ━━━━━━━━━━┓
-        test_accs      = np.array([t["test"]["accuracy"]      for t in all_trials])
-        test_precs     = np.array([t["test"]["precision"]     for t in all_trials])
-        test_sel_accs  = np.array([t["test"]["sel_accuracy"]  for t in all_trials])
-        test_sel_precs = np.array([t["test"]["sel_precision"] for t in all_trials])
-        test_sel_covs  = np.array([t["test"]["sel_coverage"]  for t in all_trials])
-        test_sel_rets  = np.array([t["test"]["sel_mean_ret"]  for t in all_trials])
-        test_sel_shps  = np.array([t["test"]["sel_sharpe"]    for t in all_trials])
-        test_thresholds = np.array([t["test"]["sel_threshold"] for t in all_trials])
+    # ┏━━━━━━━━━━ Compute summary statistics ━━━━━━━━━━┓
+    test_accs      = np.array([t["test"]["accuracy"]      for t in all_trials])
+    test_precs     = np.array([t["test"]["precision"]     for t in all_trials])
+    test_sel_accs  = np.array([t["test"]["sel_accuracy"]  for t in all_trials])
+    test_sel_precs = np.array([t["test"]["sel_precision"] for t in all_trials])
+    test_sel_covs  = np.array([t["test"]["sel_coverage"]  for t in all_trials])
+    test_sel_rets  = np.array([t["test"]["sel_mean_ret"]  for t in all_trials])
+    test_sel_shps  = np.array([t["test"]["sel_sharpe"]    for t in all_trials])
+    test_thresholds = np.array([t["test"]["sel_threshold"] for t in all_trials])
 
-        # ┏━━━━━━━━━━ Threshold distribution ━━━━━━━━━━┓
-        median_threshold = float(np.median(test_thresholds))
-        threshold_std    = float(np.std(test_thresholds))
+    # ┏━━━━━━━━━━ Threshold distribution ━━━━━━━━━━┓
+    median_threshold = float(np.median(test_thresholds))
+    threshold_std    = float(np.std(test_thresholds))
 
-        # ┏━━━━━━━━━━ Profitability and Sharpe gates ━━━━━━━━━━┓
-        frac_profitable = float(np.mean(test_sel_rets > 0))
-        mean_sharpe     = float(np.mean(test_sel_shps))
-        std_sharpe      = float(np.std(test_sel_shps, ddof=1)) if len(test_sel_shps) > 1 else 0.0
-        sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(test_sel_shps), 1))
+    # ┏━━━━━━━━━━ Profitability and Sharpe gates ━━━━━━━━━━┓
+    frac_profitable = float(np.mean(test_sel_rets > 0))
+    mean_sharpe     = float(np.mean(test_sel_shps))
+    std_sharpe      = float(np.std(test_sel_shps, ddof=1)) if len(test_sel_shps) > 1 else 0.0
+    sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(test_sel_shps), 1))
 
-        # ┏━━━━━━━━━━ Edge vs M1 ━━━━━━━━━━┓
-        acc_edge_test  = float(np.mean(test_accs) - m1_acc_test)   if m1_acc_test  else None
-        prec_edge_test = float(np.mean(test_precs) - m1_prec_test) if m1_prec_test else None
+    # ┏━━━━━━━━━━ Edge vs M1 ━━━━━━━━━━┓
+    acc_edge_test  = float(np.mean(test_accs) - m1_acc_test)   if m1_acc_test  else None
+    prec_edge_test = float(np.mean(test_precs) - m1_prec_test) if m1_prec_test else None
 
-        # ┏━━━━━━━━━━ Create summary dictionary ━━━━━━━━━━┓
-        summary = {
-            "granularity": gran, "direction": direction, "n_trials": n_trials,
-            "n_train": len(idx_train), "n_cal": len(idx_cal),
-            "n_opt": len(idx_opt), "n_test": len(idx_test),
-            "n_features": eng.shape[1],
-            "cal_end": str(cal_end), "purge": str(purge_td),
-            "m1_baseline_test_acc": m1_acc_test, "m1_baseline_test_prec": m1_prec_test,
-            "test_acc_mean": float(np.mean(test_accs)), "test_acc_std": float(np.std(test_accs)),
-            "test_prec_mean": float(np.mean(test_precs)), "test_prec_std": float(np.std(test_precs)),
-            "test_sel_acc_mean": float(np.mean(test_sel_accs)), "test_sel_acc_std": float(np.std(test_sel_accs)),
-            "test_sel_prec_mean": float(np.mean(test_sel_precs)), "test_sel_prec_std": float(np.std(test_sel_precs)),
-            "test_sel_cov_mean": float(np.mean(test_sel_covs)), "test_sel_cov_std": float(np.std(test_sel_covs)),
-            "test_sel_ret_mean": float(np.mean(test_sel_rets)), "test_sel_ret_std": float(np.std(test_sel_rets)),
-            "median_threshold": median_threshold, "threshold_std": threshold_std,
-            "frac_profitable": frac_profitable,
-            "mean_sharpe": mean_sharpe, "sharpe_ci_lower": sharpe_ci_lower,
-            "acc_edge_test": acc_edge_test, "prec_edge_test": prec_edge_test,
-        }
+    # ┏━━━━━━━━━━ Create summary dictionary ━━━━━━━━━━┓
+    summary = {
+        "granularity": granularity, "direction": direction, "n_trials": n_trials,
+        "n_train": len(idx_train), "n_cal": len(idx_cal),
+        "n_opt": len(idx_opt), "n_test": len(idx_test),
+        "n_features": eng.shape[1],
+        "cal_end": str(cal_end), "purge": str(purge_td),
+        "m1_baseline_test_acc": m1_acc_test, "m1_baseline_test_prec": m1_prec_test,
+        "test_acc_mean": float(np.mean(test_accs)), "test_acc_std": float(np.std(test_accs)),
+        "test_prec_mean": float(np.mean(test_precs)), "test_prec_std": float(np.std(test_precs)),
+        "test_sel_acc_mean": float(np.mean(test_sel_accs)), "test_sel_acc_std": float(np.std(test_sel_accs)),
+        "test_sel_prec_mean": float(np.mean(test_sel_precs)), "test_sel_prec_std": float(np.std(test_sel_precs)),
+        "test_sel_cov_mean": float(np.mean(test_sel_covs)), "test_sel_cov_std": float(np.std(test_sel_covs)),
+        "test_sel_ret_mean": float(np.mean(test_sel_rets)), "test_sel_ret_std": float(np.std(test_sel_rets)),
+        "median_threshold": median_threshold, "threshold_std": threshold_std,
+        "frac_profitable": frac_profitable,
+        "mean_sharpe": mean_sharpe, "sharpe_ci_lower": sharpe_ci_lower,
+        "acc_edge_test": acc_edge_test, "prec_edge_test": prec_edge_test,
+    }
 
-        # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓  
-        summary_all[gran] = summary
+    # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓
+    summary_all[granularity] = summary
 
-        # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
-        print(f"\n  ┌─ {gran} {direction.upper()} Seeds Summary ──────────────┐")
-        if m1_acc_test is not None:
-            print(f"  │ M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}")
-        print(f"  │ M2 Test Acc:      {summary['test_acc_mean']:.4f} ± {summary['test_acc_std']:.4f}" + (f"  (edge: {acc_edge_test:+.4f})" if acc_edge_test else ""))
-        print(f"  │ M2 Test Prec:     {summary['test_prec_mean']:.4f} ± {summary['test_prec_std']:.4f}" + (f"  (edge: {prec_edge_test:+.4f})" if prec_edge_test else ""))
-        print(f"  │ Sel Mean Ret:     {summary['test_sel_ret_mean']:+.5f} ± {summary['test_sel_ret_std']:.5f}")
-        print(f"  │ Frac Profitable:  {frac_profitable:.0%}")
-        print(f"  │ Sharpe:           {mean_sharpe:.2f} (CI lower: {sharpe_ci_lower:.2f})")
-        print(f"  │ Median Threshold: {median_threshold:.3f} ± {threshold_std:.3f}")
-        gate_pass = frac_profitable > 0.70 and sharpe_ci_lower > 0
-        print(f"  │ Gate: {'PASS ✓' if gate_pass else 'FAIL ✗'}  (>70% profitable AND CI>0)")
-        print(f"  └──────────────────────────────────────┘")
-        print(f"  Saved to: {gran_dir}")
+    # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
+    print(f"\n  ┌─ {granularity} {direction.upper()} Seeds Summary ──────────────┐")
+    if m1_acc_test is not None:
+        print(f"  │ M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}")
+    print(f"  │ M2 Test Acc:      {summary['test_acc_mean']:.4f} ± {summary['test_acc_std']:.4f}" + (f"  (edge: {acc_edge_test:+.4f})" if acc_edge_test else ""))
+    print(f"  │ M2 Test Prec:     {summary['test_prec_mean']:.4f} ± {summary['test_prec_std']:.4f}" + (f"  (edge: {prec_edge_test:+.4f})" if prec_edge_test else ""))
+    print(f"  │ Sel Mean Ret:     {summary['test_sel_ret_mean']:+.5f} ± {summary['test_sel_ret_std']:.5f}")
+    print(f"  │ Frac Profitable:  {frac_profitable:.0%}")
+    print(f"  │ Sharpe:           {mean_sharpe:.2f} (CI lower: {sharpe_ci_lower:.2f})")
+    print(f"  │ Median Threshold: {median_threshold:.3f} ± {threshold_std:.3f}")
+    gate_pass = frac_profitable > 0.70 and sharpe_ci_lower > 0
+    print(f"  │ Gate: {'PASS ✓' if gate_pass else 'FAIL ✗'}  (>70% profitable AND CI>0)")
+    print(f"  └──────────────────────────────────────┘")
+    print(f"  Saved to: {gran_dir}")
 
     # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓  
     if summary_all:
-        summary_path = output_root / direction.upper() / "edge_summary.json"
+        summary_path = output_root / direction.upper() / f"edge_summary_{granularity}.json"
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_path, "w") as f:
             json.dump(summary_all, f, indent=2)
@@ -754,22 +752,15 @@ def _compute_path_metrics(path_results, fee):
 
 
 # ┏━━━━━━━━━━ CPCV: main runner ━━━━━━━━━━┓
-def run_cpcv_analysis(cache_path, cfg, n_blocks=6, k_test=2, output_root=None, model_name="randforest"):
+def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="randforest", direction="up", granularity="1d"):
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    split_cfg = cfg["data"]["split"]
-    fee       = cfg.get("evaluation", {}).get("fee_per_trade", 0.0)
-    horizon   = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7))
-    direction = _infer_direction(cache_path)
-    m1_bucket = m1_output_bucket(cfg)
-    model_key = _CLI_TO_MODEL_KEY.get(model_name, model_name)
+    fee       = config["evaluation"]["fee_per_trade"]
+    horizon   = config["data"]["load"]["forecast_horizon"]
+    
     n_paths  = n_blocks // k_test
     n_splits = len(list(combinations(range(n_blocks), k_test)))
     summary_all = {}
     
-    # ┏━━━━━━━━━━ Set output root ━━━━━━━━━━┓
-    if output_root is None:
-        output_root = Path(cfg["paths"]["output_root"]) / "Analysis" / "Edge" / m1_bucket / model_name
-
     # ┏━━━━━━━━━━ Load multi cache ━━━━━━━━━━┓
     print(f"\n[edge-cpcv] Loading cache: {cache_path.name}")
     multi = _load_multi_cache(cache_path)
@@ -778,227 +769,226 @@ def run_cpcv_analysis(cache_path, cfg, n_blocks=6, k_test=2, output_root=None, m
     print(f"[edge-cpcv] Fee: {fee} | Horizon: {horizon}")
     print(f"[edge-cpcv] Output: {output_root}\n")
 
-    # ┏━━━━━━━━━━ Loop through granularities ━━━━━━━━━━┓
-    for gran in multi.grans:
-        print(f"\n{'='*60}")
-        print(f"[edge-cpcv] {gran} — {direction.upper()}")
-        print(f"{'='*60}")
+    print(f"\n{'='*60}")
+    print(f"[edge-cpcv] {granularity} — {direction.upper()}")
+    print(f"{'='*60}")
 
-        # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
-        sub = multi.sub[gran]
-        eng = sub["eng_features"]
-        if isinstance(eng, torch.Tensor): eng = eng.numpy()
-        labels = sub["labels"]
-        if isinstance(labels, torch.Tensor): labels = labels.numpy()
-        returns = sub["returns"]
-        if isinstance(returns, torch.Tensor): returns = returns.numpy()
-        asset_ids = sub["asset_ids"]
-        if isinstance(asset_ids, torch.Tensor): asset_ids = asset_ids.numpy()
-        asset_map = sub.get("asset_map", {})
-        if not isinstance(asset_map, dict) and hasattr(sub, "asset_map"): asset_map = sub.asset_map
-        dates_all_raw = sub["dates"]
+    # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
+    sub = multi.sub[granularity]
+    eng = sub["eng_features"]
+    if isinstance(eng, torch.Tensor): eng = eng.numpy()
+    labels = sub["labels"]
+    if isinstance(labels, torch.Tensor): labels = labels.numpy()
+    returns = sub["returns"]
+    if isinstance(returns, torch.Tensor): returns = returns.numpy()
+    asset_ids = sub["asset_ids"]
+    if isinstance(asset_ids, torch.Tensor): asset_ids = asset_ids.numpy()
+    asset_map = sub.get("asset_map", {})
+    if not isinstance(asset_map, dict) and hasattr(sub, "asset_map"): asset_map = sub.asset_map
+    dates_all_raw = sub["dates"]
 
-        # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
-        valid = ~np.isnan(labels)
-        eng, labels, returns, asset_ids = eng[valid], labels[valid], returns[valid], asset_ids[valid]
-        dates_valid = [dates_all_raw[i] for i in range(len(dates_all_raw)) if valid[i]]
-        valid_to_raw = [i for i in range(len(dates_all_raw)) if valid[i]]
+    # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
+    valid = ~np.isnan(labels)
+    eng, labels, returns, asset_ids = eng[valid], labels[valid], returns[valid], asset_ids[valid]
+    dates_valid = [dates_all_raw[i] for i in range(len(dates_all_raw)) if valid[i]]
+    valid_to_raw = [i for i in range(len(dates_all_raw)) if valid[i]]
 
-        # ┏━━━━━━━━━━ CRITICAL: Exclude Test data from CPCV ━━━━━━━━━━┓
-        # CPCV must only use Train+Val data. Test period is completely invisible.
-        t_val_end = pd.Timestamp(split_cfg.get("val_end"))
-        cpcv_mask = np.array([d <= t_val_end for d in dates_valid])
-        n_excluded = int((~cpcv_mask).sum())
-        eng = eng[cpcv_mask]
-        labels = labels[cpcv_mask]
-        returns = returns[cpcv_mask]
-        asset_ids = asset_ids[cpcv_mask]
-        dates_valid = [d for d, m in zip(dates_valid, cpcv_mask) if m]
+    # ┏━━━━━━━━━━ CRITICAL: Exclude Test data from CPCV ━━━━━━━━━━┓
+    # CPCV must only use Train+Val data. Test period is completely invisible.
+    t_val_end = pd.Timestamp(config["data"]["split"]["val_end"])
+    cpcv_mask = np.array([d <= t_val_end for d in dates_valid])
+    n_excluded = int((~cpcv_mask).sum())
+    eng = eng[cpcv_mask]
+    labels = labels[cpcv_mask]
+    returns = returns[cpcv_mask]
+    asset_ids = asset_ids[cpcv_mask]
+    dates_valid = [d for d, m in zip(dates_valid, cpcv_mask) if m]
 
-        print(f"  Samples: {len(labels):,} (excluded {n_excluded:,} test samples after {t_val_end.strftime('%Y-%m-%d')})")
-        print(f"  Features: {eng.shape[1]}")
+    print(f"  Samples: {len(labels):,} (excluded {n_excluded:,} test samples after {t_val_end.strftime('%Y-%m-%d')})")
+    print(f"  Features: {eng.shape[1]}")
 
-        # ┏━━━━━━━━━━ Build datetime blocks ━━━━━━━━━━┓
-        boundaries = _build_datetime_blocks(dates_valid, n_blocks)
-        block_ids = _assign_blocks(dates_valid, boundaries)
-        for b in range(n_blocks):
-            b_size = int((block_ids == b).sum())
-            print(f"    Block {b}: {boundaries[b][0].strftime('%Y-%m-%d')} → "
-                  f"{boundaries[b][1].strftime('%Y-%m-%d')} ({b_size:,} samples)")
-        unassigned = int((block_ids == -1).sum())
-        if unassigned > 0:
-            print(f"    WARNING: {unassigned} samples unassigned")
+    # ┏━━━━━━━━━━ Build datetime blocks ━━━━━━━━━━┓
+    boundaries = _build_datetime_blocks(dates_valid, n_blocks)
+    block_ids = _assign_blocks(dates_valid, boundaries)
+    for b in range(n_blocks):
+        b_size = int((block_ids == b).sum())
+        print(f"    Block {b}: {boundaries[b][0].strftime('%Y-%m-%d')} → "
+              f"{boundaries[b][1].strftime('%Y-%m-%d')} ({b_size:,} samples)")
+    unassigned = int((block_ids == -1).sum())
+    if unassigned > 0:
+        print(f"    WARNING: {unassigned} samples unassigned")
 
-        # ┏━━━━━━━━━━ Purge window ━━━━━━━━━━┓
-        bar_td = _gran_to_timedelta(gran)
-        purge_td = bar_td * horizon
-        print(f"  Purge: {purge_td} (= {horizon} x {bar_td})")
+    # ┏━━━━━━━━━━ Purge window ━━━━━━━━━━┓
+    bar_td = _gran_to_timedelta(granularity)
+    purge_td = bar_td * horizon
+    print(f"  Purge: {purge_td} (= {horizon} x {bar_td})")
 
-        # ┏━━━━━━━━━━ Generate splits ━━━━━━━━━━┓
-        splits = _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_valid, purge_td, boundaries)
-        avg_purged = np.mean([len(s["idx_purged"]) for s in splits])
-        avg_train  = np.mean([len(s["idx_train"])  for s in splits])
-        avg_test   = np.mean([len(s["idx_test"])   for s in splits])
-        print(f"  {len(splits)} splits | Avg: train={avg_train:.0f}, test={avg_test:.0f}, purged={avg_purged:.0f}")
+    # ┏━━━━━━━━━━ Generate splits ━━━━━━━━━━┓
+    splits = _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_valid, purge_td, boundaries)
+    avg_purged = np.mean([len(s["idx_purged"]) for s in splits])
+    avg_train  = np.mean([len(s["idx_train"])  for s in splits])
+    avg_test   = np.mean([len(s["idx_test"])   for s in splits])
+    print(f"  {len(splits)} splits | Avg: train={avg_train:.0f}, test={avg_test:.0f}, purged={avg_purged:.0f}")
 
-        # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
-        gran_dir = output_root / m1 / m2 / direction.upper() / gran
-        gran_dir.mkdir(parents=True, exist_ok=True)
+    # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
+    gran_dir = output_root / config["experiment"]["m1"] / m2_name / direction.upper() / granularity
+    gran_dir.mkdir(parents=True, exist_ok=True)
 
-        # ┏━━━━━━━━━━ Reconstruct paths ━━━━━━━━━━┓
-        paths = _reconstruct_paths(splits, n_blocks, k_test)
-        print(f"\n  Reconstructed {len(paths)} paths")
+    # ┏━━━━━━━━━━ Reconstruct paths ━━━━━━━━━━┓
+    paths = _reconstruct_paths(splits, n_blocks, k_test)
+    print(f"\n  Reconstructed {len(paths)} paths")
 
-        # ┏━━━━━━━━━━ Plot split matrix CPCV ━━━━━━━━━━┓
-        _plot_split_matrix(splits,
-                           paths,
-                           n_blocks,
-                           boundaries,
-                           purge_td,
-                           gran_dir / "cpcv_split_matrix.png",
-                           gran,
-                           direction)
+    # ┏━━━━━━━━━━ Plot split matrix CPCV ━━━━━━━━━━┓
+    _plot_split_matrix(splits,
+                       paths,
+                       n_blocks,
+                       boundaries,
+                       purge_td,
+                       gran_dir / "cpcv_split_matrix.png",
+                       granularity,
+                       direction)
 
-        # ┏━━━━━━━━━━ Run splits ━━━━━━━━━━┓
-        split_results = []
-        for si, sp in enumerate(splits):
-            result = _run_cpcv_split(eng, labels, returns, asset_ids, asset_map, sp["idx_train"], sp["idx_test"], direction, fee,
-                                     model_key=model_key)
-            split_results.append(result)
-            if (si + 1) % 5 == 0 or si == 0:
-                acc = accuracy_score(result["y_test"], result["preds"])
-                print(f"    Split {si+1:2d}/{len(splits)}: test_blocks={sp['test_blocks']} "
-                      f"n_test={len(sp['idx_test']):,} acc={acc:.4f} thr={result['threshold']:.3f}")
+    # ┏━━━━━━━━━━ Run splits ━━━━━━━━━━┓
+    split_results = []
+    for si, sp in enumerate(splits):
+        result = _run_cpcv_split(eng, labels, returns, asset_ids, asset_map, sp["idx_train"], sp["idx_test"], direction, fee,
+                                 model_key=m2_name)
+        split_results.append(result)
+        if (si + 1) % 5 == 0 or si == 0:
+            acc = accuracy_score(result["y_test"], result["preds"])
+            print(f"    Split {si+1:2d}/{len(splits)}: test_blocks={sp['test_blocks']} "
+                  f"n_test={len(sp['idx_test']):,} acc={acc:.4f} thr={result['threshold']:.3f}")
 
-        # ┏━━━━━━━━━━ Compute path metrics ━━━━━━━━━━┓
-        path_metrics_list, dates_by_path = [], []
-        
-        # ┏━━━━━━━━━━ Loop through paths ━━━━━━━━━━┓
-        for pi, path in enumerate(paths):
-            # ┏━━━━━━━━━━ Initialize path results ━━━━━━━━━━┓
-            path_split_results, path_dates = [], []
+    # ┏━━━━━━━━━━ Compute path metrics ━━━━━━━━━━┓
+    path_metrics_list, dates_by_path = [], []
+    
+    # ┏━━━━━━━━━━ Loop through paths ━━━━━━━━━━┓
+    for pi, path in enumerate(paths):
+        # ┏━━━━━━━━━━ Initialize path results ━━━━━━━━━━┓
+        path_split_results, path_dates = [], []
 
-            # ┏━━━━━━━━━━ Loop through splits in path ━━━━━━━━━━┓
-            for entry in sorted(path, key=lambda e: e["block"]):
-                # ┏━━━━━━━━━━ Get split results ━━━━━━━━━━┓
-                sr = split_results[entry["split_idx"]]
-                
-                # ┏━━━━━━━━━━ Get block mask ━━━━━━━━━━┓
-                block_mask = block_ids[sr["idx_test"]] == entry["block"]
-                if block_mask.sum() == 0:
-                    continue
-                
-                # ┏━━━━━━━━━━ Append path split results ━━━━━━━━━━┓
-                path_split_results.append({"idx_test": sr["idx_test"][block_mask], 
-                                           "y_test": sr["y_test"][block_mask],
-                                           "preds": sr["preds"][block_mask], 
-                                           "probs": sr["probs"][block_mask],
-                                           "sel": sr["sel"][block_mask], 
-                                           "threshold": sr["threshold"],
-                                           "test_returns": sr["test_returns"][block_mask], 
-                                           "test_assets": sr["test_assets"][block_mask],
-                                           "n_sel": int(sr["sel"][block_mask].sum())})
-                
-                # ┏━━━━━━━━━━ Append path dates ━━━━━━━━━━┓
-                for idx in sr["idx_test"][block_mask]:
-                    path_dates.append(dates_valid[idx])
+        # ┏━━━━━━━━━━ Loop through splits in path ━━━━━━━━━━┓
+        for entry in sorted(path, key=lambda e: e["block"]):
+            # ┏━━━━━━━━━━ Get split results ━━━━━━━━━━┓
+            sr = split_results[entry["split_idx"]]
             
-            # ┏━━━━━━━━━━ Compute path metrics ━━━━━━━━━━┓
-            if not path_split_results:
+            # ┏━━━━━━━━━━ Get block mask ━━━━━━━━━━┓
+            block_mask = block_ids[sr["idx_test"]] == entry["block"]
+            if block_mask.sum() == 0:
                 continue
-            pm = _compute_path_metrics(path_split_results, fee)
-            path_metrics_list.append(pm)
-            dates_by_path.append(path_dates)
             
-            # ┏━━━━━━━━━━ Print path metrics ━━━━━━━━━━┓
-            print(f"    Path {pi+1}: n={pm['n_samples']:,} acc={pm['accuracy']:.4f} "
-                  f"prec={pm['precision']:.4f} sel_prec={pm['sel_precision']:.4f} "
-                  f"cov={pm['sel_coverage']:.3f} sel_μ_ret={pm['sel_mean_ret']:+.5f}")
+            # ┏━━━━━━━━━━ Append path split results ━━━━━━━━━━┓
+            path_split_results.append({"idx_test": sr["idx_test"][block_mask],
+                                       "y_test": sr["y_test"][block_mask],
+                                       "preds": sr["preds"][block_mask],
+                                       "probs": sr["probs"][block_mask],
+                                       "sel": sr["sel"][block_mask],
+                                       "threshold": sr["threshold"],
+                                       "test_returns": sr["test_returns"][block_mask],
+                                       "test_assets": sr["test_assets"][block_mask],
+                                       "n_sel": int(sr["sel"][block_mask].sum())})
+            
+            # ┏━━━━━━━━━━ Append path dates ━━━━━━━━━━┓
+            for idx in sr["idx_test"][block_mask]:
+                path_dates.append(dates_valid[idx])
+        
+        # ┏━━━━━━━━━━ Compute path metrics ━━━━━━━━━━┓
+        if not path_split_results:
+            continue
+        pm = _compute_path_metrics(path_split_results, fee)
+        path_metrics_list.append(pm)
+        dates_by_path.append(path_dates)
+        
+        # ┏━━━━━━━━━━ Print path metrics ━━━━━━━━━━┓
+        print(f"    Path {pi+1}: n={pm['n_samples']:,} acc={pm['accuracy']:.4f} "
+              f"prec={pm['precision']:.4f} sel_prec={pm['sel_precision']:.4f} "
+              f"cov={pm['sel_coverage']:.3f} sel_μ_ret={pm['sel_mean_ret']:+.5f}")
 
-        if not path_metrics_list:
-            print(f"  [SKIP] No valid paths"); continue
+    if not path_metrics_list:
+        print(f"  [SKIP] No valid paths")
+        return
 
-        # ┏━━━━━━━━━━ M1 baselines on stitched path raw indices ━━━━━━━━━━┓
-        # Since the concatenated sum of all paths is exactly the entire raw timeline,
-        # the M1 baseline for the stitched paths is the M1 baseline over all raw dates.
-        m1_baselines = _compute_m1_baseline_on_raw_indices(sub, list(range(len(dates_all_raw))))
-        if m1_baselines["m1_acc"] is not None:
-            print(f"\n  M1 Baseline (stitched): acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
+    # ┏━━━━━━━━━━ M1 baselines on stitched path raw indices ━━━━━━━━━━┓
+    # Since the concatenated sum of all paths is exactly the entire raw timeline,
+    # the M1 baseline for the stitched paths is the M1 baseline over all raw dates.
+    m1_baselines = _compute_m1_baseline_on_raw_indices(sub, list(range(len(dates_all_raw))))
+    if m1_baselines["m1_acc"] is not None:
+        print(f"\n  M1 Baseline (stitched): acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
 
-        # ┏━━━━━━━━━━ Plots ━━━━━━━━━━┓
-        # Equity curve
-        sharpes, total_rets = _plot_path_equity(path_metrics_list, 
-                                                dates_by_path, 
-                                                gran_dir / "cpcv_path_equity.png",
-                                                gran, 
-                                                direction, 
-                                                fee, 
-                                                horizon, 
-                                                gran,
-                                                cfg)
-        # Boxplots
-        _plot_path_boxplots(path_metrics_list, 
-                            m1_baselines,
-                            gran_dir / "cpcv_path_boxplots.png", 
-                            gran, 
-                            direction)
+    # ┏━━━━━━━━━━ Plots ━━━━━━━━━━┓
+    # Equity curve
+    sharpes, total_rets = _plot_path_equity(path_metrics_list,
+                                            dates_by_path,
+                                            gran_dir / "cpcv_path_equity.png",
+                                            granularity,
+                                            direction,
+                                            fee,
+                                            horizon,
+                                            granularity,
+                                            config)
+    # Boxplots
+    _plot_path_boxplots(path_metrics_list,
+                        m1_baselines,
+                        gran_dir / "cpcv_path_boxplots.png",
+                        granularity,
+                        direction)
 
-        # ┏━━━━━━━━━━ CSV ━━━━━━━━━━┓
-        rows = []
-        for pi, pm in enumerate(path_metrics_list):
-            row = {"path": pi + 1}
-            for k in ["accuracy", "precision", "recall", "f1", "sel_accuracy", "sel_precision",
-                       "sel_coverage", "sel_mean_ret", "m1_mean_ret", "n_samples", "n_selected"]:
-                row[k] = pm[k]
-            if pi < len(sharpes):
-                row["sharpe"] = sharpes[pi]
-                row["total_ret_pct"] = total_rets[pi]
-            rows.append(row)
-        pd.DataFrame(rows).to_csv(gran_dir / "cpcv_paths.csv", index=False)
+    # ┏━━━━━━━━━━ CSV ━━━━━━━━━━┓
+    rows = []
+    for pi, pm in enumerate(path_metrics_list):
+        row = {"path": pi + 1}
+        for k in ["accuracy", "precision", "recall", "f1", "sel_accuracy", "sel_precision",
+                   "sel_coverage", "sel_mean_ret", "m1_mean_ret", "n_samples", "n_selected"]:
+            row[k] = pm[k]
+        if pi < len(sharpes):
+            row["sharpe"] = sharpes[pi]
+            row["total_ret_pct"] = total_rets[pi]
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(gran_dir / "cpcv_paths.csv", index=False)
 
-        # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
-        accs    = np.array([pm["accuracy"]      for pm in path_metrics_list])
-        precs   = np.array([pm["precision"]     for pm in path_metrics_list])
-        s_precs = np.array([pm["sel_precision"] for pm in path_metrics_list])
-        s_accs  = np.array([pm["sel_accuracy"]  for pm in path_metrics_list])
-        s_covs  = np.array([pm["sel_coverage"]  for pm in path_metrics_list])
-        s_rets  = np.array([pm["sel_mean_ret"]  for pm in path_metrics_list])
-        worst_sharpe = min(sharpes) if sharpes else 0.0
+    # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
+    accs    = np.array([pm["accuracy"]      for pm in path_metrics_list])
+    precs   = np.array([pm["precision"]     for pm in path_metrics_list])
+    s_precs = np.array([pm["sel_precision"] for pm in path_metrics_list])
+    s_accs  = np.array([pm["sel_accuracy"]  for pm in path_metrics_list])
+    s_covs  = np.array([pm["sel_coverage"]  for pm in path_metrics_list])
+    s_rets  = np.array([pm["sel_mean_ret"]  for pm in path_metrics_list])
+    worst_sharpe = min(sharpes) if sharpes else 0.0
 
-        # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
-        summary = {"granularity": gran, "direction": direction,
-                   "n_blocks": n_blocks, "k_test": k_test, "n_splits": len(splits),
-                   "n_paths": len(path_metrics_list), "n_features": eng.shape[1],
-                   "purge_window": str(purge_td),
-                   "m1_baseline_acc": m1_baselines.get("m1_acc"),
-                   "m1_baseline_prec": m1_baselines.get("m1_prec"),
-                   "path_acc_mean": float(np.mean(accs)), "path_acc_std": float(np.std(accs)),
-                   "path_prec_mean": float(np.mean(precs)), "path_prec_std": float(np.std(precs)),
-                   "path_sel_acc_mean": float(np.mean(s_accs)), "path_sel_acc_std": float(np.std(s_accs)),
-                   "path_sel_prec_mean": float(np.mean(s_precs)), "path_sel_prec_std": float(np.std(s_precs)),
-                   "path_sel_cov_mean": float(np.mean(s_covs)), "path_sel_cov_std": float(np.std(s_covs)),
-                   "path_sel_ret_mean": float(np.mean(s_rets)), "path_sel_ret_std": float(np.std(s_rets)),
-                   "worst_path_sharpe": worst_sharpe,
-                   "path_sharpes": sharpes, "path_total_rets": total_rets}
+    # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
+    summary = {"granularity": granularity, "direction": direction,
+               "n_blocks": n_blocks, "k_test": k_test, "n_splits": len(splits),
+               "n_paths": len(path_metrics_list), "n_features": eng.shape[1],
+               "purge_window": str(purge_td),
+               "m1_baseline_acc": m1_baselines.get("m1_acc"),
+               "m1_baseline_prec": m1_baselines.get("m1_prec"),
+               "path_acc_mean": float(np.mean(accs)), "path_acc_std": float(np.std(accs)),
+               "path_prec_mean": float(np.mean(precs)), "path_prec_std": float(np.std(precs)),
+               "path_sel_acc_mean": float(np.mean(s_accs)), "path_sel_acc_std": float(np.std(s_accs)),
+               "path_sel_prec_mean": float(np.mean(s_precs)), "path_sel_prec_std": float(np.std(s_precs)),
+               "path_sel_cov_mean": float(np.mean(s_covs)), "path_sel_cov_std": float(np.std(s_covs)),
+               "path_sel_ret_mean": float(np.mean(s_rets)), "path_sel_ret_std": float(np.std(s_rets)),
+               "worst_path_sharpe": worst_sharpe,
+               "path_sharpes": sharpes, "path_total_rets": total_rets}
 
-        summary_all[gran] = summary
+    summary_all[granularity] = summary
 
-        # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
-        print(f"\n  ┌─ {gran} {direction.upper()} CPCV Summary ─────────────┐")
-        if m1_baselines["m1_acc"] is not None:
-            print(f"  │ M1 Baseline: acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
-        print(f"  │ Path Acc:       {summary['path_acc_mean']:.4f} ± {summary['path_acc_std']:.4f}")
-        print(f"  │ Path Prec:      {summary['path_prec_mean']:.4f} ± {summary['path_prec_std']:.4f}")
-        print(f"  │ Path Sel Prec:  {summary['path_sel_prec_mean']:.4f} ± {summary['path_sel_prec_std']:.4f}")
-        print(f"  │ Path Sel Cov:   {summary['path_sel_cov_mean']:.4f} ± {summary['path_sel_cov_std']:.4f}")
-        print(f"  │ Path Sel μ-Ret: {summary['path_sel_ret_mean']:+.5f} ± {summary['path_sel_ret_std']:.5f}")
-        print(f"  │ Worst Path SR:  {worst_sharpe:.2f}")
-        print(f"  └─────────────────────────────────────────┘")
-        print(f"  Saved to: {gran_dir}")
+    # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
+    print(f"\n  ┌─ {granularity} {direction.upper()} CPCV Summary ─────────────┐")
+    if m1_baselines["m1_acc"] is not None:
+        print(f"  │ M1 Baseline: acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
+    print(f"  │ Path Acc:       {summary['path_acc_mean']:.4f} ± {summary['path_acc_std']:.4f}")
+    print(f"  │ Path Prec:      {summary['path_prec_mean']:.4f} ± {summary['path_prec_std']:.4f}")
+    print(f"  │ Path Sel Prec:  {summary['path_sel_prec_mean']:.4f} ± {summary['path_sel_prec_std']:.4f}")
+    print(f"  │ Path Sel Cov:   {summary['path_sel_cov_mean']:.4f} ± {summary['path_sel_cov_std']:.4f}")
+    print(f"  │ Path Sel μ-Ret: {summary['path_sel_ret_mean']:+.5f} ± {summary['path_sel_ret_std']:.5f}")
+    print(f"  │ Worst Path SR:  {worst_sharpe:.2f}")
+    print(f"  └─────────────────────────────────────────┘")
+    print(f"  Saved to: {gran_dir}")
 
     # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓
     if summary_all:
-        summary_path = output_root / direction.upper() / "edge_summary.json"
+        summary_path = output_root / direction.upper() / f"edge_summary_{granularity}.json"
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_path, "w") as f:
             json.dump(summary_all, f, indent=2)
@@ -1008,7 +998,7 @@ def run_cpcv_analysis(cache_path, cfg, n_blocks=6, k_test=2, output_root=None, m
 
 
 # ┏━━━━━━━━━━ Compute edge convergence score ━━━━━━━━━━┓
-def compute_edge_convergence_score(cache_path, cfg, model_name="randforest"):
+def compute_edge_convergence_score(cache_path, config, direction="up", model_name="randforest", granularity="1d"):
     """2-stage convergence score: CPCV (60%) + Seeds (40%).
 
     Hard gates (AND logic — both must pass for GREEN):
@@ -1018,11 +1008,9 @@ def compute_edge_convergence_score(cache_path, cfg, model_name="randforest"):
     # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
     print(f"\n[edge-convergence] Loading cache: {cache_path.name}")
     multi = _load_multi_cache(cache_path)
-    direction = _infer_direction(cache_path)
-    m1_bucket = m1_output_bucket(cfg)
     
     # ┏━━━━━━━━━━ Get Granularities ━━━━━━━━━━┓
-    edge_root = Path(cfg["paths"]["output_root"]) / "Analysis" / "Edge" / m1_bucket / model_name
+    edge_root = Path(config["paths"]["output_root"]) / "Analysis" / "Edge" / config["experiment"]["m1"].capitalize() / model_name
     dir_path = edge_root / direction.upper()
     if not dir_path.exists():
         print(f"  [SKIP] Directory not found: {dir_path}")
@@ -1037,126 +1025,124 @@ def compute_edge_convergence_score(cache_path, cfg, model_name="randforest"):
     w_cpcv, w_seeds = 0.60, 0.40
     convergence_results = {}
 
-    # ┏━━━━━━━━━━ Loop Through Granularities ━━━━━━━━━━┓
-    for gran in grans:
-        # ┏━━━━━━━━━━ Get Paths ━━━━━━━━━━┓
-        gran_dir = dir_path / gran
-        cpcv_csv = gran_dir / "cpcv_paths.csv"
-        seeds_csv = gran_dir / "edge_trials.csv"
+    # ┏━━━━━━━━━━ Get Paths ━━━━━━━━━━┓
+    gran_dir = dir_path / granularity
+    cpcv_csv = gran_dir / "cpcv_paths.csv"
+    seeds_csv = gran_dir / "edge_trials.csv"
 
-        # ┏━━━━━━━━━━ Stage 1: CPCV ━━━━━━━━━━┓
-        cpcv_score = 0.0
-        cpcv_raw = {"fraction_profitable": None, 
-                    "median_path_sharpe": None, 
-                    "passes_gate": False}
-        cpcv_detail = "Missing CPCV results"
-        
-        # ┏━━━━━━━━━━ Load CPCV Results ━━━━━━━━━━┓
-        if cpcv_csv.exists():
-            df_cpcv = pd.read_csv(cpcv_csv)
+    # ┏━━━━━━━━━━ Stage 1: CPCV ━━━━━━━━━━┓
+    cpcv_score = 0.0
+    cpcv_raw = {"fraction_profitable": None,
+                "median_path_sharpe": None,
+                "passes_gate": False}
+    cpcv_detail = "Missing CPCV results"
+    
+    # ┏━━━━━━━━━━ Load CPCV Results ━━━━━━━━━━┓
+    if cpcv_csv.exists():
+        df_cpcv = pd.read_csv(cpcv_csv)
 
-            # ┏━━━━━━━━━━ Calculate CPCV Score ━━━━━━━━━━┓
-            if "sharpe" in df_cpcv.columns:
-                total_ret_col = "total_ret_pct" if "total_ret_pct" in df_cpcv.columns else "sel_mean_ret"
-                path_rets = df_cpcv[total_ret_col].dropna().values
-                path_sharpes = df_cpcv["sharpe"].dropna().values
+        # ┏━━━━━━━━━━ Calculate CPCV Score ━━━━━━━━━━┓
+        if "sharpe" in df_cpcv.columns:
+            total_ret_col = "total_ret_pct" if "total_ret_pct" in df_cpcv.columns else "sel_mean_ret"
+            path_rets = df_cpcv[total_ret_col].dropna().values
+            path_sharpes = df_cpcv["sharpe"].dropna().values
 
-                # ┏━━━━━━━━━━ Check if CPCV Results Exist ━━━━━━━━━━┓
-                if len(path_rets) > 0 and len(path_sharpes) > 0:
-                    frac_profitable = float(np.mean(path_rets > 0))
-                    median_sharpe = float(np.median(path_sharpes))
-                    cpcv_score = frac_profitable * float(np.clip(median_sharpe, 0.0, 1.0))
-                    
-                    # ┏━━━━━━━━━━ CPCV Raw ━━━━━━━━━━┓
-                    cpcv_raw = {"fraction_profitable": frac_profitable,
-                                "median_path_sharpe":  median_sharpe,
-                                "passes_gate":         bool(median_sharpe > 0 and frac_profitable > 0.60)}
-                    
-                    # ┏━━━━━━━━━━ CPCV Detail ━━━━━━━━━━┓
-                    cpcv_detail = (f"profitable = {frac_profitable:.0%} "
-                                   f"median_SR  = {median_sharpe:.2f} "
-                                   f"worst_ret  = {float(np.min(path_rets)):+.2f}%")
-
-        # ┏━━━━━━━━━━ Stage 2: Seeds ━━━━━━━━━━┓
-        seeds_score = 0.0
-        seeds_raw = {"fraction_profitable": None, 
-                     "mean_sharpe":         None, 
-                     "sharpe_ci_lower":     None,
-                     "median_threshold":    None, 
-                     "threshold_std":       None, 
-                     "passes_gate":         False}
-        seeds_detail = "missing seeds results"
-        
-        # ┏━━━━━━━━━━ Load Seeds Results ━━━━━━━━━━┓
-        if seeds_csv.exists():
-            df_seeds = pd.read_csv(seeds_csv)
-
-            # ┏━━━━━━━━━━ Calculate Seeds Score ━━━━━━━━━━┓
-            if "test_sel_mean_ret" in df_seeds.columns and "test_sel_sharpe" in df_seeds.columns:
-                seed_rets = df_seeds["test_sel_mean_ret"].dropna().values
-                seed_sharpes = df_seeds["test_sel_sharpe"].dropna().values
-                seed_thresholds = df_seeds["test_sel_threshold"].dropna().values if "test_sel_threshold" in df_seeds.columns else np.array([])
+            # ┏━━━━━━━━━━ Check if CPCV Results Exist ━━━━━━━━━━┓
+            if len(path_rets) > 0 and len(path_sharpes) > 0:
+                frac_profitable = float(np.mean(path_rets > 0))
+                median_sharpe = float(np.median(path_sharpes))
+                cpcv_score = frac_profitable * float(np.clip(median_sharpe, 0.0, 1.0))
                 
-                # ┏━━━━━━━━━━ Check if Seeds Results Exist ━━━━━━━━━━┓
-                if len(seed_rets) > 0 and len(seed_sharpes) > 0:
-                    frac_profitable = float(np.mean(seed_rets > 0))
-                    mean_sharpe = float(np.mean(seed_sharpes))
-                    std_sharpe = float(np.std(seed_sharpes, ddof=1)) if len(seed_sharpes) > 1 else 0.0
-                    sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(seed_sharpes), 1))
-                    cv_sharpe = std_sharpe / abs(mean_sharpe) if abs(mean_sharpe) > 1e-9 else 1.0
-                    stability = float(np.clip(1.0 - cv_sharpe, 0.0, 1.0))
-                    seeds_score = frac_profitable * stability
-                    median_thr = float(np.median(seed_thresholds)) if len(seed_thresholds) > 0 else None
-                    thr_std = float(np.std(seed_thresholds)) if len(seed_thresholds) > 0 else None
-                    
-                    # ┏━━━━━━━━━━ Seeds Raw ━━━━━━━━━━┓
-                    seeds_raw = {"fraction_profitable": frac_profitable,
-                                 "mean_sharpe":         mean_sharpe,
-                                 "sharpe_ci_lower":     sharpe_ci_lower,
-                                 "cv_sharpe":           cv_sharpe,
-                                 "median_threshold":    median_thr,
-                                 "threshold_std":       thr_std,
-                                 "passes_gate":         bool(frac_profitable > 0.70 and sharpe_ci_lower > 0)}
+                # ┏━━━━━━━━━━ CPCV Raw ━━━━━━━━━━┓
+                cpcv_raw = {"fraction_profitable": frac_profitable,
+                            "median_path_sharpe":  median_sharpe,
+                            "passes_gate":         bool(median_sharpe > 0 and frac_profitable > 0.60)}
+                
+                # ┏━━━━━━━━━━ CPCV Detail ━━━━━━━━━━┓
+                cpcv_detail = (f"profitable = {frac_profitable:.0%} "
+                               f"median_SR  = {median_sharpe:.2f} "
+                               f"worst_ret  = {float(np.min(path_rets)):+.2f}%")
 
-                    # ┏━━━━━━━━━━ Seeds Detail ━━━━━━━━━━┓
-                    seeds_detail = (f"profitable = {frac_profitable:.0%} "
-                                    f"mean_SR    = {mean_sharpe:.2f} "
-                                    f"CI_low     = {sharpe_ci_lower:.2f} "
-                                    f"CV         = {cv_sharpe:.2f} "
-                                    f"τ_med      = {median_thr:.3f}" if median_thr else
-                                    f"profitable = {frac_profitable:.0%} "
-                                    f"mean_SR    = {mean_sharpe:.2f} "
-                                    f"CI_low     = {sharpe_ci_lower:.2f}")
+    # ┏━━━━━━━━━━ Stage 2: Seeds ━━━━━━━━━━┓
+    seeds_score = 0.0
+    seeds_raw = {"fraction_profitable": None,
+                 "mean_sharpe":         None,
+                 "sharpe_ci_lower":     None,
+                 "median_threshold":    None,
+                 "threshold_std":       None,
+                 "passes_gate":         False}
+    seeds_detail = "missing seeds results"
+    
+    # ┏━━━━━━━━━━ Load Seeds Results ━━━━━━━━━━┓
+    if seeds_csv.exists():
+        df_seeds = pd.read_csv(seeds_csv)
 
-        # ┏━━━━━━━━━━ Combined score + verdict ━━━━━━━━━━┓
-        final_score = w_cpcv * cpcv_score + w_seeds * seeds_score
-        
-        # ┏━━━━━━━━━━ Verdict ━━━━━━━━━━┓
-        cpcv_pass = cpcv_raw.get("passes_gate", False)
-        seeds_pass = seeds_raw.get("passes_gate", False)
-        if cpcv_pass and seeds_pass:
-            verdict = "GREEN"
-        elif cpcv_pass or seeds_pass:
-            verdict = "AMBER"
-        else:
-            verdict = "RED"
+        # ┏━━━━━━━━━━ Calculate Seeds Score ━━━━━━━━━━┓
+        if "test_sel_mean_ret" in df_seeds.columns and "test_sel_sharpe" in df_seeds.columns:
+            seed_rets = df_seeds["test_sel_mean_ret"].dropna().values
+            seed_sharpes = df_seeds["test_sel_sharpe"].dropna().values
+            seed_thresholds = df_seeds["test_sel_threshold"].dropna().values if "test_sel_threshold" in df_seeds.columns else np.array([])
+            
+            # ┏━━━━━━━━━━ Check if Seeds Results Exist ━━━━━━━━━━┓
+            if len(seed_rets) > 0 and len(seed_sharpes) > 0:
+                frac_profitable = float(np.mean(seed_rets > 0))
+                mean_sharpe = float(np.mean(seed_sharpes))
+                std_sharpe = float(np.std(seed_sharpes, ddof=1)) if len(seed_sharpes) > 1 else 0.0
+                sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(seed_sharpes), 1))
+                cv_sharpe = std_sharpe / abs(mean_sharpe) if abs(mean_sharpe) > 1e-9 else 1.0
+                stability = float(np.clip(1.0 - cv_sharpe, 0.0, 1.0))
+                seeds_score = frac_profitable * stability
+                median_thr = float(np.median(seed_thresholds)) if len(seed_thresholds) > 0 else None
+                thr_std = float(np.std(seed_thresholds)) if len(seed_thresholds) > 0 else None
+                
+                # ┏━━━━━━━━━━ Seeds Raw ━━━━━━━━━━┓
+                seeds_raw = {"fraction_profitable": frac_profitable,
+                             "mean_sharpe":         mean_sharpe,
+                             "sharpe_ci_lower":     sharpe_ci_lower,
+                             "cv_sharpe":           cv_sharpe,
+                             "median_threshold":    median_thr,
+                             "threshold_std":       thr_std,
+                             "passes_gate":         bool(frac_profitable > 0.70 and sharpe_ci_lower > 0)}
 
-        # ┏━━━━━━━━━━ Convergence Results ━━━━━━━━━━┓
-        convergence_results[gran] = {"weights":      {"cpcv": w_cpcv, "seeds": w_seeds},
-                                     "cpcv":         {**cpcv_raw, "score": round(cpcv_score, 4)},
-                                     "seeds":        {**seeds_raw, "score": round(seeds_score, 4)},
-                                     "final_score":  round(final_score, 4),
-                                     "verdict":      verdict,
-                                     "gates_passed": {"cpcv": cpcv_pass, "seeds": seeds_pass}}
+                # ┏━━━━━━━━━━ Seeds Detail ━━━━━━━━━━┓
+                seeds_detail = (f"profitable = {frac_profitable:.0%} "
+                                f"mean_SR    = {mean_sharpe:.2f} "
+                                f"CI_low     = {sharpe_ci_lower:.2f} "
+                                f"CV         = {cv_sharpe:.2f} "
+                                f"τ_med      = {median_thr:.3f}" if median_thr else
+                                f"profitable = {frac_profitable:.0%} "
+                                f"mean_SR    = {mean_sharpe:.2f} "
+                                f"CI_low     = {sharpe_ci_lower:.2f}")
 
-        icon = {"GREEN": "✓", "AMBER": "~", "RED": "✗"}[verdict]
-        print(f"\n  [{icon}] {gran:4s} — Score: {final_score:.3f} ({verdict})")
-        print(f"      1. CPCV  (w={w_cpcv}): {cpcv_score:.3f}  | {cpcv_detail}")
-        print(f"      2. Seeds (w={w_seeds}): {seeds_score:.3f}  | {seeds_detail}")
+    # ┏━━━━━━━━━━ Combined score + verdict ━━━━━━━━━━┓
+    final_score = w_cpcv * cpcv_score + w_seeds * seeds_score
+    
+    # ┏━━━━━━━━━━ Verdict ━━━━━━━━━━┓
+    cpcv_pass = cpcv_raw.get("passes_gate", False)
+    seeds_pass = seeds_raw.get("passes_gate", False)
+    if cpcv_pass and seeds_pass:
+        verdict = "GREEN"
+    elif cpcv_pass or seeds_pass:
+        verdict = "AMBER"
+    else:
+        verdict = "RED"
+
+    # ┏━━━━━━━━━━ Convergence Results ━━━━━━━━━━┓
+    convergence_results[granularity] = {"weights":      {"cpcv": w_cpcv, "seeds": w_seeds},
+                                 "cpcv":         {**cpcv_raw, "score": round(cpcv_score, 4)},
+                                 "seeds":        {**seeds_raw, "score": round(seeds_score, 4)},
+                                 "final_score":  round(final_score, 4),
+                                 "verdict":      verdict,
+                                 "gates_passed": {"cpcv": cpcv_pass, "seeds": seeds_pass}}
+
+    icon = {"GREEN": "✓", "AMBER": "~", "RED": "✗"}[verdict]
+    print(f"\n  [{icon}] {granularity:4s} — Score: {final_score:.3f} ({verdict})")
+    print(f"      1. CPCV  (w={w_cpcv}): {cpcv_score:.3f}  | {cpcv_detail}")
+    print(f"      2. Seeds (w={w_seeds}): {seeds_score:.3f}  | {seeds_detail}")
 
     # ┏━━━━━━━━━━ Save Convergence Results ━━━━━━━━━━┓
     if convergence_results:
-        out_path = dir_path / "convergence_scores.json"
+        out_path = dir_path / f"convergence_scores_{granularity}.json"
         with open(out_path, "w") as f:
             json.dump(convergence_results, f, indent=2)
         print(f"\n[edge-convergence] Saved: {out_path}")
@@ -1175,45 +1161,49 @@ def compute_edge_convergence_score(cache_path, cfg, model_name="randforest"):
 # ┏━━━━━━━━━━ CLI ━━━━━━━━━━┓
 def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
-    _VALID_CLI_MODELS = tuple(_CLI_TO_MODEL_KEY.keys())
-    parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")
-    parser.add_argument("--cache",       type=str, required=True, help="Multi-granularity cache .pt")
-    parser.add_argument("--config",      type=str, default="config.yaml", help="config.yaml path")
-    parser.add_argument("--mode",        type=str, default="cpcv", choices=["seeds", "cpcv"], help="'seeds' = 100 seed trials, 'cpcv' = Combinatorial Purged CV")
-    parser.add_argument("--trials",      type=int, default=100, help="[seeds] Number of trials")
-    parser.add_argument("--n-blocks",    type=int, default=3, help="[cpcv] Number of blocks (default: 6)")
-    parser.add_argument("--k-test",      type=int, default=2, help="[cpcv] Test blocks per split (default: 2)")
-    parser.add_argument("--model",       type=str, default="randforest", choices=_VALID_CLI_MODELS, help=f"Model to use: {_VALID_CLI_MODELS}")
-    parser.add_argument("--convergence", action="store_true", help="Compute the 3-stage Edge Convergence Score from pre-calculated results")
+    # _VALID_CLI_MODELS = tuple(_CLI_TO_MODEL_KEY.keys())
+    parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")  # TODO adjust description
+    parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
+    parser.add_argument("--config", type=dict, help="Experiment config", required=True)
+    parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True, help="'seeds' = 100 seed trials; 'cpcv' = Combinatorial Purged CV; convergence = Compute the 3-stage Edge Convergence Score from pre-calculated results")
+    parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
+    parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
+    parser.add_argument("--direction", type=str, help="Direction to use", required=True)
+    parser.add_argument("--granularity", type=str, help="Granularity to use", required=True)
+
     args = parser.parse_args()
 
-    # ┏━━━━━━━━━━ Load cache and config ━━━━━━━━━━┓
-    cache_path = Path(args.cache)
-    if not cache_path.exists():
-        raise FileNotFoundError(f"Cache not found: {cache_path}")
-    cfg = _load_config(args.config)
-    
-    # print(f"\n\n\ncfg\n\n\n{cfg}\n\n\n")
-    # exit(12)
-
     # ┏━━━━━━━━━━ Output directory (includes model name) ━━━━━━━━━━┓
-    m1_bucket = m1_output_bucket(cfg)
-    output_root = Path(cfg["paths"]["output_root"]) / "Analysis" / "Edge" / m1_bucket / args.model
+    output_root = Path(args.config["paths"]["output_root"]) / "Analysis" / "Edge" / args.config["experiment"]["m1"].capitalize() / args.m2
 
     # ┏━━━━━━━━━━ Run analysis ━━━━━━━━━━┓
-    if args.convergence:
-        compute_edge_convergence_score(cache_path, cfg, model_name=args.model)
+    if args.mode == "convergence":
+        compute_edge_convergence_score(args.cache_path,
+                                       args.config,
+                                       direction=args.direction,
+                                       model_name=args.m2,
+                                       granularity=args.granularity)
     elif args.mode == "seeds":
-        run_seeds_analysis(cache_path, cfg, n_trials=args.trials, output_root=output_root, model_name=args.model)
+        run_seeds_analysis(args.cache_path,
+                           args.config,
+                           output_root,
+                           n_trials=args.config["runtime"][args.phase]["n_trials"],
+                           m2_name=args.m2,
+                           direction=args.direction,
+                           granularity=args.granularity)
+    elif args.mode == "cpcv":
+        run_cpcv_analysis(args.cache_path,
+                          args.config,
+                          output_root,
+                          n_blocks=args.config["runtime"][args.phase]["n_blocks"],
+                          k_test=args.config["runtime"][args.phase]["k_test"],
+                          m2_name=args.m2,
+                          direction=args.direction,
+                          granularity=args.granularity)
     else:
-        run_cpcv_analysis(cache_path, cfg, n_blocks=args.n_blocks,
-                          k_test=args.k_test, output_root=output_root, model_name=args.model)
+        print(f"Invalid mode: {args.mode}")
 
-from .plots import (
-    _plot_edge_curves,
-    _plot_summary_boxplots,
-    _plot_cross_gran_seeds,
-    _plot_split_matrix,
-    _plot_path_boxplots,
-    _plot_cross_gran_cpcv,
-)
+
+if __name__ == "__main__":
+    main()
+
