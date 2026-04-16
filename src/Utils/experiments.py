@@ -18,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 import yaml
+import json
 import os
 
 # experiments.py lives in src/Utils/ — insert src/ so "import Utils" works
@@ -87,7 +88,7 @@ def run_experiments(config: dict):
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
                     cmd = [python, "kronos_tree.py",
                            "--cache_path", cache_path,
-                           "--config", config,
+                           "--config", json.dumps(config),
                            "--phase", "training",
                            "--m2", m2,
                            "--direction", direction,
@@ -103,8 +104,8 @@ def run_experiments(config: dict):
         print(f"# M2 Models: {config['experiment']['m2']}")
         print(f"# Directions: {config['experiment']['direction']}")
         print(f"# Granularities: {config['experiment']['granularity']}")
-        print(f"# Trials: {config['runtime']['edge']['trials']}")
-        print(f"# Blocks: {config['runtime']['edge']['blocks']}")
+        print(f"# Trials: {config['runtime']['edge']['n_trials']}")
+        print(f"# Blocks: {config['runtime']['edge']['n_blocks']}")
         print(f"{'#' * 70}")
         
         for m2 in config['experiment']['m2']:
@@ -118,7 +119,7 @@ def run_experiments(config: dict):
                     # ┏━━━━━━━━━━ Seeds ━━━━━━━━━━┓
                     label = f"Edge Seeds {m2.upper()} {direction.upper()}"
                     cmd = [python, "-m", "Utils.edge",  # TODO why is this not via kronos_tree.py?
-                           "--config", config,
+                           "--config", json.dumps(config),
                            "--cache_path", cache_path,
                            "--mode", "seeds",
                            '--phase', 'edge',
@@ -131,7 +132,7 @@ def run_experiments(config: dict):
                     # ┏━━━━━━━━━━ CPCV ━━━━━━━━━━┓
                     label = f"Edge CPCV {m2.upper()} {direction.upper()}"
                     cmd = [python, "-m", "Utils.edge",  # TODO why is this not via kronos_tree.py?
-                           "--config", config,
+                           "--config", json.dumps(config),
                            "--cache_path", cache_path,
                            "--mode", "cpcv",
                            '--phase', 'edge',
@@ -144,7 +145,7 @@ def run_experiments(config: dict):
                     # ┏━━━━━━━━━━ Convergence score ━━━━━━━━━━┓
                     label = f"Edge Convergence {m2.upper()} {direction.upper()}"
                     cmd = [python, "-m", "Utils.edge",
-                           "--config", config,
+                           "--config", json.dumps(config),
                            "--cache_path", cache_path,
                            "--mode", "convergence",
                            '--phase', 'edge',
@@ -165,26 +166,27 @@ def run_experiments(config: dict):
         
         for m2 in config['experiment']['m2']:
             for granularity in config['experiment']['granularity']:
-                cache_path = _find_cache(config["paths"]["output_root"], direction, m1=config['experiment']['m1'])
-                if cache_path is None:
-                    print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
-                    continue
+                # TODO this is not required here!?
+                # cache_path = _find_cache(config["paths"]["output_root"], direction, m1=config['experiment']['m1'])
+                # if cache_path is None:
+                #     print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
+                #     continue
                 
-                config["runtime"]["combined"]["combined_backtest"][0] = output_root / m2 / "UP" / "Utility_Score"
-                config["runtime"]["combined"]["combined_backtest"][1] = output_root / m2 / "DOWN" / "Utility_Score"
-                if not config["runtime"]["combined"]["combined_backtest"][0].exists() or not \
-                    config["runtime"]["combined"]["combined_backtest"][1].exists():
+                config["runtime"]["combined"]["combined_backtest"][0] = str(output_root / m2 / "UP" / "Utility_Score")
+                config["runtime"]["combined"]["combined_backtest"][1] = str(output_root / m2 / "DOWN" / "Utility_Score")
+                if not os.path.exists(config["runtime"]["combined"]["combined_backtest"][0]) or not \
+                    os.path.exists(config["runtime"]["combined"]["combined_backtest"][1]):
                     print(
                         f"  [SKIP] Missing UP or DOWN results for {m2}: {config["runtime"]["combined"]["combined_backtest"][1]}, {config["runtime"]["combined"]["combined_backtest"][1]}")
                     continue
                 # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"
                 cmd = [python, "kronos_tree.py",
-                       "--cache_path", cache_path,
-                       "--config", config,
+                       "--cache_path", "not_needed_here",
+                       "--config", json.dumps(config),
                        "--phase", "combined",
                        "--m2", m2,
-                       "--direction", "not required here?",
+                       "--direction", "not_needed_here",
                        "--granularity", granularity]
                 # "--combined-backtest", str(up_dir), str(dn_dir)]
                 ok = _run(cmd, label)
@@ -212,7 +214,7 @@ def run_experiments(config: dict):
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
                     cmd = [python, "feature_selection_experiment.py",
                            "--cache_path", cache_path,
-                           "--config", config,
+                           "--config", json.dumps(config),
                            "--phase", "feature_selection",
                            "--m2", m2,
                            "--direction", direction,

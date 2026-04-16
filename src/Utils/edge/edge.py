@@ -399,7 +399,7 @@ def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="r
     # model_key  = _CLI_TO_MODEL_KEY.get(model_name, model_name)
 
     # ┏━━━━━━━━━━ Load cache ━━━━━━━━━━┓
-    print(f"\n[edge-seeds] Loading cache: {cache_path.name}")
+    print(f"\n[edge-seeds] Loading cache: {cache_path}")
     multi = _load_multi_cache(cache_path)
     print(f"[edge-seeds] Direction: {direction} | Granularities: {multi.grans}")
     print(f"[edge-seeds] Trials: {n_trials} | Fee: {fee}")
@@ -762,7 +762,7 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     summary_all = {}
     
     # ┏━━━━━━━━━━ Load multi cache ━━━━━━━━━━┓
-    print(f"\n[edge-cpcv] Loading cache: {cache_path.name}")
+    print(f"\n[edge-cpcv] Loading cache: {cache_path}")
     multi = _load_multi_cache(cache_path)
     print(f"[edge-cpcv] Direction: {direction} | Granularities: {multi.grans}")
     print(f"[edge-cpcv] CPCV: N={n_blocks}, k={k_test} → C({n_blocks},{k_test})={n_splits} splits → {n_paths} paths")
@@ -1006,7 +1006,7 @@ def compute_edge_convergence_score(cache_path, config, direction="up", model_nam
         Seeds: >70% seeds profitable  AND  Sharpe Confidence Interval lower > 0
     """
     # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-    print(f"\n[edge-convergence] Loading cache: {cache_path.name}")
+    print(f"\n[edge-convergence] Loading cache: {cache_path}")
     multi = _load_multi_cache(cache_path)
     
     # ┏━━━━━━━━━━ Get Granularities ━━━━━━━━━━┓
@@ -1164,7 +1164,7 @@ def main():
     # _VALID_CLI_MODELS = tuple(_CLI_TO_MODEL_KEY.keys())
     parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")  # TODO adjust description
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
-    parser.add_argument("--config", type=dict, help="Experiment config", required=True)
+    parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
     parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True, help="'seeds' = 100 seed trials; 'cpcv' = Combinatorial Purged CV; convergence = Compute the 3-stage Edge Convergence Score from pre-calculated results")
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)

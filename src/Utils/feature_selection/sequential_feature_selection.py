@@ -16,7 +16,7 @@ class SequentialFeatureSelection(FeatureSelection):
         super().__init__(clf, scoring, cross_validation_strategy, **kwargs)
 
         self.cache_feature_path = kwargs.get("cache_feature_path", None)
-        self.cache_name = kwargs.get("cache_name", None)
+        self.cache_feature_tag = kwargs.get("cache_feature_tag", None)
 
         self.take_n_best_combinations = kwargs.get("take_n_best_combinations", 3)
         self.can_be_parallelized = kwargs.get("can_be_parallelized", False)
@@ -129,7 +129,7 @@ class SequentialFeatureSelection(FeatureSelection):
                 # cache results
                 if self.cache_feature_path is not None:
                     os.makedirs(self.cache_feature_path, exist_ok=True)
-                    tmp_res.to_csv(f"{self.cache_feature_path}/{k_features}_features_{self.cache_name}_cached.csv", index=False)
+                    tmp_res.to_csv(f"{self.cache_feature_path}/{k_features}_features_{self.cache_feature_tag}_cached.csv", index=False)
                 res_dict[f"{k_features}_features"] = tmp_res
             else:
                 warnings.warn("No more subsests to check ending feature selection")

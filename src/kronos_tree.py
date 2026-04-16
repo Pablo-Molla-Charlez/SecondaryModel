@@ -598,7 +598,7 @@ def temporal_eval(dataset: dict,
 # ------------------------------------------------------------------------------
 def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, output_root: Path,
                  train_end: str = None, val_end: str = None, model_name: str = "rf",
-                 dataset_override: dict = None, cfg: dict = None, run_top5: bool = True,
+                 cfg: dict = None, run_top5: bool = True,
                  run_features: bool = True, thres_mode: str = "utility",
                  ocp_alpha: float = 0.10,
                  ocp_costs: tuple = (0.0, 10.0, 2.0),
@@ -613,20 +613,13 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
-    model_folder = {"rf": "randforest",
-                    "xgboost": "xgboost",
-                    "autogluon": "autogluon",
-                    "tabpfn": "tabpfn",
-                    "tabpfn_ft": "tabpfn_ft",
-                    "tabicl": "tabicl"}[model_name]
     if thres_mode.startswith("OCP"):
         thres_folder = thres_mode
     else:
         thres_folder = "Utility_Score"
     
     # ┏━━━━━━━━━━ Create save directory ━━━━━━━━━━┓
-    save_dir = output_root / _m1_output_bucket(
-        cfg) / model_folder / direction.upper() / thres_folder / f"{granularity}_{mode}"
+    save_dir = Path(output_root) / cfg["experiment"]["m1"].capitalize() / model_name / direction.upper() / thres_folder / f"{granularity}_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
@@ -638,7 +631,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     print(f"{'=' * 60}\n")
     
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
-    dataset = dataset_override if dataset_override is not None else torch.load(cache_path, weights_only=False)
+    dataset = torch.load(cache_path, weights_only=False)
     
     # ┏━━━━━━━━━━ Check if cache contains eng_features (engineered features) ━━━━━━━━━━┓
     _eng_check = dataset.get("eng_features") if isinstance(dataset, dict) else getattr(dataset, "eng_features", None)
@@ -1573,7 +1566,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Kronos Tree — M2 Meta-Labeling with RF/XGBoost/AutoGluon")  # TODO change description
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
-    parser.add_argument("--config", type=dict, help="Experiment config", required=True)
+    parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
@@ -1584,85 +1577,90 @@ def main():
     # ┏━━━━━━━━━━ Parse cost vector ━━━━━━━━━━┓
     _cost_parts = args.config["runtime"][args.phase]["ocp_costs"]
     ocp_costs = (_cost_parts[0], _cost_parts[1], _cost_parts[2])  # (c_FN, c_FP, c_DEF)
-    
-    # ┏━━━━━━━━━━ Analysis Comparison between Models ━━━━━━━━━━┓ # NOTE this is not actively used?!
-    if args.config["runtime"][args.phase]["paradigm_comparison"]:
-        run_paradigm_comparison(args.config["runtime"][args.phase]["paradigm_comparison"])
-        print(f"\nParadigm comparison complete.")
-        return
-    
-    # ┏━━━━━━━━━━ Combined UP+DOWN Backtest ━━━━━━━━━━┓ # NOTE this is phase 3
-    if args.config["runtime"][args.phase]["combined_backtest"]:
-        # ┏━━━━━━━━━━ Save into the model directory (parent of the UP/DN folders) under Backtest_UP_DN ━━━━━━━━━━┓
-        up_path = Path(args.combined_backtest[0])
-        dn_path = Path(args.combined_backtest[1])
-        save_combined = up_path.parent.parent / "Backtest_UP_DN"
-        
-        # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
-        run_combined_backtest(up_path, dn_path, save_combined, args.config, granularity=args.granularity, model_name=args.m2)
-        print(f"\nCombined UP+DOWN backtest complete. Outputs in: {save_combined}")
-        return
-    
-    # ┏━━━━━━━━━━ Analysis Comparison between all-grans vs per-gran ━━━━━━━━━━┓ # NOTE this is not actively used?!
-    if args.config["runtime"][args.phase]["comparison"]:
-        per_gran_dir = Path(args.config["runtime"][args.phase]["comparison"][0])
-        unified_dir = Path(args.config["runtime"][args.phase]["comparison"][1])
-        run_comparison(per_gran_dir, unified_dir)
-        print(f"\nComparison complete.")
-        return
-    
-    # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓ # NOTE this is phase 1
-    # One model trained on all granularities, evaluated per-gran
-    if args.config["runtime"][args.phase]["all_grans"]:
-        # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-        if args.cache_path:
-            if not args.cache_path.exists():
-                raise FileNotFoundError(f"Cache not found: {args.cache_path}")
+
+    # ┏━━━━━━━━━━ Phase 1: Training ━━━━━━━━━━┓
+    if args.config["runtime"][args.phase] == "training":
+        # ┏━━━━━━━━━━ Analysis Comparison between Models ━━━━━━━━━━┓ # NOTE this is not actively used?!
+        if args.config["runtime"][args.phase]["paradigm_comparison"]:
+            run_paradigm_comparison(args.config["runtime"][args.phase]["paradigm_comparison"])
+            print(f"\nParadigm comparison complete.")
+            return
+
+        # ┏━━━━━━━━━━ Analysis Comparison between all-grans vs per-gran ━━━━━━━━━━┓ # NOTE this is not actively used?!
+        if args.config["runtime"][args.phase]["comparison"]:
+            per_gran_dir = Path(args.config["runtime"][args.phase]["comparison"][0])
+            unified_dir = Path(args.config["runtime"][args.phase]["comparison"][1])
+            run_comparison(per_gran_dir, unified_dir)
+            print(f"\nComparison complete.")
+            return
+
+        # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓ # NOTE this is phase 1
+        # One model trained on all granularities, evaluated per-gran
+        if args.config["runtime"][args.phase]["all_grans"]:
+            # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
+            if args.cache_path:
+                if not args.cache_path.exists():
+                    raise FileNotFoundError(f"Cache not found: {args.cache_path}")
+            else:
+                # ┏━━━━━━━━━━ Auto-build multi-gran cache from config ━━━━━━━━━━┓
+                args.cache_path, _ = _build_cache_from_config(args.config, direction=args.direction)
+
+            # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
+            print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {args.cache_path.name}")
+            multi = _load_multi_cache(args.cache_path)
+
+            # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
+            run_unified_analysis(args.cache_path,
+                                 multi,
+                                 args.direction,
+                                 args.config['data']['load']['meta_label_mode'],
+                                 args.config['paths']['output_root'],
+                                 train_end=args.config['data']['split']['train_end'],
+                                 val_end=args.config['data']['split']['val_end'],
+                                 model_name=args.m2,
+                                 cfg=args.config,
+                                 thres_mode=args.config['runtime'][args.phase]["thres"],
+                                 ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
+                                 ocp_costs=ocp_costs,
+                                 ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
+            return
+        # ┏━━━━━━━━━━ Single granularity (auto-detect from config) ━━━━━━━━━━┓
         else:
-            # ┏━━━━━━━━━━ Auto-build multi-gran cache from config ━━━━━━━━━━┓
-            args.cache_path, _ = _build_cache_from_config(args.config, direction=args.direction)
-        
-        # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-        print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {args.cache_path.name}")
-        multi = _load_multi_cache(args.cache_path)
-        
-        # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
-        run_unified_analysis(args.cache_path,
-                             multi,
-                             args.direction,
-                             args.config['data']['load']['meta_label_mode'],
-                             args.config['paths']['output_root'],
+            direction_caches = _resolve_caches(args.config, args.cache_path)
+
+            for direction, cache_path in sorted(direction_caches.items()):
+                run_analysis(cache_path=cache_path,
+                             direction=direction,
+                             mode=args.config['data']['load']['meta_label_mode'],
+                             granularity=args.granularity,
+                             output_root=args.config['paths']['output_root'],
                              train_end=args.config['data']['split']['train_end'],
                              val_end=args.config['data']['split']['val_end'],
                              model_name=args.m2,
                              cfg=args.config,
+                             run_top5=args.config['runtime'][args.phase]["top5"],
+                             run_features=args.config['runtime'][args.phase]["run_features"],
                              thres_mode=args.config['runtime'][args.phase]["thres"],
                              ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
                              ocp_costs=ocp_costs,
                              ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
-        return
-    # ┏━━━━━━━━━━ Single granularity (auto-detect from config) ━━━━━━━━━━┓
-    else:
-        direction_caches = _resolve_caches(args.config, args.cache_path)
-        
-        for direction, cache_path in sorted(direction_caches.items()):
-            run_analysis(cache_path,
-                         direction,
-                         args.config['data']['load']['meta_label_mode'],
-                         args.granularity,
-                         args.config['paths']['output_root'],
-                         train_end=args.config['data']['split']['train_end'],
-                         val_end=args.config['data']['split']['val_end'],
-                         model_name=args.m2,
-                         cfg=args.config,
-                         run_top5=args.config['runtime'][args.phase]["top5"],
-                         run_features=args.config['runtime'][args.phase]["run_features"],
-                         thres_mode=args.config['runtime'][args.phase]["thres"],
-                         ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
-                         ocp_costs=ocp_costs,
-                         ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
-        print(f"\nAll analyses complete.")
-        return
+            print(f"\nAll analyses complete.")
+            return
+
+    # ┏━━━━━━━━━━ Phase 3: Combined ━━━━━━━━━━┓
+    if args.config["runtime"][args.phase] == "combined":
+        # ┏━━━━━━━━━━ Combined UP+DOWN Backtest ━━━━━━━━━━┓
+        if args.config["runtime"][args.phase]["combined_backtest"]:
+            # ┏━━━━━━━━━━ Save into the model directory (parent of the UP/DN folders) under Backtest_UP_DN ━━━━━━━━━━┓
+            up_path = Path(args.combined_backtest[0])
+            dn_path = Path(args.combined_backtest[1])
+            save_combined = up_path.parent.parent / "Backtest_UP_DN"
+
+            # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
+            run_combined_backtest(up_path, dn_path, save_combined, args.config, granularity=args.granularity,
+                                  model_name=args.m2)
+            print(f"\nCombined UP+DOWN backtest complete. Outputs in: {save_combined}")
+            return
 
 
 if __name__ == "__main__":

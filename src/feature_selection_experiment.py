@@ -7,12 +7,16 @@ sys.path.insert(0, str(Path.cwd().parent))  # or parent
 import Utils
 
 import os
+import json
 
-from Utils.classifier.autogluon_classifier import AutogluonClassifier
-from Utils.classifier.tabpfn_classifier import TabPFN
-from Utils.classifier.tabicl_classifier import TabICL
-from Utils.classifier.random_forest_classifier import RFClassifier
+# from Utils.classifier.autogluon_classifier import AutogluonClassifier
+# from Utils.classifier.tabpfn_classifier import TabPFN
+# from Utils.classifier.tabicl_classifier import TabICL
+# from Utils.classifier.random_forest_classifier import RFClassifier
 from Utils.feature_selection.sequential_feature_selection import SequentialFeatureSelection
+from Utils.classifier import (MODEL_CHOICES,
+                              MODELS_NO_SCALING,
+                              _build_tree_model)
 
 import pandas as pd
 import time
@@ -32,16 +36,17 @@ from sklearn.base import clone
 from Interpretability.plotting_scripts.plotting_feature_selection import plot_cv_splits, plot_scoring_over_features
 
 
-def debugging(cv, X_analysis, y_analysis):
-    for i, (train_idx, test_idx) in enumerate(cv.split(X_analysis)):
-        X_train, X_test = X_analysis.iloc[train_idx], X_analysis.iloc[test_idx]
-        y_train, y_test = y_analysis[train_idx], y_analysis[test_idx]
-        
-        print(f"Split {i}:")
-        print(f"  X_train: {X_train.shape}, y_train: {y_train.shape}")
-        print(f"  X_test : {X_test.shape}, y_test : {y_test.shape}")
-        print("-" * 40)
-    plot_cv_splits(cv, X_analysis)  # NOTE this is for plotting the data distribution for the cv
+# TODO remove
+# def debugging(cv, X_analysis, y_analysis):
+#     for i, (train_idx, test_idx) in enumerate(cv.split(X_analysis)):
+#         X_train, X_test = X_analysis.iloc[train_idx], X_analysis.iloc[test_idx]
+#         y_train, y_test = y_analysis[train_idx], y_analysis[test_idx]
+#
+#         print(f"Split {i}:")
+#         print(f"  X_train: {X_train.shape}, y_train: {y_train.shape}")
+#         print(f"  X_test : {X_test.shape}, y_test : {y_test.shape}")
+#         print("-" * 40)
+#     plot_cv_splits(cv, X_analysis)  # NOTE this is for plotting the data distribution for the cv
 
 
 def do_sfs(clf,
@@ -74,9 +79,9 @@ def do_sfs(clf,
     """
     raise NotImplementedError
     ret_dict = {"feature_set": [], "evaluation": [], "test": []}
-    
+
     scorer = get_scorer(scoring)
-    
+
     for n_features in range(min_features, max_features + 1):
         print(f"Running SFS for {n_features} features", end="\t")
         start = time.time()
@@ -102,7 +107,7 @@ def do_sfs(clf,
             sfs = SequentialFeatureSelector(clone(clf), n_features_to_select=n_features, direction=direction,
                                             scoring=scorer, cv=cv, n_jobs=n_jobs)
             sfs.fit(X_analysis, y_analysis)
-            
+
             # recalculate scoring
             selected_features = sfs.get_support(indices=True)
             scores = cross_validate(
@@ -116,14 +121,14 @@ def do_sfs(clf,
             )
             ret_dict["feature_set"].append(sfs.get_feature_names_out())
             ret_dict["evaluation"].append(scores)
-        
+
         # get test score
         clf_fitted = clone(clf).fit(X_analysis.iloc[:, selected_features], y_analysis)
         ret_dict["test"].append(scorer(clf_fitted, X_test.iloc[:, selected_features], y_test))
-        
+
         end = time.time()
         print(f"computed for {end - start:.2f} second(s)")
-    
+
     return ret_dict
 
 
@@ -141,7 +146,7 @@ def do_sfs_plus(clf,
                 take_n_best_combinations=3,
                 can_be_parallelized=False):
     scorer = get_scorer(scoring)
-    
+
     sfs = SequentialFeatureSelection(clf,
                                      scorer,
                                      cv,
@@ -149,15 +154,15 @@ def do_sfs_plus(clf,
                                      cache_feature_tag=cache_feature_tag,
                                      can_be_parallelized=can_be_parallelized,
                                      take_n_best_combinations=take_n_best_combinations)
-    
+
     res = sfs.select_features(X_analysis, y_analysis, n_features=max_features, X_test=X_test, y_test=y_test)
-    
+
     save_frame = []
     for k, val in res.items():
         best_row = val.loc[val['mean_val_scoring'].idxmax()]
         save_frame.append(best_row)
     res = pd.DataFrame(save_frame)
-    
+
     return res
 
 
@@ -191,9 +196,9 @@ def do_rfecv(clf,
     """
     raise NotImplementedError
     ret_dict = {"feature_set": [], "evaluation": [], "test": []}
-    
+
     scorer = get_scorer(scoring)
-    
+
     for n_features in range(min_features, max_features + 1):
         print(f"Running SFS for {n_features} features", end="\t")
         start = time.time()
@@ -219,7 +224,7 @@ def do_rfecv(clf,
             rfecv = RFECV(clone(clf), min_features_to_select=n_features,
                           scoring=scorer, cv=cv, n_jobs=n_jobs)
             rfecv.fit(X_analysis, y_analysis)
-            
+
             # recalculate scoring
             selected_features = rfecv.get_support(indices=True)
             scores = cross_validate(
@@ -233,44 +238,36 @@ def do_rfecv(clf,
             )
             ret_dict["feature_set"].append(rfecv.get_feature_names_out())
             ret_dict["evaluation"].append(scores)
-        
+
         # get test score
         clf_fitted = clone(clf).fit(X_analysis.iloc[:, selected_features], y_analysis)
         ret_dict["test"].append(scorer(clf_fitted, X_test.iloc[:, selected_features], y_test))
-        
+
         end = time.time()
         print(f"computed for {end - start:.2f} second(s)")
-    
+
     return ret_dict
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
-    parser.add_argument("--config", type=dict, help="Experiment config", required=True)
+    parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
     parser.add_argument("--granularity", type=str, help="Granularity to use", required=True)
-    
+
     args = parser.parse_args()
-    
-    X_analysis, y_analysis, X_test, y_test = load_tabular_dataset_from_cache_to_DataFrame(cache_path=args.cache_path,
-                                                                                          gran=args.granularity)
-    
+
+    X_analysis, y_analysis, X_test, y_test, returns_analysis, asset_ids_analysis, returns_test, asset_ids_test, asset_map = load_tabular_dataset_from_cache_to_DataFrame(
+        cache_path=args.cache_path,
+        gran=args.granularity)
+
     # select model
-    if args.m2 == "randforest":
-        clf = RFClassifier()
-    elif args.m2 == "autogluon":
-        # clf = AutogluonClassifier(args=args)
-        raise NotImplementedError()
-    elif args.m2 == "tabpfn":
-        clf = TabPFN()
-    elif args.m2 == "tabicl":
-        clf = TabICL()
-    else:
-        raise ValueError(f"Unknown model {args.m2}")
-    
+    clf = _build_tree_model(args.m2, X_analysis.shape[0])  # TODO number of samples not used
+
+    print(f"[Feature selection] Is parallelizable: {True if args.m2 == "randforest" else False}")
     # select cross validation strategy
     if args.config["runtime"][args.phase]["cv_strategy"] == "cpcv":
         cv = CombinatorialPurgedCV(n_splits=args.config["runtime"][args.phase]["n_blocks"],
@@ -286,7 +283,7 @@ if __name__ == "__main__":
                                        random_state=42)
     else:
         raise ValueError(f"Unknown CV strategy {args.cv_strategy}")
-    
+
     if args.config["runtime"][args.phase]["method"] == "sfs":
         res = do_sfs(clf,
                      X_analysis,
@@ -308,12 +305,12 @@ if __name__ == "__main__":
                           min_features=args.config["runtime"][args.phase]["min_features"],
                           max_features=args.config["runtime"][args.phase]["max_features"],
                           cache_feature_path=f"{args.config["paths"]["output_root"]}/"
-                                             f"{args.config["experiment"]["m1"]}/"
+                                             f"{args.config["experiment"]["m1"].capitalize()}/"
+                                             f"{args.m2}/"
+                                             f"{args.direction.upper()}/"
                                              f"interpretability/"
                                              f"feature_selection/"
-                                             f"{args.m2}/"
-                                             f"direction={args.direction}/"
-                                             f"{args.granularity}/",
+                                             f"{args.granularity}_{args.config["data"]["load"]["meta_label_mode"]}/",
                           cache_feature_tag=f"{args.config["runtime"][args.phase]["scoring"]}_{cv.name}_{args.config["runtime"][args.phase]["n_blocks"]}",
                           take_n_best_combinations=args.config["runtime"][args.phase]["take_n_best_combinations"],
                           can_be_parallelized=True if args.m2 == "randforest" else False)
@@ -329,15 +326,15 @@ if __name__ == "__main__":
                        max_features=args.config["runtime"][args.phase]["max_features"])
     else:
         raise ValueError(f"Unknown strategy {args.strategy}")
-    
+
     save_dir_path = f"{args.config["paths"]["output_root"]}/" \
-                    f"{args.config["experiment"]["m1"]}/" \
+                    f"{args.config["experiment"]["m1"].capitalize()}/" \
+                    f"{args.m2}/" \
+                    f"{args.direction.upper()}/" \
                     f"interpretability/" \
                     f"feature_selection/" \
-                    f"{args.m2}/" \
-                    f"direction={args.direction}/" \
-                    f"{args.granularity}/"
-    
+                    f"{args.granularity}_{args.config["data"]["load"]["meta_label_mode"]}/"
+
     os.makedirs(save_dir_path, exist_ok=True)
     res.to_csv(os.path.join(save_dir_path,
                             f"strategy={args.config["runtime"][args.phase]["method"]}_scoring={args.config["runtime"][args.phase]["scoring"]}_n_splits={args.config["runtime"][args.phase]["n_blocks"]}_min_max={args.config["runtime"][args.phase]["min_features"]}_{args.config["runtime"][args.phase]["max_features"]}.csv"),

@@ -33,17 +33,15 @@ def _load_raw_close_prices(config: dict, granularity: str, direction: str) -> pd
     """Load raw close prices from CSVs for Buy & Hold calculation."""
     # ┏━━━━━━━━━━ Load Config Data ━━━━━━━━━━┓
     meta_mode = config['data']['load']['meta_label_mode']
-    csv_direction = direction
-    csv_dir = config['paths']['csv_dir']
-    gran_dir = csv_dir / f"{granularity}_{meta_mode}"
+    gran_dir = Path(config['paths']['csv_dir']) / f"{granularity}_{meta_mode}"
     if not gran_dir.exists():
         print(f"  [backtest] WARNING: {gran_dir} not found, skipping B&H curve")
         return pd.DataFrame()
 
     # ┏━━━━━━━━━━ Load CSVs ━━━━━━━━━━┓
     dfs = []
-    for f in sorted(gran_dir.glob(f"*_{csv_direction}.csv")):
-        asset = f.stem.replace(f"_{csv_direction}", "")
+    for f in sorted(gran_dir.glob(f"*_{direction}.csv")):
+        asset = f.stem.replace(f"_{direction}", "")
         df = pd.read_csv(f, usecols=["date", "close"])
         df["asset"] = asset
         dfs.append(df)
@@ -161,27 +159,27 @@ def run_feature_backtest(dataset,
     threshold   = val_op["threshold"]
     
     # ┏━━━━━━━━━━ Load Engineered Features ━━━━━━━━━━┓
-    eng = dataset["eng_features"]
+    eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
     if isinstance(eng, torch.Tensor):
         eng = eng.numpy()
     
     # ┏━━━━━━━━━━ Load Labels ━━━━━━━━━━┓
-    labels_all = dataset["labels"]
+    labels_all = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
     if isinstance(labels_all, torch.Tensor):
         labels_all = labels_all.numpy()
     
     # ┏━━━━━━━━━━ Load Returns ━━━━━━━━━━┓
-    returns_all = dataset["returns"]
+    returns_all = dataset["returns"] if isinstance(dataset, dict) else dataset.returns
     if isinstance(returns_all, torch.Tensor):
         returns_all = returns_all.numpy()
     
     # ┏━━━━━━━━━━ Load Asset IDs ━━━━━━━━━━┓
-    asset_ids_all = dataset["asset_ids"]
+    asset_ids_all = dataset["asset_ids"] if isinstance(dataset, dict) else dataset.asset_ids
     if isinstance(asset_ids_all, torch.Tensor):
         asset_ids_all = asset_ids_all.numpy()
     
     # ┏━━━━━━━━━━ Load Asset Map ━━━━━━━━━━┓
-    asset_map = dataset.get("asset_map", {})
+    asset_map = dataset.get("asset_map", {}) if isinstance(dataset, dict) else dataset.asset_map
     if not isinstance(asset_map, dict) and hasattr(dataset, "asset_map"):
         asset_map = dataset.asset_map
 
@@ -190,7 +188,7 @@ def run_feature_backtest(dataset,
     y_test = labels_all[idx_test].astype(int)
     test_returns = returns_all[idx_test].copy()
     test_asset_ids = asset_ids_all[idx_test]
-    test_dates_raw = [dataset["dates"][i] for i in idx_test]
+    test_dates_raw = [dataset["dates"][i] for i in idx_test] if isinstance(dataset, dict) else [dataset.dates[i] for i in idx_test]
     test_assets = [asset_map.get(int(aid), str(aid)) for aid in test_asset_ids]
 
     # ┏━━━━━━━━━━ Scale Test Features (skip for models that need raw data) ━━━━━━━━━━┓
