@@ -107,8 +107,15 @@ def _build_edge_model(model_key: str,
     # ┏━━━━━━━━━━ Override seed for reproducibility / seed-trial variance measurement ━━━━━━━━━━┓
     if hasattr(model, "random_state"):
         model.random_state = seed
+    
+    # ┏━━━━━━━━━━ Propagate seed to internal sklearn/xgb classifier (already constructed) ━━━━━━━━━━┓
+    if hasattr(model, "_clf") and hasattr(model._clf, "random_state"):
+        model._clf.random_state = seed
+    
     # ┏━━━━━━━━━━ RF also needs oob_score for CPCV threshold estimation ━━━━━━━━━━┓
     if model_key == "rf":
+        if hasattr(model, "_clf"):
+            model._clf.oob_score = True
         model.oob_score = True
     return model
 

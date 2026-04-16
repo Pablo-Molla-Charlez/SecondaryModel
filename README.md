@@ -458,7 +458,7 @@ Each M1 has its own config file with the correct `csv_dir` and `m1:` field:
 
 | M1 model | Config file |
 | --- | --- |
-| Kronos | `config.yaml` |
+| Kronos | `config_kronos.yaml` |
 | Fincast | `config_fincast.yaml` |
 | Chronos2 | `config_chronos2.yaml` |
 | Tirex | `config_tirex.yaml` |
