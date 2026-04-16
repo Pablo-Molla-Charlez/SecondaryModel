@@ -1,5 +1,6 @@
 from typing import Optional, Iterator, Tuple, Any
 import os
+import warnings
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
@@ -7,7 +8,7 @@ import warnings
 from joblib import Parallel, delayed
 from sklearn.metrics import confusion_matrix
 
-from Utils.feature_selection._feature_selection import (FeatureSelection)
+from Utils.feature_selection._feature_selection import FeatureSelection
 
 
 class SequentialFeatureSelection(FeatureSelection):
@@ -15,33 +16,36 @@ class SequentialFeatureSelection(FeatureSelection):
     def __init__(self, clf, scoring, cross_validation_strategy, **kwargs):
         super().__init__(clf, scoring, cross_validation_strategy, **kwargs)
 
+        # ┏━━━━━━━━━━ Cache settings ━━━━━━━━━━┓
         self.cache_path = kwargs.get("cache_path", None)
         self.cache_name = kwargs.get("cache_name", None)
 
+        # ┏━━━━━━━━━━ Search settings ━━━━━━━━━━┓
         self.take_n_best_combinations = kwargs.get("take_n_best_combinations", 3)
-        self.can_be_parallelized = kwargs.get("can_be_parallelized", False)
+        self.can_be_parallelized      = kwargs.get("can_be_parallelized", False)
 
-    def select_features(
-            self,
-            X: pd.DataFrame,
-            y: np.ndarray,
-            n_features: int,
-            X_test: Optional[pd.DataFrame] = None,
-            y_test: Optional[np.ndarray] = None,
-            **kwargs
-    ) -> pd.DataFrame:
+    # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
+    def select_features(self,
+                        X: pd.DataFrame,
+                        y: np.ndarray,
+                        n_features: int,
+                        X_test: Optional[pd.DataFrame] = None,
+                        y_test: Optional[np.ndarray] = None,
+                        **kwargs) -> pd.DataFrame:
 
-        res_dict = {}
-        feature_list = list(X.columns)
-
+        # ┏━━━━━━━━━━ Initialise state ━━━━━━━━━━┓
+        res_dict      = {}
+        feature_list  = list(X.columns)
         done_combinations = set()
 
-        for k_features in range(1, n_features + 1):  # features evaluation loops
+        # ┏━━━━━━━━━━ Outer loop — grow the selected set one feature at a time ━━━━━━━━━━┓
+        for k_features in range(1, n_features + 1):
             print(f"running {k_features} features")
-            check_for_evaluations_done = False  # used for checking that we have any evaluations
+            check_for_evaluations_done = False
             tmp_res = []
-            if k_features == 1:  # initial state
-                # evaluate each feature
+
+            # ┏━━━━━━━━━━ k=1: evaluate every individual feature ━━━━━━━━━━┓
+            if k_features == 1:
                 if self.can_be_parallelized:
                     tmp_res = Parallel(n_jobs=-1)(
                         delayed(self._evaluate_feature)(feat, X, y, X_test, y_test)
@@ -70,21 +74,26 @@ class SequentialFeatureSelection(FeatureSelection):
                              "test_tn": [int(cm["tn"]) for cm in cm_test] if cm_test is not None else np.nan,
                              "test_fn": [int(cm["fn"]) for cm in cm_test] if cm_test is not None else np.nan}
                         )
+                        
                 check_for_evaluations_done = True
-            else:  # we have a previous state
+
+            # ┏━━━━━━━━━━ k>1: extend the top-N sets from the previous round ━━━━━━━━━━┓
+            else:
                 if self.can_be_parallelized:
+                    # ┏━━━━━━━━━━ Build task list, skipping already-seen combinations ━━━━━━━━━━┓
                     tasks = []
                     for feature_set in res_dict[f"{k_features - 1}_features"]["features_selected"].iloc[
-                        0:self.take_n_best_combinations]:
+                            0:self.take_n_best_combinations]:
                         for feat in [f for f in feature_list if f not in feature_set]:
-                            tmp_feature_list = [f for sublist in feature_set + [feat] for f in
-                                                (sublist if isinstance(sublist, list) else [sublist])]
+                            tmp_feature_list = [f for sublist in feature_set + [feat]
+                                                for f in (sublist if isinstance(sublist, list) else [sublist])]
                             if tuple(sorted(tmp_feature_list)) in done_combinations:
                                 continue
                             done_combinations.add(tuple(sorted(tmp_feature_list)))
                             check_for_evaluations_done = True
                             tasks.append((feature_set, feat))
 
+                    # ┏━━━━━━━━━━ Dispatch tasks in parallel ━━━━━━━━━━┓
                     if tasks:
                         tmp_res = Parallel(n_jobs=-1)(
                             delayed(self._evaluate_feature_set)(feature_set, feat, X, y, X_test, y_test)
@@ -92,13 +101,13 @@ class SequentialFeatureSelection(FeatureSelection):
                         )
                 else:
                     for feature_set in res_dict[f"{k_features - 1}_features"]["features_selected"].iloc[
-                        0:self.take_n_best_combinations]:
-                        # feature_set = feature_set
+                            0:self.take_n_best_combinations]:
                         for feat in [f for f in feature_list if f not in feature_set]:
                             print(f"{k_features}: {feature_set} -> {feat}")
-                            # ensure that we check each combination once only
-                            tmp_feature_list = [f for sublist in feature_set + [feat] for f in
-                                                (sublist if isinstance(sublist, list) else [sublist])]
+
+                            # ┏━━━━━━━━━━ Flatten nested feature lists and deduplicate ━━━━━━━━━━┓
+                            tmp_feature_list = [f for sublist in feature_set + [feat]
+                                                for f in (sublist if isinstance(sublist, list) else [sublist])]
                             if tuple(sorted(tmp_feature_list)) in done_combinations:
                                 continue
                             done_combinations.add(tuple(sorted(tmp_feature_list)))
@@ -123,20 +132,30 @@ class SequentialFeatureSelection(FeatureSelection):
                                  "test_tn": [int(cm["tn"]) for cm in cm_test] if cm_test is not None else np.nan,
                                  "test_fn": [int(cm["fn"]) for cm in cm_test] if cm_test is not None else np.nan}
                             )
+                            tmp_res.append({
+                                "features_selected":  tmp_feature_list,
+                                "mean_val_scoring":   np.mean(scores_val),
+                                "std_val_scoring":    np.std(scores_val),
+                                "val_scoring":        scores_val,
+                                "mean_test_scoring":  np.nanmean(scores_test) if scores_test is not None else np.nan,
+                                "std_test_scoring":   np.nanstd(scores_test)  if scores_test is not None else np.nan,
+                                "test_scoring":       scores_test             if scores_test is not None else np.nan,
+                            })
                             check_for_evaluations_done = True
+
+            # ┏━━━━━━━━━━ Sort results and optionally cache to CSV ━━━━━━━━━━┓
             if check_for_evaluations_done:
                 tmp_res = pd.DataFrame(tmp_res).sort_values("mean_val_scoring", ascending=False)
-                # cache results
                 if self.cache_path is not None:
                     os.makedirs(self.cache_path, exist_ok=True)
-                    tmp_res.to_csv(f"{self.cache_path}/{k_features}_features_{self.cache_name}_cached.csv", index=False)
+                    tmp_res.to_csv(
+                        f"{self.cache_path}/{k_features}_features_{self.cache_name}_cached.csv",
+                        index=False,
+                    )
                 res_dict[f"{k_features}_features"] = tmp_res
             else:
-                warnings.warn("No more subsests to check ending feature selection")
-                # n_features = k_features - 1
+                warnings.warn("No more subsets to check — ending feature selection")
                 break
-        # make last entry to pd.Dataframe
-        return res_dict  # [f"{n_features}_features"]
 
     def _evaluate(self, X, y, X_test, y_test) -> tuple[list[Any], list[Any] | None, list[Any], list[Any] | None]:
         split_scoring = []
@@ -165,6 +184,7 @@ class SequentialFeatureSelection(FeatureSelection):
 
         return split_scoring, split_scoring_test, split_cm_val, split_cm_test
 
+    # ┏━━━━━━━━━━ Evaluate Single Feature (parallel helper) ━━━━━━━━━━┓
     def _evaluate_feature(self, feat, X, y, X_test, y_test):
         scores_val, scores_test, cm_val, cm_test = self._evaluate(pd.DataFrame(X[feat]), y, pd.DataFrame(X_test[feat]),
                                                                   y_test)
@@ -184,6 +204,7 @@ class SequentialFeatureSelection(FeatureSelection):
                 "test_tn": [int(cm["tn"]) for cm in cm_test] if cm_test is not None else np.nan,
                 "test_fn": [int(cm["fn"]) for cm in cm_test] if cm_test is not None else np.nan}
 
+    # ┏━━━━━━━━━━ Evaluate Feature Set Extension (parallel helper) ━━━━━━━━━━┓
     def _evaluate_feature_set(self, feature_set, feat, X, y, X_test, y_test):
         tmp_feature_list = [f for sublist in feature_set + [feat] for f in
                             (sublist if isinstance(sublist, list) else [sublist])]

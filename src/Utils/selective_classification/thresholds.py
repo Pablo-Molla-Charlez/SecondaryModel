@@ -66,42 +66,107 @@ def collect_risk_coverage_curve(y_true,
     return curve
 
 
-# ┏━━━━━━━━━━ Find Best Utility Threshold ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ Threshold Cascade (v2) ━━━━━━━━━━┓
+# Stages (each fires only if all previous stages found nothing):
+#   A. Utility-Opt        — strict: cov ≥ cov_min, mu > 0, precision ≥ baseline, t_reg ≥ t_min
+#                           objective: t_reg * quadratic coverage penalty anchored at cov_star
+#   B. Precision-Coverage — relaxes t_min and cov_min but keeps mu > 0; maximizes
+#                           precision × coverage (expected-hit rate) with a precision floor.
+#                           Skipped entirely when no threshold in [0.5, 0.9] has mu > 0.
+#   C. Risk-Fallback      — no return requirement; minimizes error rate + coverage penalty.
+#                           Skipped if every threshold in [0.5, 0.9] has n < min_trades.
+#   D. Baseline           — last resort: τ = 0.50, no constraints.
+#   E. Baseline-Override  — post-selection guard (runs after any of A–D): if the τ=0.50
+#                           baseline is ≥ baseline_override_cov_ratio × wider AND at
+#                           least as precise as the chosen pick, override with the baseline.
+#                           Not applied when the chosen stage is already Baseline.
 def _find_best_utility_threshold(probs: np.ndarray,
                                  returns: np.ndarray,
                                  fee: float = 0.0,
                                  n_prior: int = 50,
-                                 labels: np.ndarray = None) -> dict:
-    """Pick the validation threshold that maximizes a regularized utility score.
-    Selection must beat the argmax (thr=0.50) baseline on precision when labels
-    are provided, otherwise the optimizer refuses to commit and abstains.
+                                 labels: np.ndarray = None,
+                                 cov_min: float = 0.05,
+                                 cov_star: float = 0.15,
+                                 t_min: float = 1.0,
+                                 baseline_override_cov_ratio: float = 10.0) -> dict:
+    """Pick a validation threshold via a five-stage cascade (see module docstring).
 
-    TO BE IMPROVED/STUDIED IN DETAIL.
+    Parameters
+    ----------
+    probs, returns, labels
+        Calibrated scores, per-sample net-of-fee returns, binary labels.
+    fee
+        Round-trip fee subtracted from returns during utility scoring.
+    n_prior
+        Shrinkage prior for the regularized variance used in the t-stat.
+    cov_min
+        Hard coverage floor for Stage A. No Stage-A pick may cover less than this.
+    cov_star
+        Coverage anchor at which the Stage-A penalty becomes zero (sweet spot).
+    t_min
+        Minimum regularized t-stat required for Stage A.
+    baseline_override_cov_ratio
+        Stage E triggers when the raw τ=0.50 baseline has precision ≥ op.precision
+        AND coverage ≥ this ratio x op.coverage.
     """
     # ┏━━━━━━━━━━ Format Change ━━━━━━━━━━┓
     probs = np.asarray(probs, dtype=float)
     returns = np.asarray(returns, dtype=float)
     N_total = len(probs)
-    min_trades = max(50, int(0.005 * N_total))
+    min_trades = max(50, int(cov_min * N_total))
 
-    # ┏━━━━━━━━━━ Base Variance ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Base Variance (for shrinkage) ━━━━━━━━━━┓
     all_net = returns[probs >= 0.50] - fee
     base_var = float(np.nanvar(all_net, ddof=1)) if len(all_net) > 1 else 1.0
     if base_var <= 0:
         base_var = 1.0
 
-    # ┏━━━━━━━━━━ Precision Floor ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Baseline (τ=0.50) Precision & Coverage ━━━━━━━━━━┓
+    baseline_thr = 0.50
     if labels is not None:
         labels = np.asarray(labels).astype(int)
         sel_argmax = probs >= 0.50
         n_argmax = int(sel_argmax.sum())
         prec_argmax = float(labels[sel_argmax].mean()) if n_argmax > 0 else 0.0
+        cov_argmax = n_argmax / N_total if N_total > 0 else 0.0
     else:
         prec_argmax = 0.0
+        cov_argmax = 0.0
+        n_argmax = 0
+
+    # ┏━━━━━━━━━━ Helper: build op dict from a threshold ━━━━━━━━━━┓
+    def _op_from_threshold(thr: float, source: str, constraint: bool, utility_val: float = 0.0):
+        sel = probs >= thr
+        n = int(sel.sum())
+        if n == 0:
+            return {"threshold":            float(thr),
+                    "utility":              float(utility_val),
+                    "coverage":             0.0,
+                    "selected_count":       0,
+                    "constraint_satisfied": constraint,
+                    "threshold_source":     source,
+                    "mean_ret":             0.0,
+                    "t_stat":               0.0,
+                    "precision":            0.0}
+        net = returns[sel] - fee
+        mu = float(np.nanmean(net))
+        sample_var = float(np.nanvar(net, ddof=1)) if n > 1 else base_var
+        shrinkage = n_prior / (n + n_prior)
+        reg_var = (1 - shrinkage) * sample_var + shrinkage * base_var
+        reg_std = np.sqrt(max(reg_var, 1e-12))
+        t_val = mu / reg_std * np.sqrt(n) if reg_std > 0 else 0.0
+        prec = float(labels[sel].mean()) if labels is not None else float("nan")
+        return {"threshold":            float(thr),
+                "utility":              float(utility_val),
+                "coverage":             n / N_total,
+                "selected_count":       n,
+                "constraint_satisfied": constraint,
+                "threshold_source":     source,
+                "mean_ret":             mu,
+                "t_stat":               float(t_val),
+                "precision":            prec}
 
     # ┏━━━━━━━━━━ Grid Initialization ━━━━━━━━━━┓
-    # Start the grid above the median of the positive-side probs so we actually
-    # explore the discriminative regime instead of trivially re-selecting all.
     pos_probs = probs[probs >= 0.50]
     if pos_probs.size >= max(min_trades * 2, 20):
         grid_lo = float(np.median(pos_probs))
@@ -110,19 +175,16 @@ def _find_best_utility_threshold(probs: np.ndarray,
         grid_lo = 0.50
     thr_grid = np.linspace(grid_lo, 0.95, 200)
 
-    best = {"threshold": 0.50,
-            "utility": -np.inf,
-            "coverage": 1.0,
-            "selected_count": len(probs),
-            "constraint_satisfied": True,
-            "mean_ret": 0.0,
-            "t_stat": 0.0}
+    best = {"threshold": 0.50, "utility": -np.inf}
 
-    # ┏━━━━━━━━━━ Iterate through thresholds ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Stage A — Utility-Opt (strict) ━━━━━━━━━━┓
     for thr in thr_grid:
         sel = probs >= thr
         n = int(sel.sum())
         if n < min_trades:
+            continue
+        cov = n / N_total
+        if cov < cov_min:
             continue
         net_rets = returns[sel] - fee
         mu = float(np.nanmean(net_rets))
@@ -139,31 +201,74 @@ def _find_best_utility_threshold(probs: np.ndarray,
         if reg_std <= 0:
             continue
         t_reg = mu / reg_std * np.sqrt(n)
+        if t_reg < t_min:
+            continue
 
-        # ┏━━━━━━━━━━ Concave Penalty on High Coverage ━━━━━━━━━━┓
-        cov = n / N_total
-        cov_pen = (1.0 - cov) ** 0.5
-        utility = t_reg * cov_pen
+        # ┏━━━━━━━━━━ Sweet-spot Coverage Penalty ━━━━━━━━━━┓
+        # Full reward at or above cov_star; strong quadratic penalty below it.
+        if cov >= cov_star:
+            cov_factor = 1.0
+        else:
+            cov_factor = (cov / cov_star) ** 2
+        utility = t_reg * cov_factor
+
         if utility > best["utility"]:
             best = {"threshold": float(thr),
                     "utility": float(utility),
                     "coverage": cov,
                     "selected_count": n,
                     "constraint_satisfied": True,
+                    "threshold_source": "Utility-Opt",
                     "mean_ret": mu,
-                    "t_stat": float(t_reg)}
+                    "t_stat": float(t_reg),
+                    "precision": float(labels[sel].mean()) if labels is not None else float("nan")}
 
-    # ┏━━━━━━━━━━ If no threshold found, find one that satisfies constraint ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Stage B — Precision-Coverage Pareto ━━━━━━━━━━┓
+    # Stage A already required mu > 0 AND t_reg ≥ t_min AND cov ≥ cov_min AND
+    # precision ≥ baseline. Stage B relaxes t_min and cov_min but keeps mu > 0
+    # — positive return must exist somewhere, just with insufficient statistical
+    # power to satisfy Stage A. When the whole [0.5, 0.9] space has mu ≤ 0,
+    # Stage B finds nothing and we fall through to Stage C (Risk-Fallback).
+    if best["utility"] == -np.inf and labels is not None:
+        slack = 0.02
+        prec_floor = max(0.0, prec_argmax - slack)
+        floor_B = max(min_trades, int(0.10 * N_total))
+        best_B = {"score": -np.inf}
+        for thr in np.linspace(0.50, 0.90, 200):
+            sel = probs >= thr
+            n = int(sel.sum())
+            if n < floor_B:
+                continue
+            if float(np.nanmean(returns[sel] - fee)) <= 0:
+                continue
+            prec = float(labels[sel].mean())
+            if prec < prec_floor:
+                continue
+            cov = n / N_total
+            score = prec * cov  # expected-hit rate
+            if score > best_B["score"]:
+                best_B = {"score": score, "thr": float(thr)}
+        if best_B["score"] != -np.inf:
+            op = _op_from_threshold(best_B["thr"],
+                                    source="Precision-Coverage",
+                                    constraint=False,
+                                    utility_val=0.0)
+            best = {**op, "utility": 0.0}
+
+    # ┏━━━━━━━━━━ Stage C — Risk-Fallback ━━━━━━━━━━┓
     if best["utility"] == -np.inf:
         cov_penalty = 0.10
         sel_base = probs >= 0.50
         cov_base = max(int(sel_base.sum()) / N_total, 1e-9)
 
         best_score = np.inf
+        best_C = None
         for thr in np.linspace(0.50, 0.90, 200):
             sel = probs >= thr
             n = int(sel.sum())
             if n < min_trades:
+                continue
+            if float(np.nanmean(returns[sel] - fee)) <= 0:
                 continue
             n_err = int((returns[sel] < fee).sum())
             risk = n_err / n
@@ -171,33 +276,40 @@ def _find_best_utility_threshold(probs: np.ndarray,
             score = risk + cov_penalty * (1 - cov / cov_base)
             if score < best_score:
                 best_score = score
-                net_rets = returns[sel] - fee
-                mu = float(np.nanmean(net_rets))
-                sample_var = float(np.nanvar(net_rets, ddof=1))
-                shrinkage = n_prior / (n + n_prior)
-                reg_var = (1 - shrinkage) * sample_var + shrinkage * base_var
-                reg_std = np.sqrt(max(reg_var, 1e-12))
-                t_val = mu / reg_std * np.sqrt(n)
-                best = {"threshold":            float(thr),
-                        "utility":              0.0,
-                        "coverage":             cov,
-                        "selected_count":       n,
-                        "constraint_satisfied": False,
-                        "threshold_source":     "risk-fallback",
-                        "mean_ret":             mu,
-                        "t_stat":               float(t_val)}
+                best_C = float(thr)
+        if best_C is not None:
+            op = _op_from_threshold(best_C,
+                                    source="Risk-Fallback",
+                                    constraint=False,
+                                    utility_val=0.0)
+            best = {**op, "utility": 0.0}
 
-        if best["utility"] == -np.inf:
-            sel_50 = probs >= 0.50
-            n_50 = int(sel_50.sum())
-            net_50 = returns[sel_50] - fee if n_50 > 0 else np.array([0.0])
-            best = {"threshold":            0.50,
-                    "utility":              0.0,
-                    "coverage":             n_50 / N_total if N_total > 0 else 0.0,
-                    "selected_count":       n_50,
-                    "constraint_satisfied": False,
-                    "mean_ret":             float(np.nanmean(net_50)),
-                    "t_stat":               0.0}
+    # ┏━━━━━━━━━━ Stage D — Baseline (data-anchored) ━━━━━━━━━━┓
+    if best["utility"] == -np.inf:
+        op = _op_from_threshold(baseline_thr,
+                                source="Baseline",
+                                constraint=False,
+                                utility_val=0.0)
+        best = {**op, "utility": 0.0}
+
+    # ┏━━━━━━━━━━ Stage E — Baseline-Override Guard ━━━━━━━━━━┓
+    # If the raw τ=0.50 baseline has precision ≥ op.precision AND coverage much
+    # wider than op.coverage, replace op with the baseline. Prevents narrow
+    # fluke-tail picks from beating a solid wide edge.
+    if labels is not None and n_argmax > 0 and best["threshold_source"] != "Baseline":
+        op_cov = best.get("coverage", 0.0)
+        op_prec = best.get("precision", 0.0)
+        if op_prec != op_prec:  # NaN guard
+            op_prec = 0.0
+        triggers = (op_cov > 0
+                    and cov_argmax >= baseline_override_cov_ratio * op_cov
+                    and prec_argmax >= op_prec)
+        if triggers:
+            op = _op_from_threshold(baseline_thr,
+                                    source="Baseline-Override",
+                                    constraint=False,
+                                    utility_val=0.0)
+            best = {**op, "utility": 0.0}
 
     return best
 

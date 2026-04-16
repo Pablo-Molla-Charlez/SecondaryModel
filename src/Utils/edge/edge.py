@@ -22,15 +22,8 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from matplotlib.patches import Patch
-from matplotlib.lines import Line2D
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
 
 _SRC = Path(__file__).resolve().parent.parent.parent
 if str(_SRC) not in sys.path:
@@ -43,7 +36,7 @@ from Utils.data import resolve_feature_names
 from Utils.selective_classification import _find_best_utility_threshold, calibrate_probabilities
 
 # ┏━━━━━━━━━━ Imports from Models ━━━━━━━━━━┓
-from Utils.classifier import _build_tree_model, MODEL_CHOICES, MODELS_NO_SCALING
+from Utils.classifier import _build_tree_model, MODELS_NO_SCALING
 
 # ┏━━━━━━━━━━ Imports from Backtest ━━━━━━━━━━┓
 from Utils.backtest import (_annualization_factor,
@@ -62,6 +55,15 @@ from Utils.utils import (_load_config,
                          m1_output_bucket,
                          m1_display_label)
 
+# ┏━━━━━━━━━━ Imports from TS Cross-Validation ━━━━━━━━━━┓
+from Utils.ts_cross_validation import (_gran_to_timedelta,
+                                       _build_datetime_blocks,
+                                       _assign_blocks,
+                                       _generate_cpcv_splits,
+                                       _reconstruct_paths,
+                                       compute_embargo_splits as _compute_embargo_splits,
+                                       CAL_SPLIT_RATIO)
+
 from Utils.edge.plots import (_plot_split_matrix,
                               _plot_path_boxplots,
                               _plot_cross_gran_cpcv)
@@ -70,14 +72,12 @@ from Utils.edge.plots import (_plot_split_matrix,
 EDGE_SEED = 42
 
 # ┏━━━━━━━━━━ Calibration split ratios ━━━━━━━━━━┓
-# [XGBoost, TabpPFN or others] 
-# First 40% of Val (Calibration Set ~ Val-Cal)
-# Last 60% (Threshold Optimization Set ~ Val-Opt)
-CAL_SPLIT_RATIO = 0.40
-
-# [Random Forest] 
-# First 40% of OOB Train (Calibration Set ~ Val-Cal)
-# Last 60% (Threshold Optimization Set ~ Val-Opt) (CPCV only)
+# [XGBoost, TabpPFN or others]
+# First CAL_SPLIT_RATIO of Val (Calibration Set ~ Val-Cal) — imported from ts_cross_validation.
+# Remainder = Val-Opt (Threshold Optimization Set).
+#
+# [Random Forest]
+# First CPCV_OOB_CAL_RATIO of OOB Train = Val-Cal; remainder = Val-Opt (CPCV only).
 CPCV_OOB_CAL_RATIO = 0.40
 
 # ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
@@ -165,6 +165,8 @@ def _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularit
             "cal_end":   t_cal_end,
             "purge_td":  purge_td}
 
+if __name__ == "__main__":
+    main()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -568,116 +570,10 @@ def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_na
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ██████  MODE: CPCV  ██████
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# ┏━━━━━━━━━━ Helper to convert granularity to timedelta ━━━━━━━━━━┓
-def _gran_to_timedelta(granularity: str) -> pd.Timedelta:
-    if granularity.endswith("m"):
-        return pd.Timedelta(minutes=int(granularity[:-1]))
-    elif granularity.endswith("h"):
-        return pd.Timedelta(hours=int(granularity[:-1]))
-    elif granularity.endswith("d"):
-        return pd.Timedelta(days=int(granularity[:-1]))
-    return pd.Timedelta(days=1)
-
-
-# ┏━━━━━━━━━━ Helper to build datetime blocks ━━━━━━━━━━┓
-def _build_datetime_blocks(dates: list, n_blocks: int) -> list:
-    """Divide dates into n_blocks by datetime boundaries (not row count)."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    ts_sorted = sorted(set(dates))
-    t_min, t_max = ts_sorted[0], ts_sorted[-1]
-    block_duration = (t_max - t_min) / n_blocks
-
-    # ┏━━━━━━━━━━ Create blocks ━━━━━━━━━━┓
-    return [(t_min + b * block_duration, t_min + (b + 1) * block_duration)
-            for b in range(n_blocks)]
-
-
-# ┏━━━━━━━━━━ Helper to assign blocks ━━━━━━━━━━┓
-def _assign_blocks(dates_arr, boundaries: list) -> np.ndarray:
-    """Assign each index to a block number based on its datetime."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    n = len(dates_arr)
-    n_blocks = len(boundaries)
-    block_ids = np.full(n, -1, dtype=int)
-    
-    # ┏━━━━━━━━━━ Assign blocks ━━━━━━━━━━┓
-    for i in range(n):
-        t = dates_arr[i]
-        for b in range(n_blocks):
-            b_start, b_end = boundaries[b]
-            if b == n_blocks - 1:
-                if b_start <= t <= b_end:
-                    block_ids[i] = b; break
-            else:
-                if b_start <= t < b_end:
-                    block_ids[i] = b; break
-    return block_ids
-
-
-# ┏━━━━━━━━━━ Helper to generate CPCV splits ━━━━━━━━━━┓
-def _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_arr,
-                          purge_td, boundaries):
-    """Generate all C(n_blocks, k_test) train/test splits with purge+embargo."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    splits = []
-    
-    # ┏━━━━━━━━━━ Generate splits ━━━━━━━━━━┓
-    for test_blocks in combinations(range(n_blocks), k_test):
-        # ┏━━━━━━━━━━ Create test and train sets ━━━━━━━━━━┓
-        test_set = set(test_blocks)
-        train_blocks = [b for b in range(n_blocks) if b not in test_set]
-
-        # ┏━━━━━━━━━━ Get indices for test and train sets ━━━━━━━━━━┓
-        idx_test = np.where(np.isin(block_ids, list(test_blocks)))[0]
-        idx_train_raw = np.where(np.isin(block_ids, train_blocks))[0]
-        if len(idx_test) == 0 or len(idx_train_raw) == 0:
-            continue
-
-        # ┏━━━━━━━━━━ Purge training samples near test boundaries ━━━━━━━━━━┓
-        test_boundaries = [boundaries[tb] for tb in test_blocks]
-        purged_mask = np.zeros(len(dates_arr), dtype=bool)
-        for tb_start, tb_end in test_boundaries:
-            for i in idx_train_raw:
-                t = dates_arr[i]
-                if (tb_start - purge_td) <= t < tb_start:
-                    purged_mask[i] = True
-                elif tb_end < t <= (tb_end + purge_td):
-                    purged_mask[i] = True
-
-        # ┏━━━━━━━━━━ Get indices for purged and train sets ━━━━━━━━━━┓
-        idx_purged = np.where(purged_mask)[0]
-        idx_train = np.array([i for i in idx_train_raw if not purged_mask[i]])
-
-        # ┏━━━━━━━━━━ Append split to list ━━━━━━━━━━┓
-        splits.append({"test_blocks": test_blocks, 
-                       "idx_train": idx_train, 
-                       "idx_test": idx_test, 
-                       "idx_purged": idx_purged})
-    return splits
-
-
-# ┏━━━━━━━━━━ Helper to reconstruct paths ━━━━━━━━━━┓
-def _reconstruct_paths(splits, n_blocks, k_test):
-    """Reconstruct C(N-1, k-1) chronological paths from CPCV splits."""
-    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
-    n_paths = math.comb(n_blocks - 1, k_test - 1)
-    block_to_splits = {b: [] for b in range(n_blocks)}
-    
-    # ┏━━━━━━━━━━ Map each block to the splits that test it ━━━━━━━━━━┓
-    for si, sp in enumerate(splits):
-        for b in sp["test_blocks"]:
-            block_to_splits[b].append(si)
-
-    # ┏━━━━━━━━━━ Create paths by picking the p-th split for every block ━━━━━━━━━━┓
-    paths = []
-    for p in range(n_paths):
-        path_entries = []
-        for b in range(n_blocks):
-            split_idx = block_to_splits[b][p]
-            path_entries.append({"block": b, "split_idx": split_idx})
-        paths.append(path_entries)
-    return paths
+# Block/path/purge helpers (_gran_to_timedelta, _build_datetime_blocks,
+# _assign_blocks, _generate_cpcv_splits, _reconstruct_paths) are imported
+# from Utils.ts_cross_validation at the top of this module — single source
+# of truth shared with the CombinatorialPurgedCV class.
 
 
 # ┏━━━━━━━━━━ Helper to run CPCV split (with & without OOB-calibrated threshold) ━━━━━━━━━━┓
@@ -1313,8 +1209,11 @@ def main():
         run_cpcv_analysis(cache_path, cfg, n_blocks=args.n_blocks,
                           k_test=args.k_test, output_root=output_root, model_name=args.model)
 
-if __name__ == "__main__":
-    main()
-
-# Back-import plot functions so topic-level code can call them.
-from .plots import *  # noqa: E402,F401,F403
+from .plots import (
+    _plot_edge_curves,
+    _plot_summary_boxplots,
+    _plot_cross_gran_seeds,
+    _plot_split_matrix,
+    _plot_path_boxplots,
+    _plot_cross_gran_cpcv,
+)

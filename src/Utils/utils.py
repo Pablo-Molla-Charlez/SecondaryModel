@@ -6,9 +6,8 @@ import torch
 import yaml
 import hashlib
 import numpy as np
-import pandas as pd
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from Utils.data import (load_dataset_from_config,
                         prepare_multi_gran_dataset,
                         prepare_multi_asset_dataset,
@@ -110,12 +109,8 @@ def _expand_env_vars(obj):
 
 def _load_config(cfg_path: str = "config.yaml") -> dict:
     import os
-    import yaml
 
     # ┏━━━━━━━━━━ Determine M1 contexts BEFORE expansion ━━━━━━━━━━┓
-    # Set global defaults if not provided in env
-    os.environ.setdefault("M1_MODEL", "kronos")
-
     # If M1_MODEL is provided in env, make sure M1_DIR is also set (capitalised)
     # so the YAML path expansion ${M1_DIR} works automatically.
     m1_model = os.environ.get("M1_MODEL")
@@ -158,6 +153,8 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     direction        = load_cfg.get("direction", "up")
     forecast_horizon = load_cfg.get("forecast_horizon", 7)
     is_multi_gran    = (granularity == "all")
+    seq_len          = GRAN_SEQ_LEN.get(granularity, 96)
+    
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
     data_signature = {"granularity":      load_cfg.get("granularity"),
                       "meta_label_mode":  load_cfg.get("meta_label_mode"),
@@ -175,10 +172,11 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     # ┏━━━━━━━━━━ Build cache path ━━━━━━━━━━┓
     cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    m1_name = m1_model_name(cfg)
     if is_multi_gran:
-        cache_name = f"multi_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
+        cache_name = f"multi_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
     else:
-        cache_name = f"{granularity}_{seq_len}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
+        cache_name = f"{granularity}_{seq_len}_{m1_name}_{forecast_horizon}_fee_{direction}_{cfg_hash}.pt"
     cache_path = cache_dir / cache_name
 
     # ┏━━━━━━━━━━ Try loading existing cache ━━━━━━━━━━┓
@@ -199,14 +197,14 @@ def _build_cache_from_config(cfg: dict) -> tuple[Path, object]:
     if is_multi_gran:
         dataset = prepare_multi_gran_dataset(raw_df,
                                              column_features  = column_features,
-                                             target_col       = load_cfg.get("target_col", "ground_truth"),
+                                             target_col       = load_cfg.get("target_col", "meta_label"),
                                              forecast_horizon = forecast_horizon,
                                              cfg              = cfg)
     else:
         dataset = prepare_multi_asset_dataset(raw_df,
                                               seq_len          = seq_len,
                                               column_features  = column_features,
-                                              target_col       = load_cfg.get("target_col", "ground_truth"),
+                                              target_col       = load_cfg.get("target_col", "meta_label"),
                                               forecast_horizon = forecast_horizon,
                                               cfg              = cfg)
 
@@ -226,6 +224,8 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     # ┏━━━━━━━━━━ Extract Configs ━━━━━━━━━━┓
     gran = cfg["data"]["load"]["granularity"]
     cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
+    m1_name = m1_model_name(cfg)
+    gran_prefix = "multi" if gran == "all" else gran
 
     # ┏━━━━━━━━━━ Explicit cache path ━━━━━━━━━━┓
     if explicit:
@@ -244,26 +244,31 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
     # ┏━━━━━━━━━━ Auto-detect: find caches for both directions ━━━━━━━━━━┓
     result = {}
     for direction in ("up", "down"):
-        candidates = sorted(cache_dir.glob(f"{gran}_*_fee_{direction}_*.pt"),
-                            key=lambda p: p.stat().st_mtime, reverse=True)
+        if gran_prefix == "multi":
+            pattern = f"multi_{m1_name}_*_fee_{direction}_*.pt"
+        else:
+            pattern = f"{gran_prefix}_*_{m1_name}_*_fee_{direction}_*.pt"
+            
+        candidates = sorted(cache_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
             result[direction] = candidates[0]
             print(f"[utils] Auto-selected cache ({direction}): {candidates[0].name}")
 
     if not result:
         # ┏━━━━━━━━━━ Fallback: try old naming without direction ━━━━━━━━━━┓
-        candidates = sorted(cache_dir.glob(f"{gran}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if candidates:
+        candidates = sorted(cache_dir.glob(f"{gran_prefix}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates and "legacy" not in [c.name for c in candidates]: # minor safety to avoid false positives
             direction = cfg["data"]["load"].get("direction", "up").lower()
             result[direction] = candidates[0]
             print(f"[utils] Auto-selected cache (legacy): {candidates[0].name}")
 
-    if not result:
-        # ┏━━━━━━━━━━ No cache found — build one from config ━━━━━━━━━━┓
-        print(f"[utils] No existing cache found for granularity={gran}. Building from config...")
+    # ┏━━━━━━━━━━ Always ensure config direction is built ━━━━━━━━━━┓
+    cfg_direction = cfg["data"]["load"].get("direction", "up").lower()
+    if cfg_direction not in result:
+        print(f"[utils] No existing cache found for config direction='{cfg_direction}'. Building from config...")
         cache_path, _ = _build_cache_from_config(cfg)
-        direction = cfg["data"]["load"].get("direction", "up").lower()
-        result[direction] = cache_path
+        result[cfg_direction] = cache_path
+
     return result
 
 

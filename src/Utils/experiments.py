@@ -18,9 +18,17 @@ import sys
 import time
 from pathlib import Path
 
+# experiments.py lives in src/Utils/ — insert src/ so "import Utils" works
+# regardless of the working directory, matching every other entry-point script.
+_SRC = Path(__file__).resolve().parent.parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from Utils.utils import _load_config
+
 
 # ┏━━━━━━━━━━ Constants ━━━━━━━━━━┓
-ALL_MODELS = ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
+ALL_MODELS = ["rf", "tabpfn", "tabicl"] # No autogluon, nor tabpfn_ft YET
 DIRECTIONS = ["up", "down"]
 
 # ┏━━━━━━━━━━ CLI model name → output folder name (must match kronos_tree.py mapping) ━━━━━━━━━━┓
@@ -54,36 +62,52 @@ def _run(cmd: list[str], label: str):
     return result.returncode == 0
 
 # ┏━━━━━━━━━━ Find cache ━━━━━━━━━━┓
-def _find_cache(cfg_path: str, direction: str) -> str | None:
+def _find_cache(cfg_path: str, direction: str, m1: str = None) -> str | None:
     """Resolve the multi-gran cache path for a direction from config."""
-    import yaml
+    import os
+    from Utils.utils import m1_model_name, m1_output_bucket
+
+    # ┏━━━━━━━━━━ Load config (expands ${ENV_VAR} placeholders) ━━━━━━━━━━┓
+    cfg = _load_config(cfg_path)
+
+    # ┏━━━━━━━━━━ Apply explicit M1 override (takes priority over config) ━━━━━━━━━━┓
+    if m1:
+        cfg.setdefault("data", {}).setdefault("load", {})["m1"] = m1.strip().lower()
+
+    m1_bucket = m1_output_bucket(cfg)
+    m1_name = m1_model_name(cfg)
     
-    # ┏━━━━━━━━━━ Load config ━━━━━━━━━━┓
-    with open(cfg_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    output_root = Path(cfg["paths"]["output_root"])
-    
-    # ┏━━━━━━━━━━ Search all cache dirs for matching direction ━━━━━━━━━━┓
-    for cache_dir in sorted(output_root.glob("**/cache*")):
-        for pt in sorted(cache_dir.glob(f"multi_*_{direction}_*.pt")):
-            return str(pt)
+    # ┏━━━━━━━━━━ Search the specific M1 cache dir ━━━━━━━━━━┓
+    cache_dir = Path(cfg["paths"]["output_root"]) / m1_bucket / "cache"
+    if not cache_dir.exists():
+        return None
+        
+    for pt in sorted(cache_dir.glob(f"multi_{m1_name}_*_fee_{direction}_*.pt")):
+        return str(pt)
+        
     return None
 
 # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
 def run_experiments(config: str,
                     models: list[str],
                     skip_training: bool = False,
-                    skip_edge: bool = False,
+                    skip_edge:     bool = False,
                     skip_combined: bool = False,
-                    edge_trials: int = 100,
-                    edge_blocks: int = 6,
-                    edge_k_test: int = 2,
-                    features: bool = True,
-                    top5: bool = True):
+                    edge_trials:   int = 100,
+                    edge_blocks:   int = 6,
+                    edge_k_test:   int = 2,
+                    features:      bool = True,
+                    top5:          bool = True,
+                    m1:            str = None):
     """Execute the full experiment suite."""
+    import os
     python = sys.executable
     cfg_path = config
     results = {}
+
+    # ┏━━━━━━━━━━ Apply M1 override to env so _load_config picks it up ━━━━━━━━━━┓
+    if m1:
+        os.environ["M1_MODEL"] = m1.strip().lower()
 
     # ┏━━━━━━━━━━ Phase 1: Training (per-gran) ━━━━━━━━━━┓
     if not skip_training:
@@ -95,7 +119,7 @@ def run_experiments(config: str,
 
         for model in models:
             for direction in DIRECTIONS:
-                cache = _find_cache(cfg_path, direction)
+                cache = _find_cache(cfg_path, direction, m1=m1)
                 if cache is None:
                     print(f"  [SKIP] No cache found for direction={direction}")
                     continue
@@ -106,8 +130,8 @@ def run_experiments(config: str,
                        "--cache", cache,
                        "--per-gran",
                        "--model", model,
-                       "--features", "true" if features else "false",           # TODO: TILL Feature Selection Pipeline
-                       "--top5", "true" if (top5 and features) else "false"]    # TODO: TILL Feature Selection Pipeline
+                       "--features", "true" if features else "false",
+                       "--top5", "true" if (top5 and features) else "false"]
                 ok = _run(cmd, label)
                 results[label] = ok
 
@@ -121,7 +145,7 @@ def run_experiments(config: str,
         for model in models:
             edge_cli = _MODEL_TO_EDGE_CLI[model]
             for direction in DIRECTIONS:
-                cache = _find_cache(cfg_path, direction)
+                cache = _find_cache(cfg_path, direction, m1=m1)
                 if cache is None:
                     print(f"  [SKIP] No cache for direction={direction}")
                     continue
@@ -161,20 +185,19 @@ def run_experiments(config: str,
 
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓
     if not skip_combined:
-        import yaml
-        
         # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
         print(f"\n{'#'*70}")
         print(f"# PHASE 3: Combined UP+DOWN Backtests")
         print(f"{'#'*70}")
 
-        # ┏━━━━━━━━━━ Load config ━━━━━━━━━━┓
-        with open(cfg_path, "r") as f:
-            cfg = yaml.safe_load(f)
+        # ┏━━━━━━━━━━ Load config and apply M1 override ━━━━━━━━━━┓
+        cfg = _load_config(cfg_path)
+        if m1:
+            cfg.setdefault("data", {}).setdefault("load", {})["m1"] = m1.strip().lower()
 
         # ┏━━━━━━━━━━ Determine M1 bucket ━━━━━━━━━━┓
-        m1 = cfg.get("data", {}).get("load", {}).get("m1", "kronos").lower()
-        m1_bucket = {"kronos": "Kronos", "fincast": "Fincast"}.get(m1, m1.capitalize())
+        from Utils.utils import m1_output_bucket
+        m1_bucket = m1_output_bucket(cfg)
         output_root = Path(cfg["paths"]["output_root"]) / m1_bucket
 
         # ┏━━━━━━━━━━ Run combined backtest for each model ━━━━━━━━━━┓
@@ -213,16 +236,18 @@ def main():
     parser = argparse.ArgumentParser(description="Experiment orchestrator — full M2 pipeline for all models and directions")
     
     # ┏━━━━━━━━━━ Arguments ━━━━━━━━━━┓
-    parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
-    parser.add_argument("--models", nargs="+", default=ALL_MODELS, choices=ALL_MODELS, help=f"Models to run (default: all). Choices: {ALL_MODELS}")
-    parser.add_argument("--skip-training", action="store_true",      help="Skip Phase 1 (training)")
-    parser.add_argument("--skip-edge",     action="store_true",      help="Skip Phase 2 (edge convergence)")
-    parser.add_argument("--skip-combined", action="store_true",      help="Skip Phase 3 (combined backtest)")
-    parser.add_argument("--edge-trials",   type=int, default=100,    help="Seed trials for edge analysis")
-    parser.add_argument("--edge-blocks",   type=int, default=6,      help="CPCV blocks")
-    parser.add_argument("--edge-k-test",   type=int, default=2,      help="CPCV test blocks per split")
+    parser.add_argument("--config",        type=str,                  required=True, help="Path to config YAML")
+    parser.add_argument("--models",        nargs="+",                 default=ALL_MODELS, choices=ALL_MODELS, help=f"Models to run (default: all). Choices: {ALL_MODELS}")
+    parser.add_argument("--skip-training", action="store_true",       help="Skip Phase 1 (training)")
+    parser.add_argument("--skip-edge",     action="store_true",       help="Skip Phase 2 (edge convergence)")
+    parser.add_argument("--skip-combined", action="store_true",       help="Skip Phase 3 (combined backtest)")
+    parser.add_argument("--edge-trials",   type=int, default=100,     help="Seed trials for edge analysis")
+    parser.add_argument("--edge-blocks",   type=int, default=6,       help="CPCV blocks")
+    parser.add_argument("--edge-k-test",   type=int, default=2,       help="CPCV test blocks per split")
     parser.add_argument("--features",      type=str, default="false", choices=["true", "false"], help="Run feature analysis during training")
     parser.add_argument("--top5",          type=str, default="false", choices=["true", "false"], help="Run top-5 feature analysis during training")
+    parser.add_argument("--m1",            type=str, default=None,    help="Override M1 model (e.g., kronos, fincast). Sets M1_MODEL env var.")
+
     args = parser.parse_args()
 
     # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
@@ -235,7 +260,8 @@ def main():
                     edge_blocks   = args.edge_blocks,
                     edge_k_test   = args.edge_k_test,
                     features      = args.features.lower() == "true",
-                    top5          = args.top5.lower() == "true")
+                    top5          = args.top5.lower() == "true",
+                    m1            = args.m1)
 
 
 if __name__ == "__main__":

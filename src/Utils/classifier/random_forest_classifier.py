@@ -1,8 +1,6 @@
-from typing import Union
-
 import numpy as np
 import pandas as pd
-
+from typing import Union
 from Utils.classifier._classifier import (BaseClassifier)
 from sklearn.ensemble import RandomForestClassifier
 
@@ -11,7 +9,7 @@ try:
 except ImportError:
     sio = None
 
-
+# ┏━━━━━━━━━━ Random Forest Classifier ━━━━━━━━━━┓
 class RFClassifier(BaseClassifier):
 
     def __init__(self, random_state=None, **kwargs) -> None:

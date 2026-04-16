@@ -1,4 +1,3 @@
-import os
 """AutoGluon classifier — BaseClassifier-compliant wrapper.
 
 Ported verbatim from the legacy ``Utils.models._AutoGluonWrapper`` (absorbed
@@ -6,19 +5,17 @@ in Step 1 of the Utils/ modularization). Sklearn-compatible wrapper around
 AutoGluon's TabularPredictor with helpers for leaderboard / model-info
 export and persistent save.
 """
+import hashlib
 import json
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Union
-import warnings
 
 import numpy as np
 import pandas as pd
 
-from Utils.classifier._classifier import (BaseClassifier)
-from autogluon.tabular import TabularPredictor
-
-import hashlib
+from Utils.classifier._classifier import BaseClassifier
 from Utils.utils import _safe_json
 
 
@@ -30,16 +27,17 @@ class AutoGluon(BaseClassifier):
                  time_limit: int = 300,
                  presets: str = "best_quality",
                  class_weight_ratio: float = 1.0,
-                 random_state: int | None = None,
-                 **kwargs) -> None:
+                 random_state: int | None = None) -> None:
         super().__init__(random_state)
-        self.feature_names = feature_names
-        self.time_limit = time_limit
-        self.presets = presets
+        self.feature_names      = feature_names
+        self.time_limit         = time_limit
+        self.presets            = presets
         self.class_weight_ratio = class_weight_ratio
         self._predictor = None
+        self._train_df = None
         self._label_col = "__target__"
         self._weight_col = "__sample_weight__"
+        self.classes_ = None
         
         self.args = kwargs.pop("args", None)  # pop so it's not passed to TabularPredictor
         if self.args is None:
@@ -48,70 +46,76 @@ class AutoGluon(BaseClassifier):
             f"{self.args.output_root}/{self.args.m1}/cache/autogluon/{self.args.m2}/"
             f"direction={self.args.direction}/{self.args.gran}")
         
-    def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray) -> object:
-        # TODO the idea is to only run the hyperparameter optimization once
-        #  cache the optimized model and retrain it on the subsplit
-        # get hased feature list
-        feature_list_hash = self.hash_list(list(X_train.columns))
-        self.model_cache_path = self.model_cache_path + f"/feature_hash={feature_list_hash}_timelimit={self.time_limit}/autogluon_cache"
-        train_data = X_train.copy()
-        train_data["target_column"] = y_train
-        if os.path.exists(self.model_cache_path):
-            print(f"{self.model_cache_path} exists, loading cached autogluon model...")
-            self.load_model(self.model_cache_path)
-            self.clf.refit_full(model="all", set_best_to_refit_full=True, train_data_extra=train_data)
-            self.fitted_clf = self.clf
-        else:
-            print(f"{self.model_cache_path} does not exist, need to train autogluon model...")
-            # train
-            TabularPredictor(label="target_column", path=self.model_cache_path).fit(
-                train_data,
-                time_limit=self.time_limit,  # seconds to train
-                presets="best_quality",  # or "medium_quality", "fast_training"
-            )
-            self.clf = TabularPredictor.load(self.model_cache_path)
-            self.fitted_clf = self.clf
-        return self.fitted_clf
+    # def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray) -> object:
+    #     # TODO the idea is to only run the hyperparameter optimization once
+    #     #  cache the optimized model and retrain it on the subsplit
+    #     # get hased feature list
+    #     feature_list_hash = self.hash_list(list(X_train.columns))
+    #     self.model_cache_path = self.model_cache_path + f"/feature_hash={feature_list_hash}_timelimit={self.time_limit}/autogluon_cache"
+    #     train_data = X_train.copy()
+    #     train_data["target_column"] = y_train
+    #     if os.path.exists(self.model_cache_path):
+    #         print(f"{self.model_cache_path} exists, loading cached autogluon model...")
+    #         self.load_model(self.model_cache_path)
+    #         self.clf.refit_full(model="all", set_best_to_refit_full=True, train_data_extra=train_data)
+    #         self.fitted_clf = self.clf
+    #     else:
+    #         print(f"{self.model_cache_path} does not exist, need to train autogluon model...")
+    #         # train
+    #         TabularPredictor(label="target_column", path=self.model_cache_path).fit(
+    #             train_data,
+    #             time_limit=self.time_limit,  # seconds to train
+    #             presets="best_quality",  # or "medium_quality", "fast_training"
+    #         )
+    #         self.clf = TabularPredictor.load(self.model_cache_path)
+    #         self.fitted_clf = self.clf
+    #     return self.fitted_clf
+    #
+    #
+    # def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+    #     return self.fitted_clf.predict(X_test)
+    #
+    # def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+    #     return self.fitted_clf.predict_proba(X_test)
 
+    # def get_params(self, deep: bool = True) -> dict:
+    #     return {"random_state": self.random_state,
+    #             "args": self.args}
+    #
+    # def save_model(self, model_path: str) -> None:
+    #     warnings.warn("AutoGluon does not need to save, happens automatically in constructor.")
+    #
+    # def load_model(self, model_path: str) -> None:
+    #     self.clf = TabularPredictor.load(model_path)
+    #     self.fitted_clf = self.clf
 
-    def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
-        return self.fitted_clf.predict(X_test)
-
-    def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
-        return self.fitted_clf.predict_proba(X_test)
-
-    def get_params(self, deep: bool = True) -> dict:
-        return {"random_state": self.random_state,
-                "args": self.args}
-
-    def save_model(self, model_path: str) -> None:
-        warnings.warn("AutoGluon does not need to save, happens automatically in constructor.")
-
-    def load_model(self, model_path: str) -> None:
-        self.clf = TabularPredictor.load(model_path)
-        self.fitted_clf = self.clf
-
+    # ┏━━━━━━━━━━ Hash List ━━━━━━━━━━┓
     def hash_list(self, lst: list, length: int = 10) -> str:
         combined = ",".join(sorted(lst))  # sort for consistent ordering
         return hashlib.md5(combined.encode()).hexdigest()[:length]
 
+    # ┏━━━━━━━━━━ To DataFrame ━━━━━━━━━━┓
     def _to_df(self, X):
         cols = self.feature_names if self.feature_names else [f"f{i}" for i in range(X.shape[1])]
         return pd.DataFrame(X, columns=cols)
 
+    # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, sample_weight=None):
         from autogluon.tabular import TabularPredictor
 
+        # ┏━━━━━━━━━━ Convert to DataFrame ━━━━━━━━━━┓
         X = np.asarray(X_train) if not isinstance(X_train, pd.DataFrame) else X_train.values
         self.n_features_in_ = X.shape[1]
         df = self._to_df(X)
         df[self._label_col] = y_train
 
+        # ┏━━━━━━━━━━ Handle sample weights ━━━━━━━━━━┓
         ag_ctor_kwargs = {}
         if sample_weight is not None:
             df[self._weight_col] = sample_weight
             ag_ctor_kwargs["sample_weight"] = self._weight_col
 
+        # ┏━━━━━━━━━━ Initialize and train AutoGluon ━━━━━━━━━━┓
         save_dir = tempfile.mkdtemp(prefix="ag_model_")
         self._predictor = TabularPredictor(label       = self._label_col,
                                            path        = save_dir,
@@ -124,20 +128,21 @@ class AutoGluon(BaseClassifier):
         self.classes_ = np.unique(np.asarray(y_train))
         return self
 
-    # def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
-    #     if self._predictor is None:
-    #         raise AttributeError("The model has not been fitted yet.")
-    #     X = np.asarray(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.values
-    #     df = self._to_df(X)
-    #     return self._predictor.predict(df).values.astype(int)
-    #
-    # def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
-    #     if self._predictor is None:
-    #         raise AttributeError("The model has not been fitted yet.")
-    #     X = np.asarray(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.values
-    #     df = self._to_df(X)
-    #     proba = self._predictor.predict_proba(df)
-    #     return proba.values
+    # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
+    def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+        if self._predictor is None:
+            raise AttributeError("The model has not been fitted yet.")
+        X = np.asarray(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.values
+        df = self._to_df(X)
+        return self._predictor.predict(df).values.astype(int)
+
+    # ┏━━━━━━━━━━ Predict Probabilities ━━━━━━━━━━┓
+    def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+        if self._predictor is None:
+            raise AttributeError("The model has not been fitted yet.")
+        X = np.asarray(X_test) if not isinstance(X_test, pd.DataFrame) else X_test.values
+        df = self._to_df(X)
+        return self._predictor.predict_proba(df).values
 
     @property
     def feature_importances_(self):
@@ -189,6 +194,7 @@ class AutoGluon(BaseClassifier):
         print(f"  AutoGluon model info saved to {info_path}")
         return export
 
+    # ┏━━━━━━━━━━ Save ━━━━━━━━━━┓
     def save_to(self, path):
         """Persist the AutoGluon predictor to a permanent directory."""
         import shutil
@@ -199,23 +205,24 @@ class AutoGluon(BaseClassifier):
         print(f"  AutoGluon model saved to {dest}")
         return dest
 
+    # ┏━━━━━━━━━━ Get Autogluon Parameters ━━━━━━━━━━┓
     def get_params(self, deep: bool = True) -> dict:
-        return {
-            "feature_names":      self.feature_names,
-            "time_limit":         self.time_limit,
-            "presets":            self.presets,
-            "class_weight_ratio": self.class_weight_ratio,
-            "random_state":       self.random_state,
-        }
+        return {"feature_names":      self.feature_names,
+                "time_limit":         self.time_limit,
+                "presets":            self.presets,
+                "class_weight_ratio": self.class_weight_ratio,
+                "random_state":       self.random_state}
 
-    # def save_model(self, model_path: str) -> None:
-    #     if self._predictor is None:
-    #         raise AttributeError("The model has not been fitted yet.")
-    #     self.save_to(model_path)
-    #
-    # def load_model(self, model_path: str) -> None:
-    #     from autogluon.tabular import TabularPredictor
-    #     self._predictor = TabularPredictor.load(str(Path(model_path) / "ag_model"))
+    # ┏━━━━━━━━━━ Save / Load ━━━━━━━━━━┓
+    def save_model(self, model_path: str) -> None:
+        if self._predictor is None:
+            raise AttributeError("The model has not been fitted yet.")
+        self.save_to(model_path)
+
+    # ┏━━━━━━━━━━ Load ━━━━━━━━━━┓
+    def load_model(self, model_path: str) -> None:
+        from autogluon.tabular import TabularPredictor
+        self._predictor = TabularPredictor.load(str(Path(model_path) / "ag_model"))
 
 
 # Backward-compat alias — tests / older code may still import `AutogluonClassifier`.

@@ -2,37 +2,29 @@
 
 Two modes are supported:
 
-- ``mode="datetime"`` (default) — mirrors the production semantics used by
-  ``Utils/edge.py`` (datetime-based block boundaries, time-based purge window
-  ``purge_td = horizon * bar_width``). This is the semantics the paper's edge
-  convergence protocol relies on.
-- ``mode="index"`` — legacy sklearn-style behavior that builds blocks with
+- ``mode="datetime"`` — mirrors the production semantics used by
+  ``Utils/edge/edge.py`` (datetime-based block boundaries, time-based purge
+  window ``purge_td = horizon * bar_width``). This is the semantics the paper's
+  edge convergence protocol relies on.
+- ``mode="index"`` (default) — sklearn-style behaviour that builds blocks with
   ``np.array_split(indices, n_splits)`` and uses a count-based embargo (fraction
   of rows). Preserved unchanged for existing call sites (e.g. the
   Interpretability scripts).
 """
-from __future__ import annotations
-import pandas as pd
-import numpy as np
 import math
-from math import comb
-
-
-
-from itertools import combinations, permutations
-from collections import defaultdict
-from typing import Iterator, Optional, Tuple, Union
-
 import numpy as np
 import pandas as pd
 
+from math import comb
+from itertools import combinations
+from typing import Iterator, Optional, Tuple, Union
 from Utils.ts_cross_validation._ts_cross_validation import BaseTimeSeriesCV
 
 
 # ┏━━━━━━━━━━ Granularity → Timedelta ━━━━━━━━━━┓
 def _gran_to_timedelta(granularity: str) -> pd.Timedelta:
     """Convert a granularity string (e.g. ``"4h"``, ``"30m"``, ``"1d"``) to a
-    :class:`pandas.Timedelta`. Copied verbatim from ``Utils.edge``.
+    :class:`pandas.Timedelta`.
     """
     if granularity.endswith("m"):
         return pd.Timedelta(minutes=int(granularity[:-1]))
@@ -53,6 +45,7 @@ def _build_datetime_blocks(dates, n_blocks: int):
             for b in range(n_blocks)]
 
 
+# ┏━━━━━━━━━━ Assign blocks to indices ━━━━━━━━━━┓
 def _assign_blocks(dates_arr, boundaries) -> np.ndarray:
     """Assign each index to a block number based on its datetime."""
     n = len(dates_arr)
@@ -72,7 +65,7 @@ def _assign_blocks(dates_arr, boundaries) -> np.ndarray:
                     break
     return block_ids
 
-
+# ┏━━━━━━━━━━ Generate CPCV Splits ━━━━━━━━━━┓
 def _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_arr, purge_td, boundaries):
     """Generate all C(n_blocks, k_test) train/test splits with purge."""
     splits = []
@@ -98,15 +91,13 @@ def _generate_cpcv_splits(n_blocks, k_test, block_ids, dates_arr, purge_td, boun
         idx_purged = np.where(purged_mask)[0]
         idx_train = np.array([i for i in idx_train_raw if not purged_mask[i]])
 
-        splits.append({
-            "test_blocks": test_blocks,
-            "idx_train": idx_train,
-            "idx_test": idx_test,
-            "idx_purged": idx_purged,
-        })
+        splits.append({"test_blocks": test_blocks,
+                       "idx_train":   idx_train,
+                       "idx_test":    idx_test,
+                       "idx_purged":  idx_purged})
     return splits
 
-
+# ┏━━━━━━━━━━ Reconstructing Chronological Paths for CPCV Evaluation ━━━━━━━━━━┓
 def _reconstruct_paths(splits, n_blocks, k_test):
     """Reconstruct C(N-1, k-1) chronological paths from CPCV splits."""
     n_paths = math.comb(n_blocks - 1, k_test - 1)
@@ -125,99 +116,163 @@ def _reconstruct_paths(splits, n_blocks, k_test):
     return paths
 
 
+# ┏━━━━━━━━━━ Combinatorial Purged CV class ━━━━━━━━━━┓
 class CombinatorialPurgedCV(BaseTimeSeriesCV):
-    """
-    Combinatorial Purged Cross-Validation (CPCV)
+    """Combinatorial Purged Cross-Validation (Lopez de Prado).
 
     Parameters
     ----------
     n_splits : int
-        Number of groups to divide the data into (N)
+        Number of groups to divide the data into (N).
     n_test_splits : int
-        Number of groups used for testing (k)
+        Number of groups used for testing (k).
+    mode : {"index", "datetime"}
+        - ``"index"`` (default): sklearn-style behaviour, ``np.array_split`` over
+          row indices with count-based embargo (``embargo_pct``).
+        - ``"datetime"``: datetime-based blocks with a time-based purge window
+          ``purge_td = horizon * bar_width``. Requires ``dates``, ``granularity``
+          and ``horizon``.
     embargo_pct : float
+        Fraction of dataset to embargo after each test block (``mode="index"``).
     random_state : int or None
+    dates : sequence of pd.Timestamp, optional
+        Per-sample timestamps (``mode="datetime"``).
+    granularity : str, optional
+        Bar granularity (e.g. ``"4h"``) — used for ``purge_td`` (``mode="datetime"``).
+    horizon : int, optional
+        Label horizon in bars — used for ``purge_td`` (``mode="datetime"``).
+    t1 : pd.Series, optional
+        Label end-times (accepted for sklearn-style compatibility — currently
+        unused in ``mode="index"``; block membership is defined by row index).
     """
-    
-    def __init__(
-        self,
-        n_splits: int,
-        n_test_splits: int,
-        embargo_pct: float = 0.0,
-        random_state: Optional[int] = None
-    ):
+
+    def __init__(self,
+                 n_splits:      int,
+                 n_test_splits: int,
+                 mode:          str   = "index",
+                 embargo_pct:   float = 0.0,
+                 random_state:  Optional[int] = None,
+                 dates:         Optional[list] = None,
+                 granularity:   Optional[str]  = None,
+                 horizon:       Optional[int]  = None,
+                 t1:            Optional[pd.Series] = None):
         super().__init__(n_splits=n_splits, random_state=random_state)
-        
+
+        # ┏━━━━━━━━━━ Validate n_test_splits ━━━━━━━━━━┓
         if not isinstance(n_test_splits, int) or n_test_splits < 1:
             raise ValueError("n_test_splits must be >= 1")
-        
         if n_test_splits >= n_splits:
             raise ValueError("n_test_splits must be < n_splits")
-        
+
+        # ┏━━━━━━━━━━ Validate mode ━━━━━━━━━━┓
+        if mode not in ("index", "datetime"):
+            raise ValueError(f"mode must be 'index' or 'datetime', got {mode!r}")
+
+        # ┏━━━━━━━━━━ Validate embargo_pct (index mode) ━━━━━━━━━━┓
         if not 0.0 <= embargo_pct < 1.0:
             raise ValueError("embargo_pct must be in [0, 1)")
-        
+
+        # ┏━━━━━━━━━━ Validate datetime-mode requirements ━━━━━━━━━━┓
+        if mode == "datetime":
+            if dates is None or granularity is None or horizon is None:
+                raise ValueError("mode='datetime' requires dates, granularity and horizon")
+
+        # ┏━━━━━━━━━━ Store parameters ━━━━━━━━━━┓
         self.n_test_splits = n_test_splits
-        self.embargo_pct = embargo_pct
-    
-    def split(
-        self,
-        X: Union[np.ndarray, pd.DataFrame],
-        y: Optional[np.ndarray] = None,
-        groups=None
-    ) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
-        
+        self.mode          = mode
+        self.embargo_pct   = embargo_pct
+        self.dates         = list(dates) if dates is not None else None
+        self.granularity   = granularity
+        self.horizon       = horizon
+        self.t1            = t1
+
+        # ┏━━━━━━━━━━ Lazy datetime-mode state ━━━━━━━━━━┓
+        self._boundaries = None
+        self._block_ids  = None
+        self._splits     = None
+
+    # ┏━━━━━━━━━━ Datetime-mode internals ━━━━━━━━━━┓
+    def _prepare_datetime(self):
+        """Build block boundaries and per-sample block_ids (cached)."""
+        if self._boundaries is None:
+            self._boundaries = _build_datetime_blocks(self.dates, self.n_splits)
+            self._block_ids  = _assign_blocks(self.dates, self._boundaries)
+
+    def _get_datetime_splits(self):
+        """Return CPCV split dicts (``test_blocks``/``idx_train``/``idx_test``/``idx_purged``)."""
+        if self._splits is None:
+            self._prepare_datetime()
+            purge_td = _gran_to_timedelta(self.granularity) * self.horizon
+            self._splits = _generate_cpcv_splits(self.n_splits,
+                                                 self.n_test_splits,
+                                                 self._block_ids,
+                                                 self.dates,
+                                                 purge_td,
+                                                 self._boundaries)
+        return self._splits
+
+    # ┏━━━━━━━━━━ sklearn-compatible split ━━━━━━━━━━┓
+    def split(self,
+              X:      Union[np.ndarray, pd.DataFrame],
+              y:      Optional[np.ndarray] = None,
+              groups=None) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
+
+        # ┏━━━━━━━━━━ Datetime mode: yield (train, test) from precomputed splits ━━━━━━━━━━┓
+        if self.mode == "datetime":
+            for sp in self._get_datetime_splits():
+                if len(sp["idx_train"]) == 0 or len(sp["idx_test"]) == 0:
+                    continue
+                yield sp["idx_train"], sp["idx_test"]
+            return
+
+        # ┏━━━━━━━━━━ Index mode: sklearn-style array_split with count-based embargo ━━━━━━━━━━┓
         n_samples = len(X)
-        indices = np.arange(n_samples)
-        
+        indices   = np.arange(n_samples)
+
         if isinstance(X, pd.DataFrame):
             time_index = X.index
         else:
             time_index = pd.RangeIndex(start=0, stop=n_samples)
-        
-        groups = np.array_split(indices, self.n_splits)
+
+        groups_split = np.array_split(indices, self.n_splits)
         embargo_size = int(n_samples * self.embargo_pct)
-        
+
         for test_group_ids in combinations(range(self.n_splits), self.n_test_splits):
-            
             test_group_ids = sorted(test_group_ids)
-            test_idx = np.sort(np.concatenate([groups[i] for i in test_group_ids]))
-            test_times = time_index[test_idx]
-            
+            test_idx = np.sort(np.concatenate([groups_split[i] for i in test_group_ids]))
+
             train_mask = np.ones(n_samples, dtype=bool)
             train_mask[test_idx] = False
-            
-            # Purge: per test block, remove training samples whose t1 overlaps that block
+
+            # ┏━━━━━━━━━━ Purge: drop training rows whose time overlaps any test block ━━━━━━━━━━┓
             for gid in test_group_ids:
-                block_start_time = time_index[groups[gid][0]]
-                block_end_time = time_index[groups[gid][-1]]
+                block_start_time = time_index[groups_split[gid][0]]
+                block_end_time   = time_index[groups_split[gid][-1]]
                 overlap = (time_index >= block_start_time) & (time_index <= block_end_time)
                 train_mask[overlap] = False
-            
-            # Embargo: apply after each test block's trailing edge
+
+            # ┏━━━━━━━━━━ Embargo: mask a window after each test block's trailing edge ━━━━━━━━━━┓
             if embargo_size > 0:
                 embargo_mask = np.zeros(n_samples, dtype=bool)
                 for gid in test_group_ids:
-                    embargo_start = groups[gid][-1] + 1
-                    embargo_end = min(n_samples, embargo_start + embargo_size)
+                    embargo_start = groups_split[gid][-1] + 1
+                    embargo_end   = min(n_samples, embargo_start + embargo_size)
                     embargo_mask[embargo_start:embargo_end] = True
                 train_mask[embargo_mask] = False
-            
+
             train_idx = indices[train_mask]
-            
             if len(train_idx) == 0 or len(test_idx) == 0:
                 continue
-            
             yield train_idx, test_idx
-    
+
     @property
     def name(self):
         return "CombinatorialPurgedEmbargoCV"
-    
+
     def get_n_splits(self, X=None, y=None, groups=None) -> int:
         return comb(self.n_splits, self.n_test_splits)
 
-    # ┏━━━━━━━━━━ Reconstruct chronological paths (mode=datetime only) ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Reconstruct chronological paths (datetime mode only) ━━━━━━━━━━┓
     def reconstruct_paths(self):
         """Return C(N-1, k-1) chronological paths (mirrors ``edge.py``).
 
@@ -225,21 +280,31 @@ class CombinatorialPurgedCV(BaseTimeSeriesCV):
         """
         if self.mode != "datetime":
             raise ValueError("reconstruct_paths() is only available for mode='datetime'")
-        splits = self._get_datetime_splits()
-        return _reconstruct_paths(splits, self.n_splits, self.n_test_splits)
+        return _reconstruct_paths(self._get_datetime_splits(),
+                                  self.n_splits,
+                                  self.n_test_splits)
 
-    # ┏━━━━━━━━━━ Convenience accessors ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Convenience accessors (datetime mode) ━━━━━━━━━━┓
     @property
     def boundaries(self):
+        """Datetime block boundaries — populated on first access (datetime mode)."""
+        if self.mode != "datetime":
+            raise ValueError("boundaries is only available for mode='datetime'")
+        self._prepare_datetime()
         return self._boundaries
 
     @property
     def block_ids(self):
+        """Per-sample block assignment — populated on first access (datetime mode)."""
+        if self.mode != "datetime":
+            raise ValueError("block_ids is only available for mode='datetime'")
+        self._prepare_datetime()
         return self._block_ids
 
     def get_datetime_splits(self):
-        """Return the full splits list with test_blocks/idx_train/idx_test/idx_purged
-        (mirrors ``edge.py::_generate_cpcv_splits`` output exactly).
+        """Return the full splits list with test_blocks/idx_train/idx_test/idx_purged.
+
+        Mirrors ``edge.py::_generate_cpcv_splits`` output exactly.
         """
         if self.mode != "datetime":
             raise ValueError("get_datetime_splits() is only available for mode='datetime'")

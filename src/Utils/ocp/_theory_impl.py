@@ -40,7 +40,6 @@ Usage:
 
 import argparse
 import json
-import sys
 import warnings
 from pathlib import Path
 
@@ -53,13 +52,12 @@ import torch
 from scipy import stats as scipy_stats
 from scipy.interpolate import PchipInterpolator
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import roc_auc_score, precision_score
+from sklearn.metrics import roc_auc_score
 from scipy.stats import shapiro, kstest, norm
 from sklearn.preprocessing import StandardScaler
 
 # -- project imports -----------------------------------------------------------
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from Utils.data import ENG_FEATURE_NAMES, split_by_global_time
+from Utils.data import split_by_global_time
 from Utils.utils import _safe_json, _load_config, _infer_direction, _load_multi_cache
 
 warnings.filterwarnings("ignore", category=FutureWarning)

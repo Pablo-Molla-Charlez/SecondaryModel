@@ -1,8 +1,5 @@
 """Optuna suggest functions per model + param->model builder."""
-from __future__ import annotations
-
 import optuna
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Search spaces per model

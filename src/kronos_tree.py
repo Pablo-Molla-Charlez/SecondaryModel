@@ -103,12 +103,12 @@ from Utils.classifier.factory import (_AG_TIME_LIMIT,
                                       _AG_PRESETS)
 
 
-def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
+def _build_dataframe(dataset) -> tuple[pd.DataFrame, np.ndarray]:
     # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
-    eng = dataset["eng_features"]
+    eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
     if isinstance(eng, torch.Tensor):
         eng = eng.numpy()
-    labels = dataset["labels"]
+    labels = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
 
     # ┏━━━━━━━━━━ Convert labels to numpy ━━━━━━━━━━┓
     if isinstance(labels, torch.Tensor):
@@ -124,7 +124,7 @@ def _build_dataframe(dataset: dict) -> tuple[pd.DataFrame, np.ndarray]:
     return df, labels
 
 # ------------------------------------------------------------------------------
-# Run analysis for a Single M2 (each granularity independently)
+# 
 # ------------------------------------------------------------------------------
 def temporal_eval(dataset: dict,
                   feature_cols: list,
@@ -154,13 +154,14 @@ def temporal_eval(dataset: dict,
     """
     # ┏━━━━━━━━━━ Load Data ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
-    eng = dataset["eng_features"]
+    _is_dict = isinstance(dataset, dict)
+    eng = dataset["eng_features"] if _is_dict else dataset.eng_features
     if isinstance(eng, torch.Tensor):
         eng = eng.numpy()
-    labels = dataset["labels"]
+    labels = dataset["labels"] if _is_dict else dataset.labels
     if isinstance(labels, torch.Tensor):
         labels = labels.numpy()
-    returns_all = dataset["returns"]
+    returns_all = dataset["returns"] if _is_dict else dataset.returns
     if isinstance(returns_all, torch.Tensor):
         returns_all = returns_all.numpy()
 
@@ -297,9 +298,10 @@ def temporal_eval(dataset: dict,
     print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
 
     # ┏━━━━━━━━━━ Extract dates for SAOCP ━━━━━━━━━━┓
-    _opt_dates  = np.array([dataset["dates"][j] for j in idx_opt])
-    _test_dates = np.array([dataset["dates"][j] for j in idx_test])
-    _val_dates_ocp  = np.array([dataset["dates"][j] for j in np.concatenate([idx_cal, idx_opt])]) if _is_ocp else None
+    _ds_dates   = dataset["dates"] if _is_dict else dataset.dates
+    _opt_dates  = np.array([_ds_dates[j] for j in idx_opt])
+    _test_dates = np.array([_ds_dates[j] for j in idx_test])
+    _val_dates_ocp  = np.array([_ds_dates[j] for j in np.concatenate([idx_cal, idx_opt])]) if _is_ocp else None
     _test_dates_ocp = _test_dates if _is_ocp else None
 
     # ┏━━━━━━━━━━ Loop through evaluation splits ━━━━━━━━━━┓
@@ -454,12 +456,13 @@ def temporal_eval(dataset: dict,
                 t_test = mu_test / sigma_test * np.sqrt(n_sel) if sigma_test > 0 else 0.0
                 
                 # ┏━━━━━━━━━━ Operating Threshold ━━━━━━━━━━┓
-                op = {"threshold": thr, 
+                op = {"threshold": thr,
                       "coverage": n_sel / len(y_split),
-                      "risk": err / max(n_sel, 1), 
+                      "risk": err / max(n_sel, 1),
                       "selected_count": n_sel,
-                      "constraint_satisfied": True,
-                      "mean_ret": mu_test, 
+                      "constraint_satisfied": val_op.get("constraint_satisfied", True),
+                      "threshold_source": val_op.get("threshold_source", thres_mode),
+                      "mean_ret": mu_test,
                       "t_stat": t_test}
 
         # ┏━━━━━━━━━━ Plot risk-coverage with return overlay (business-level) ━━━━━━━━━━┓
@@ -630,7 +633,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     dataset = dataset_override if dataset_override is not None else torch.load(cache_path, weights_only=False)
 
     # ┏━━━━━━━━━━ Check if cache contains eng_features (engineered features) ━━━━━━━━━━┓
-    if "eng_features" not in dataset or dataset["eng_features"] is None:
+    _eng_check = dataset.get("eng_features") if isinstance(dataset, dict) else getattr(dataset, "eng_features", None)
+    if _eng_check is None:
         print("ERROR: Cache does not contain 'eng_features'. Rebuild cache with engineered features enabled.")
         return
 
@@ -645,8 +649,10 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         idx_train, _, idx_val, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
 
         # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
-        eng_raw = dataset["eng_features"].numpy() if isinstance(dataset["eng_features"], torch.Tensor) else dataset["eng_features"]
-        labels_raw = dataset["labels"].numpy() if isinstance(dataset["labels"], torch.Tensor) else dataset["labels"]
+        _eng_f = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
+        _lbl_f = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
+        eng_raw = _eng_f.numpy() if isinstance(_eng_f, torch.Tensor) else _eng_f
+        labels_raw = _lbl_f.numpy() if isinstance(_lbl_f, torch.Tensor) else _lbl_f
 
         # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
         _feat_names = resolve_feature_names(eng_raw.shape[1])
@@ -782,8 +788,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         
         # ┏━━━━━━━━━━ Get Dates and Labels ━━━━━━━━━━┓
         fh = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7)) if cfg else 7
-        dates_all = dataset["dates"]
-        labels_all = dataset["labels"]
+        dates_all = dataset["dates"] if isinstance(dataset, dict) else dataset.dates
+        labels_all = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
         if isinstance(labels_all, torch.Tensor): labels_all = labels_all.numpy()
         valid_mask = ~np.isnan(labels_all)
         dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid_mask[i]]
@@ -1239,7 +1245,7 @@ def run_unified_analysis(cache_path: Path,
                 thr_source = ocp_op.get("threshold_source", "OCP-SAOCP")
             else:
                 sel = probs_cal >= threshold
-                thr_source = "Utility-Opt" if split_name == "Val" else "Val-Utility"
+                thr_source = val_op.get("threshold_source", "Utility-Opt") if split_name == "Val" else val_op.get("threshold_source", "Val-Utility")
 
             # ┏━━━━━━━━━━ Save confusion matrix ━━━━━━━━━━┓
             sel_true = y_split
@@ -1586,7 +1592,11 @@ def main():
     ocp_costs = (_cost_parts[0], _cost_parts[1], _cost_parts[2])  # (c_FN, c_FP, c_DEF)
 
     # ┏━━━━━━━━━━ Load Config ━━━━━━━━━━┓
-    cfg         = _load_config(args.config)
+    import os as _os
+    _m1_from_env = _os.environ.get("M1_MODEL")  # capture before _load_config touches env
+    cfg = _load_config(args.config)
+    if _m1_from_env:
+        cfg.setdefault("data", {}).setdefault("load", {})["m1"] = _m1_from_env.strip().lower()
     mode        = cfg["data"]["load"].get("meta_label_mode", "og").lower()
     output_root = Path(cfg["paths"]["output_root"])
     split_cfg   = cfg["data"]["split"]

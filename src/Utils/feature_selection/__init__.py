@@ -7,7 +7,6 @@ Split from ``_features_impl.py`` into:
 - :mod:`plots` — all ``plot_*`` helpers (tree importance, confusion matrices,
   risk-coverage curves, OCP threshold evolution, return histograms, etc.)
 """
-from Utils.feature_selection.feature_selection import *  # noqa: F401,F403
 from Utils.feature_selection.feature_selection import (
     run_feature_selection,
     compute_top_features,
@@ -17,6 +16,7 @@ from Utils.feature_selection.feature_selection import (
     shap_rank,
     lime_rank,
     extract_time_features,
+    compute_asset_correlation,
 )
 from Utils.feature_selection.plots import (
     plot_tree_importance,
@@ -32,5 +32,6 @@ from Utils.feature_selection.plots import (
     plot_meta_label_returns_histogram,
     plot_prediction_returns_histogram,
     plot_m1_prediction_returns_histogram,
+    plot_asset_correlation,
     _plot_prob_distribution,
 )
