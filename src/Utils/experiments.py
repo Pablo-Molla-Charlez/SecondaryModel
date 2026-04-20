@@ -1,15 +1,14 @@
-"""Experiment orchestrator — runs the full M2 pipeline for all models and directions.
+"""Experiment orchestrator — runs the full M2 pipeline from a single config.yaml.
 
-This script automates the sequential execution of:
-  1. Per-granularity training (kronos_tree.py --per-gran) for each model × direction
-  2. Edge convergence protocol (seeds → cpcv → convergence) for each model × direction
-  3. Combined UP+DOWN backtest (kronos_tree.py --combined-backtest) for each model
+Iterates over the (m2 × direction × granularity) cross product defined in
+`experiment:` and dispatches subprocesses for each enabled phase in `runtime.skip`:
+  1. Per-granularity training      → kronos_tree.py         (phase=training)
+  2. Edge convergence protocol     → python -m Utils.edge   (phase=edge)
+  3. Combined UP+DOWN backtest     → kronos_tree.py         (phase=combined)
+  4. Feature selection experiment  → feature_selection_experiment.py (phase=feature_selection)
 
 Usage:
-    python Utils/experiments.py --config config_kronos.yaml
-    python Utils/experiments.py --config config_kronos.yaml --models rf tabicl
-    python Utils/experiments.py --config config_kronos.yaml --skip-training --skip-edge
-    python Utils/experiments.py --config config_kronos.yaml --edge-trials 50 --edge-blocks 6
+    python Utils/experiments.py --config config.yaml
 """
 
 import argparse

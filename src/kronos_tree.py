@@ -1,21 +1,9 @@
 """
-Kronos Tree — M2 Meta-Labeling with RF/XGBoost/AutoGluon/TabPFN
-=========================================================
-Feature analysis, temporal evaluation, and financial backtesting for the M2 meta-labeling system.
+Kronos Tree — M2 Meta-Labeling worker (training + combined phases).
 
-Modes:
-  --per-gran   Per-granularity models (one model per granularity, current default)
-  --all-grans  Unified model trained on all granularities, evaluated per-gran
-
-Usage:
-  python Utils/kronos_tree.py --per-gran --cache path/to/multi.pt                                # per-gran models (default)
-  python Utils/kronos_tree.py --per-gran --cache path/to/multi.pt --features false --top5 false  # skip feature analysis
-  python Utils/kronos_tree.py --all-grans --cache path/to/multi.pt                               # unified multi-gran model
-  python Utils/kronos_tree.py --cache path/to/cache.pt                                           # single-gran auto-detect
-  python Utils/kronos_tree.py --model xgboost --cache path/to/cache.pt                           # use XGBoost
-  python Utils/kronos_tree.py --model autogluon --cache path/to/cache.pt                         # use AutoGluon ensemble
-  python Utils/kronos_tree.py --model tabpfn --cache path/to/cache.pt                            # use TabPFN zero-shot
-  python Utils/kronos_tree.py --model tabpfn_ft --cache path/to/cache.pt                         # use TabPFN fine-tuned
+Driven by Utils/experiments.py, which serializes config.yaml to JSON and invokes
+this module as a subprocess. Not intended to be called directly from the shell —
+the `--config` argument expects a JSON string, not a path.
 """
 
 import argparse, hashlib, sys, json, pickle
@@ -1579,7 +1567,7 @@ def main():
     ocp_costs = (_cost_parts[0], _cost_parts[1], _cost_parts[2])  # (c_FN, c_FP, c_DEF)
 
     # ┏━━━━━━━━━━ Phase 1: Training ━━━━━━━━━━┓
-    if args.config["runtime"][args.phase] == "training":
+    if args.phase == "training":
         # ┏━━━━━━━━━━ Analysis Comparison between Models ━━━━━━━━━━┓ # NOTE this is not actively used?!
         if args.config["runtime"][args.phase]["paradigm_comparison"]:
             run_paradigm_comparison(args.config["runtime"][args.phase]["paradigm_comparison"])
@@ -1648,12 +1636,13 @@ def main():
             return
 
     # ┏━━━━━━━━━━ Phase 3: Combined ━━━━━━━━━━┓
-    if args.config["runtime"][args.phase] == "combined":
+    if args.phase == "combined":
         # ┏━━━━━━━━━━ Combined UP+DOWN Backtest ━━━━━━━━━━┓
-        if args.config["runtime"][args.phase]["combined_backtest"]:
+        combined_pair = args.config["runtime"]["combined"]["combined_backtest"]
+        if combined_pair:
             # ┏━━━━━━━━━━ Save into the model directory (parent of the UP/DN folders) under Backtest_UP_DN ━━━━━━━━━━┓
-            up_path = Path(args.combined_backtest[0])
-            dn_path = Path(args.combined_backtest[1])
+            up_path = Path(combined_pair[0])
+            dn_path = Path(combined_pair[1])
             save_combined = up_path.parent.parent / "Backtest_UP_DN"
 
             # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓

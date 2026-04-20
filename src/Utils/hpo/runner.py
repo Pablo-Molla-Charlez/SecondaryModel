@@ -272,7 +272,7 @@ def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
     parser = argparse.ArgumentParser(description="M2 Hyperparameter Optimization (RF, TabPFN, TabICL)")
 
-    parser.add_argument("--config",     type=str,  required=True, help="Path to config YAML (e.g. config_kronos.yaml)")
+    parser.add_argument("--config",     type=str,  required=True, help="Path to config YAML (e.g. config.yaml)")
     parser.add_argument("--models",     nargs="+", default=HPO_MODELS, choices=HPO_MODELS, help=f"Models to optimize (default: {HPO_MODELS})")
     parser.add_argument("--directions", nargs="+", default=DIRECTIONS,choices=DIRECTIONS, help="Directions to optimize (default: up down)")
     parser.add_argument("--grans",      nargs="+", default=ALL_GRANS, help=f"Granularities to optimize (default: {ALL_GRANS})")

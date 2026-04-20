@@ -109,15 +109,6 @@ def _expand_env_vars(obj):
 
 
 def _load_config(cfg_path: str = "config.yaml") -> dict:
-    import os
-
-    # ┏━━━━━━━━━━ Determine M1 contexts BEFORE expansion ━━━━━━━━━━┓
-    # If M1_MODEL is provided in env, make sure M1_DIR is also set (capitalised)
-    # so the YAML path expansion ${M1_DIR} works automatically.
-    m1_model = os.environ.get("M1_MODEL")
-    if m1_model:
-        os.environ.setdefault("M1_DIR", m1_model.capitalize())
-
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
 
@@ -154,7 +145,7 @@ def _build_cache_from_config(config: dict, direction: str) -> tuple[Path, object
     
     # ┏━━━━━━━━━━ Deterministic hash ━━━━━━━━━━┓
     data_signature = {"granularity":      "all",
-                      "meta_label_mode":  config["data"]["meta_label_mode"],
+                      "meta_label_mode":  config["data"]["load"]["meta_label_mode"],
                       "direction":        direction,
                       "start_date":       config['data']['split']["start_date"],
                       "end_date":         config['data']['split']["end_date"],

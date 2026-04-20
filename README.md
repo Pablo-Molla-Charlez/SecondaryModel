@@ -8,15 +8,15 @@
   <img src="https://img.shields.io/badge/OCP-SAOCP%20Diagnostics-7c3aed?style=for-the-badge" alt="OCP SAOCP Diagnostics" />
 </p>
 
-> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of financial foundation models: **Kronos** and **Fincast**.
-> This README documents the modular tree-based M2 stack around `kronos_tree.py` and its unified configuration suite (`config.yaml`).
+> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of financial foundation models: **Kronos**, **Fincast**, **Chronos2**, **Tirex**.
+> Driven by a **single unified** [src/config.yaml](src/config.yaml) and orchestrated by [src/Utils/experiments.py](src/Utils/experiments.py).
 
 <table>
   <tr>
-    <td bgcolor="#ccfbf1"><strong>Main Entry</strong><br /><code>kronos_tree.py</code></td>
+    <td bgcolor="#ccfbf1"><strong>Main Entry</strong><br /><code>Utils/experiments.py</code></td>
     <td bgcolor="#dbeafe"><strong>Model Registry</strong><br /><code>Utils/classifier/</code></td>
-    <td bgcolor="#dbeafe"><strong>Primary Config</strong><br /><code>config.yaml</code></td>
-    <td bgcolor="#fef3c7"><strong>Outputs</strong><br /><code>src/Output/</code></td>
+    <td bgcolor="#dbeafe"><strong>Unified Config</strong><br /><code>config.yaml</code></td>
+    <td bgcolor="#fef3c7"><strong>Outputs</strong><br /><code>src/Output/&lt;M1&gt;/</code></td>
     <td bgcolor="#ede9fe"><strong>OCP Diagnostics</strong><br /><code>python -m Utils.ocp.analysis</code></td>
   </tr>
 </table>
@@ -38,7 +38,7 @@
 flowchart LR
     A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data/]
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
-    C --> D[kronos_tree.py<br/>Pipeline Orchestration]
+    C --> D[Utils/experiments.py<br/>Pipeline Orchestration<br/>· kronos_tree.py<br/>· Utils.edge<br/>· feature_selection_experiment.py]
     D --> K[Utils/classifier/<br/>Model Factory: RF, AutoGluon, TabPFN, TabICL]
     K --> E[Selective Classification<br/>Utility Threshold or SAOCP]
     E --> F[Feature Plots]
@@ -63,17 +63,18 @@ flowchart LR
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2563eb', 'primaryBorderColor': '#1d4ed8', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dcfce7', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart TD
     A[config.yaml] --> B[paths]
-    A --> C[data.load]
-    A --> D[data.split]
-    A --> E[data.features]
-    A --> G[evaluation.fee_per_trade]
+    A --> C[experiment<br/>m1 · m2 · direction · granularity]
+    A --> D[data.load / data.split / data.features]
+    A --> E[evaluation.fee_per_trade]
+    A --> F[runtime.skip<br/>training · edge · combined · feature_selection]
+    A --> G[runtime.training / edge / combined / feature_selection]
     classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef detail fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
     class A root;
-    class B,C,D,E group;
-    class G detail;
-    linkStyle 0,1,2,3,4 stroke:#2563eb,stroke-width:6px;
+    class B,C,D,F,G group;
+    class E detail;
+    linkStyle 0,1,2,3,4,5 stroke:#2563eb,stroke-width:6px;
 ```
 
 ---
@@ -324,7 +325,7 @@ conda activate CTTS
 Or prefix any command with `conda run -n CTTS` to run it without activating:
 
 ```bash
-conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran
+conda run -n CTTS python Utils/experiments.py --config config.yaml
 ```
 
 ### 2. Working directory
@@ -340,88 +341,65 @@ conda activate CTTS
 
 ## Run Guide
 
-### `kronos_tree.py` — Main Analysis Pipeline
+### Unified workflow — edit `config.yaml`, then launch `Utils/experiments.py`
 
-This is the primary entrypoint. It runs the full 4-way split → train → calibrate → threshold → backtest workflow for one or more granularities.
-
-**Available `--model` values:** `rf` (default), `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`
-
-**Run modes:**
-- `--per-gran` — runs independently for each granularity in the config
-- `--all-grans` — runs once across all granularities pooled
-- `--combined-backtest UP_DIR DN_DIR` — builds combined UP+DOWN equity curve from two existing result folders
+There is **one** entry point and **one** config. To switch M1 backbones, models, directions, granularities, or which phases run, edit [config.yaml](src/config.yaml) — no CLI flags.
 
 ```bash
-# Random Forest, all granularities, Kronos M1
-conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran
-
-# Random Forest, all granularities, Fincast M1
-conda run -n CTTS python kronos_tree.py --config config_fincast.yaml --per-gran
-
-# TabPFN (zero-shot) on Kronos
-conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model tabpfn
-
-# TabPFN fine-tuned on Kronos
-conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model tabpfn_ft
-
-# TabICL on Fincast
-conda run -n CTTS python kronos_tree.py --config config_fincast.yaml --per-gran --model tabicl
-
-# AutoGluon on Kronos (time_limit=300s per gran, best_quality preset)
-conda run -n CTTS python kronos_tree.py --config config.yaml --per-gran --model autogluon
-
-# Combined UP+DOWN backtest from existing result folders
-conda run -n CTTS python kronos_tree.py --config config.yaml \
-  --combined-backtest \
-  Output/Kronos/randforest/UP/Utility_Score \
-  Output/Kronos/randforest/DOWN/Utility_Score
+conda run -n CTTS python Utils/experiments.py --config config.yaml
 ```
+
+`experiments.py` reads the YAML, serializes it to JSON, and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `feature_selection_experiment.py`). All three read the same config dict, so there is no drift between the orchestrator and its workers.
+
+#### Config knobs that drive the run
+
+| Section | Key | What it does |
+| --- | --- | --- |
+| `experiment` | `m1` | M1 backbone — one of `kronos`, `fincast`, `chronos2`, `tirex`. **Must also update `paths.csv_dir` and `data.load.m1` to match.** |
+| `experiment` | `m2` | List of M2 models to run (`randforest`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`). |
+| `experiment` | `direction` | List of directions (`up`, `down`, or both). |
+| `experiment` | `granularity` | List of granularities (`1d`, `12h`, `8h`, `6`, `4h`, `2h`, `1h`, `30m`). |
+| `runtime.skip` | `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
+| `runtime.training` | `thres`, `ocp_alpha`, `ocp_costs`, `ocp_window_days`, `all_grans`, `top5`, `run_features` | Training-phase knobs: threshold selection mode, OCP cost vector, unified-vs-per-gran mode, feature sub-analysis toggles. |
+| `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — seeds + CPCV shape. |
+| `runtime.combined` | `combined_backtest` | Populated automatically by `experiments.py`; leave as-is. |
+| `runtime.feature_selection` | `cv_strategy`, `n_blocks`, `k_test`, `method`, `scoring`, `min_features`, `max_features`, `take_n_best_combinations` | SFS+/RFECV feature-selection knobs. |
+
+#### Phases (driven by `runtime.skip`)
+
+| Phase | What it runs | Enable via |
+| --- | --- | --- |
+| **1. Training** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. | `runtime.skip.training: false` |
+| **2. Edge** | `python -m Utils.edge` in `seeds` → `cpcv` → `convergence` modes per `(m2 × direction × granularity)`. | `runtime.skip.edge: false` |
+| **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
+| **4. Feature selection** | `feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
+
+#### Switching M1 backbone
+
+Edit three fields together, then run `experiments.py`:
+
+```yaml
+paths:
+  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
+experiment:
+  m1: "fincast"
+data:
+  load:
+    m1: "fincast"
+```
+
+`_load_config` validates that `data.load.m1` is consistent with `paths.csv_dir` and aborts with a clear error if they disagree.
 
 > **AutoGluon note**: `time_limit` (default 300 s) and `presets` (default `best_quality`) are set in `Utils/classifier/factory.py` constants `_AG_TIME_LIMIT` and `_AG_PRESETS`. Edit those to change the defaults globally.
 
 ---
 
-### `Utils/edge/` — Edge Convergence Protocol
+### `Utils/hpo/` — Hyperparameter Optimization (standalone)
 
-Tests whether a trained model's alpha is real (stable across seeds) and robust (stable across market regimes via CPCV). Requires a dataset cache `.pt` file produced by `kronos_tree.py`.
-
-```bash
-# Step 1 — Seeds stability (run 100 RF seeds, compare to baseline)
-conda run -n CTTS python -m Utils.edge \
-  --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
-  --model randforest \
-  --mode seeds \
-  --trials 100
-
-# Step 2 — CPCV regime sensitivity (6 blocks, combinatorial paths)
-conda run -n CTTS python -m Utils.edge \
-  --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
-  --model randforest \
-  --mode cpcv \
-  --n-blocks 6
-
-# Step 3 — Final convergence verdict (GREEN / AMBER / RED)
-conda run -n CTTS python -m Utils.edge \
-  --config config.yaml \
-  --cache Output/Kronos/cache/multi_7_fee_up_<hash>.pt \
-  --model randforest \
-  --convergence
-```
-
-> Replace `<hash>` with the actual MD5 suffix shown when `kronos_tree.py` builds the cache, e.g. `multi_7_fee_up_d2f3ef77ba.pt`.
-
----
-
-### `Utils/hpo/` — Hyperparameter Optimization
-
-Runs an Optuna study to find the best hyperparameters for a given model/granularity/direction combination. The cache is auto-detected from the config if not passed explicitly.
-
-**Available `--models` values:** `rf`, `tabpfn`, `tabpfn_ft`, `tabicl`, `autogluon`
+HPO is **not** wired into `experiments.py`. Run it directly with Optuna when you want to tune a specific `(model, direction, granularity)` combination. It reads the same `config.yaml` for paths, splits, and fees.
 
 ```bash
-# HPO for RF — up direction, 4h granularity, 50 trials (cache auto-detected)
+# HPO for RF — up direction, 4h granularity, 50 trials
 conda run -n CTTS python -m Utils.hpo \
   --config config.yaml \
   --models rf \
@@ -436,153 +414,27 @@ conda run -n CTTS python -m Utils.hpo \
   --directions up down \
   --grans 4h 1d 8h \
   --n-trials 100
-
-# HPO for all models — explicit cache path
-conda run -n CTTS python -m Utils.hpo \
-  --config config.yaml \
-  --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt \
-  --models rf tabpfn tabpfn_ft tabicl autogluon \
-  --directions up down \
-  --grans 4h \
-  --n-trials 30
-
-# HPO on Fincast signals
-conda run -n CTTS python -m Utils.hpo \
-  --config config_fincast.yaml \
-  --models rf tabicl \
-  --directions up down \
-  --n-trials 100
 ```
 
-Results are saved to `Output/<M1>/hpo/<model>/<direction>/<gran>/best_params.json`.
+Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.json`.
 
 ---
 
-### `Utils/ocp/` — OCP Diagnostics
+### `Utils/ocp/` — OCP Diagnostics (standalone)
 
-Post-hoc analysis of completed OCP runs. Requires a result folder produced by `kronos_tree.py` with OCP enabled.
+Post-hoc analysis of completed OCP runs. Requires a result folder produced by the training phase with `runtime.training.thres` set to an OCP mode.
 
 ```bash
 # Practical diagnostics — per-granularity result folder
 conda run -n CTTS python -m Utils.ocp.analysis \
   --folder Output/Kronos/randforest/UP/OCP/4h_up_tp
 
-# Practical diagnostics — unified (all-grans) result folder
-conda run -n CTTS python -m Utils.ocp.analysis \
-  --folder Output/Kronos/randforest/UP/OCP/unified_up_tp \
-  --mode unified
-
 # Theory / simulation studies (requires a cache .pt file)
 conda run -n CTTS python -m Utils.ocp.theory \
   --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt
 ```
 
----
-
-### `Utils/experiments.py` — Full Experiment Suite
-
-Orchestrates the full M2 pipeline for all models and directions in a single command. Three sequential phases:
-
-| Phase | What it does | Skip flag |
-| --- | --- | --- |
-| **1. Training**   | `kronos_tree.py --per-gran` for every model × direction | `--skip-training` |
-| **2. Edge**   | Seeds → CPCV → Convergence for every model × direction | `--skip-edge` |
-| **3. Combined**   | `kronos_tree.py --combined-backtest` (UP+DOWN) for every model | `--skip-combined` |
-
-**Key rule**: `experiments.py` always reads the config you pass via `--config`. Each of its subprocesses (`kronos_tree.py`, `Utils.edge`) also receives **that same config** — you do not need to edit `config.yaml` to switch M1 models. Use `--m1` instead.
-
-#### Config selection
-
-Each M1 has its own config file with the correct `csv_dir` and `m1:` field:
-
-| M1 model | Config file |
-| --- | --- |
-| Kronos | `config_kronos.yaml` |
-| Fincast | `config_fincast.yaml` |
-| Chronos2 | `config_chronos2.yaml` |
-| Tirex | `config_tirex.yaml` |
-
-#### Examples
-
-```bash
-# ── Full run ────────────────────────────────────────────────────────────────
-
-# All models (rf, xgboost, tabpfn, tabicl), both directions — Kronos signals
-conda run -n CTTS python Utils/experiments.py --config config.yaml
-
-# All models — Fincast signals (reads config_fincast.yaml; outputs → Output/Fincast/)
-conda run -n CTTS python Utils/experiments.py --config config_fincast.yaml
-
-# All models — Chronos2 signals
-conda run -n CTTS python Utils/experiments.py --config config_chronos2.yaml
-
-# All models — Tirex signals
-conda run -n CTTS python Utils/experiments.py --config config_tirex.yaml
-
-# ── Model selection ─────────────────────────────────────────────────────────
-
-# Only RF and TabICL
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --models rf tabicl
-
-# Only TabPFN
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --models tabpfn
-
-# ── Phase control ───────────────────────────────────────────────────────────
-
-# Skip training — re-run edge + combined backtest on existing outputs
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --skip-training
-
-# Training only — skip edge and combined backtest
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --skip-edge --skip-combined
-
-# Skip everything except the combined UP+DOWN backtest
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --skip-training --skip-edge
-
-# ── Feature analysis ────────────────────────────────────────────────────────
-
-# Enable feature analysis (steps 1-7 of kronos_tree) during training
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --features true
-
-# Enable feature analysis AND top-5 sub-analysis
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --features true --top5 true
-
-# ── Edge protocol tuning ────────────────────────────────────────────────────
-
-# More seed trials and CPCV blocks for tighter convergence verdict
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --edge-trials 200 --edge-blocks 8
-
-# ── M1 override (legacy / special cases) ────────────────────────────────────
-# Use --m1 only when you want to override the m1 field that is hardcoded in
-# the config. Prefer passing the correct config file (e.g. config_fincast.yaml)
-# over using --m1 whenever possible.
-
-conda run -n CTTS python Utils/experiments.py --config config.yaml \
-  --m1 fincast
-```
-
-#### Full argument reference
-
-| Argument | Default | Meaning |
-| --- | --- | --- |
-| `--config` | *(required)* | Path to the YAML config file. |
-| `--models` | all (rf xgboost tabpfn tabicl) | Which models to run. |
-| `--skip-training` | off | Skip Phase 1 (per-gran training). |
-| `--skip-edge` | off | Skip Phase 2 (edge convergence). |
-| `--skip-combined` | off | Skip Phase 3 (combined UP+DOWN backtest). |
-| `--features` | `false` | Run feature analysis (steps 1-7) during training. |
-| `--top5` | `false` | Run top-5 feature sub-analysis (requires `--features true`). |
-| `--edge-trials` | 100 | Number of seed trials in Phase 2 seeds step. |
-| `--edge-blocks` | 6 | Number of CPCV blocks in Phase 2 CPCV step. |
-| `--edge-k-test` | 2 | Number of test blocks per CPCV split. |
-| `--m1` | *(from config)* | Override the M1 model name (sets `M1_MODEL` env var for subprocesses). |
+> Replace `<hash>` with the actual MD5 suffix emitted by `_build_cache_from_config` when the cache is first created.
 
 ---
 
@@ -590,103 +442,166 @@ conda run -n CTTS python Utils/experiments.py --config config.yaml \
 
 | Path | Role |
 | --- | --- |
-| `config.yaml` / `config_<m1>.yaml` | Runtime configuration per M1 model (paths, dates, features). Pass via `--config` — no env vars needed. |
-| `kronos_tree.py` | Main M2 analysis entrypoint; orchestrates 4-way splits, training, evaluation, and selective backtesting. |
+| `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, OCP knobs, edge/feature-selection parameters. |
+| `Utils/experiments.py` | **User entry point.** Reads `config.yaml`, orchestrates training → edge → combined → feature-selection phases across every `(m2 × direction × granularity)` combination. |
+| `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with the JSON-serialized config. Not meant to be called directly. |
+| `feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
-| `Utils/edge/` | **The Gate Keeper**: Seeds stability engine + CPCV regime-sensitivity analysis. CLI: `python -m Utils.edge`. |
+| `Utils/edge/` | Worker for the edge phase — seeds stability + CPCV regime sensitivity. Invoked as `python -m Utils.edge` by `experiments.py`. |
 | `Utils/data/` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, embargo/purge logic. |
 | `Utils/feature_selection/` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
 | `Utils/backtest/` | Backtest helpers, equity construction, Sharpe/drawdown, reporting, combined UP+DOWN backtest, comparison tables. |
-| `Utils/hpo/` | Optuna-based HPO: objectives, search spaces, runner, CLI entrypoint. CLI: `python -m Utils.hpo`. |
+| `Utils/hpo/` | Optuna-based HPO — **standalone**, not orchestrated by `experiments.py`. CLI: `python -m Utils.hpo`. |
 | `Utils/ocp/` | SAOCP core logic + OCP diagnostic CLI. CLI: `python -m Utils.ocp.analysis`, `python -m Utils.ocp.theory`. |
 | `Utils/selective_classification/` | Probability calibration (Isotonic, Platt) and utility-threshold selection. |
 | `Utils/ts_cross_validation/` | CPCV, PurgedEmbargoCV, embargo-split helpers for financial time-series CV. |
-| `Utils/experiments.py` | Experiment orchestrator: training → edge convergence → combined backtests for all models and directions. |
-| `Data_MLA/` | Kronos-oriented dataset assets and technical indicator computation. |
+| `Data_MLA/` | Per-M1 dataset assets and technical indicator computation (one subfolder per backbone: `Kronos/`, `Fincast/`, `Chronos2/`, `Tirex/`). |
 
 ---
 
-## Configuration Examples
+## Configuration Reference
 
-The project uses a unified configuration file. Below is a snapshot of `config.yaml`.
+The project has exactly **one** config file: [src/config.yaml](src/config.yaml). Its schema:
 
 ```yaml
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
+  csv_dir:     "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
   output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
 
-# ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ Experiment matrix — the cross product that experiments.py sweeps ━━━━━━━━━━┓
+experiment:
+  m1:          "kronos"                            # kronos | fincast | chronos2 | tirex
+  m2:          ["randforest"]                      # randforest | xgboost | autogluon | tabpfn | tabpfn_ft | tabicl
+  direction:   ["up", "down"]
+  granularity: ["1d", "12h", "8h", "6", "4h", "2h", "1h", "30m"]
+
+# ┏━━━━━━━━━━ Data ━━━━━━━━━━┓
 data:
   load:
-    symbol:          null          # null → multi-asset; or ["BTC", "ETH", ...]
-    target_col:      "meta_label"
-    meta_label_mode: "tp"          # "fp" | "tp" | "og"
-    direction:       "down"        # "up" | "down"
-    granularity:     "all"         # "1d" | "4h" | ... | "all" for multi-granularity
+    symbol:           null           # null → multi-asset; or ["BTC", "ETH", ...]
+    m1:               "kronos"       # MUST match experiment.m1 and paths.csv_dir
+    target_col:       "meta_label"
+    meta_label_mode:  "tp"           # fp | tp | og
+    direction:        "up"
+    granularity:      "all"          # "all" = multi-granularity cache
     forecast_horizon: 7
-    m1: "fincast"
-
   split:
     start_date: "2024-07-01"
     train_end:  "2025-05-30"
     val_end:    "2025-10-01"
     end_date:   "2026-01-25"
-    context_length: 90
-
   features:
     input: ["open", "high", "low", "close", "volume"]
     engineered_features:
       selected: [bb_pctb_last, rsi_last, roc_5_last, roc_20_last, atr_norm_last]
+    feature_selection:
+      enabled: false
+      methods: ["mda", "shap", "lime"]
+      top_k:   null
 
 # ┏━━━━━━━━━━ Evaluation ━━━━━━━━━━┓
 evaluation:
   fee_per_trade: 0.002
+
+# ┏━━━━━━━━━━ Runtime — phase toggles and per-phase knobs ━━━━━━━━━━┓
+runtime:
+  skip:
+    training:          true
+    edge:              true
+    combined:          true
+    feature_selection: false
+
+  training:
+    ocp_costs:           [0, 10, 2]
+    ocp_alpha:           0.10
+    ocp_window_days:     25
+    paradigm_comparison: null
+    combined_backtest:   null
+    comparison:          null
+    all_grans:           false
+    thres:               "utility"   # utility | OCP | OCP-W | OCP-cost | OCP-cost-mondrian
+    top5:                false
+    run_features:        false
+
+  edge:
+    n_trials: 100
+    n_blocks: 6
+    k_test:   2
+
+  combined:
+    combined_backtest: ["place_holder_up", "place_holder_down"]   # populated by experiments.py
+    ocp_costs:         [0, 10, 2]
+
+  feature_selection:
+    cv_strategy:              "cpcv"    # cpcv | tscv | pecv
+    n_blocks:                 10
+    k_test:                   2
+    method:                   "sfs+"
+    scoring:                  "accuracy"
+    min_features:             1
+    max_features:             33
+    take_n_best_combinations: 10
 ```
 
-## `config.yaml` Parameter Meanings
+### Parameter meanings
 
-### `paths`
-
+#### `paths`
 | Key | Meaning |
 | --- | --- |
-| `paths.csv_dir` | Root directory containing the processed Kronos CSV files. |
-| `paths.output_root` | Base output directory. Artifacts are written under `Output/<m1>/`. |
+| `paths.csv_dir` | Root directory of the M1 backbone's processed CSVs. Must match `experiment.m1`. |
+| `paths.output_root` | Base output directory. Artifacts land under `Output/<M1>/`. |
 
-### `data.load`
-
+#### `experiment`
 | Key | Meaning |
 | --- | --- |
-| `data.load.symbol` | `null` = multi-asset. Set to a symbol or list for asset-specific loading. |
+| `experiment.m1` | M1 backbone. Determines the output bucket (`Output/Kronos/`, `Output/Fincast/`, etc.). |
+| `experiment.m2` | List of M2 models to sweep. |
+| `experiment.direction` | Directions to sweep (`up`, `down`, or both). |
+| `experiment.granularity` | Granularities to sweep. |
+
+#### `data.load`
+| Key | Meaning |
+| --- | --- |
+| `data.load.symbol` | `null` = multi-asset; set a list for asset-specific runs. |
+| `data.load.m1` | Must match `experiment.m1` and `paths.csv_dir`. Validated at load time. |
 | `data.load.target_col` | Target column the M2 classifier predicts. |
-| `data.load.meta_label_mode` | Which meta-label variant to use (`tp` is the current active setup). |
-| `data.load.direction` | Trade direction for labeling and evaluation. |
-| `data.load.granularity` | `"all"` enables multi-granularity mode. |
-| `data.load.forecast_horizon` | Prediction horizon; also governs return alignment, backtesting, and OCP delayed-feedback logic. |
-| `data.load.m1` | M1 model that generated upstream signals; determines output bucket (`Output/Kronos/` vs `Output/Fincast/`). |
+| `data.load.meta_label_mode` | Meta-label variant (`tp` is the active setup). |
+| `data.load.direction` | Default direction used for cache rebuilds when no explicit cache is found. |
+| `data.load.granularity` | `"all"` enables multi-granularity cache assembly. |
+| `data.load.forecast_horizon` | Prediction horizon; drives return alignment, backtests, and OCP delayed feedback. |
 
-### `data.split`
-
+#### `data.split`
 | Key | Meaning |
 | --- | --- |
-| `data.split.start_date` | Earliest date included in the dataset. |
-| `data.split.train_end` | End of the training segment. |
-| `data.split.val_end` | End of the validation segment. |
-| `data.split.end_date` | Final date admitted into the dataset. |
-| `data.split.context_length` | Lookback window size per sample. |
+| `start_date` / `train_end` / `val_end` / `end_date` | Chronological boundaries for Train / Val-Cal / Val-Opt / Test with embargo gaps. |
 
-### `data.features`
-
+#### `data.features`
 | Key | Meaning |
 | --- | --- |
-| `data.features.input` | Raw market columns used as base inputs. |
-| `data.features.engineered_features.selected` | Engineered window-level features exposed to the tree model. |
+| `features.input` | Raw OHLCV columns fed into indicator computation. |
+| `features.engineered_features.selected` | Engineered window-level features exposed to the M2 model. |
+| `features.feature_selection.enabled` / `methods` / `top_k` | MDA/SHAP/LIME ranking and optional pruning. |
 
-### `evaluation`
-
+#### `evaluation`
 | Key | Meaning |
 | --- | --- |
-| `evaluation.fee_per_trade` | Transaction fee assumption for utility and backtest metrics. |
+| `evaluation.fee_per_trade` | Transaction fee used by utility-threshold selection and backtests. |
+
+#### `runtime.skip`
+Flip each flag to `false` to enable its phase. `experiments.py` iterates phases 1→4 in order, skipping any that are `true`.
+
+#### `runtime.training`
+Threshold mode (`utility`, `OCP`, `OCP-W`, `OCP-cost`, `OCP-cost-mondrian`), OCP cost vector + coverage target + calibration window, plus the `all_grans` / `top5` / `run_features` toggles for unified-vs-per-gran and feature sub-analysis.
+
+#### `runtime.edge`
+Seeds trial count (`n_trials`), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
+
+#### `runtime.combined`
+`combined_backtest` is **auto-populated** by `experiments.py` from the training phase outputs — don't edit the placeholder pair by hand.
+
+#### `runtime.feature_selection`
+CV strategy (`cpcv`, `tscv`, `pecv`), SFS+/RFECV shape (`method`, `n_blocks`, `k_test`, `min_features`, `max_features`, `take_n_best_combinations`), and scoring metric (`accuracy`, `precision`, `roc_auc`).
 
 ---
 
@@ -707,10 +622,10 @@ src/Output/
         └── UP/    {OCP/, Utility_Score/}
 ```
 
-- `src/Output/Kronos/` is the active result tree for the current M2 workflow.
-- `src/Output/Kronos/cache/` stores `MultiGranDataset` pickles used by `kronos_tree.py`.
+- `src/Output/<M1>/` is the active result tree for the currently configured M1 backbone.
+- `src/Output/<M1>/cache/` stores `MultiGranDataset` pickles, rebuilt on demand from `config.yaml`.
 - Additional model folders (`tabpfn/`, `tabicl/`, `xgboost/`) appear when those runs are generated.
-- `src/Output/Analysis/` contains the edge and theory study outputs.
+- `src/Output/Analysis/` contains edge and theory study outputs (cross-model, cross-M1).
 
 ---
 
@@ -739,13 +654,12 @@ src/Output/
 
 ## Practical Notes
 
-- The canonical output location for run results is `src/Output/Kronos/`.
-- `kronos_tree.py` is the main CLI. Run it with `--config` and the desired flags.
-- `Utils/feature_selection/` is a library module; it is reached through `kronos_tree.py` feature-analysis flags, not standalone CLI.
-- `Utils/backtest/comparison.py` is a library module; use it through `kronos_tree.py --comparison` / `--paradigm-comparison`.
-- All `python Utils/<module>.py` invocations are replaced by `python -m Utils.<package>`. The old flat files no longer exist.
-- Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally.
-- The model objects used by `--model` are built in `Utils/classifier/factory.py` via `_build_tree_model()`.
+- The canonical output location for run results is `src/Output/<M1>/` (M1 taken from `experiment.m1`).
+- **Run everything through `Utils/experiments.py`**. `kronos_tree.py`, `Utils.edge`, and `feature_selection_experiment.py` are subprocess workers — they expect `--config` as a **JSON-serialized dict**, not a path, and will not accept a YAML argument.
+- `Utils/feature_selection/` and `Utils/backtest/comparison.py` are library modules; they are reached via the training / feature-selection phases in `experiments.py`, not standalone CLI.
+- Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally. The scaler bypass is controlled by `MODELS_NO_SCALING` in `Utils/classifier/factory.py`.
+- The M2 model list in `experiment.m2` is resolved to concrete classifiers in `Utils/classifier/factory.py` via `_build_tree_model()`.
+- `Utils/hpo` and `Utils/ocp.analysis` / `Utils/ocp.theory` are **standalone** — they take `--config config.yaml` as a path and run independently of `experiments.py`.
 
 ---
 
