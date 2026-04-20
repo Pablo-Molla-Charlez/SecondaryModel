@@ -180,33 +180,6 @@ The `threshold_source` field in every result JSON records which stage fired.
 
 ---
 
-### 4. Threshold Optimization — OCP modes
-
-> **Triggered when**: `runtime.training.thres` ∈ `{"OCP", "OCP-W", "OCP-cost", "OCP-cost-mondrian"}`
-
-Instead of a fixed τ, Online Conformal Prediction (SAOCP) adapts the threshold sample-by-sample on the Test window using delayed feedback (predictions are confirmed after `forecast_horizon` bars). The Val-Cal + Val-Opt window is used as the warm-up sequence.
-
-| Mode | Description |
-|------|-------------|
-| `OCP` | Standard SAOCP with unbounded history — threshold adapts to maintain α miscoverage target (default α=0.10, i.e. 90 % coverage). |
-| `OCP-W` | Windowed SAOCP — only the most recent `ocp_window_days` calendar days of residuals are used for calibration, making it more reactive to regime changes. |
-| `OCP-cost` | Cost-aware deferral — replaces the coverage constraint with an asymmetric cost vector `[c_FN, c_FP, c_DEF]`. The deferral set (abstain) is chosen when neither predicting 0 nor 1 minimises expected cost. |
-| `OCP-cost-mondrian` | Same as `OCP-cost` but with **Mondrian conditioning**: cost thresholds are computed separately per volatility regime, so the model abstains more aggressively in high-volatility periods. |
-
-Key config knobs:
-```yaml
-runtime:
-  training:
-    thres:            "utility"   # or OCP / OCP-W / OCP-cost / OCP-cost-mondrian
-    ocp_alpha:        0.10        # target miscoverage (OCP / OCP-W)
-    ocp_window_days:  25          # calibration window in days (OCP-W / OCP-cost modes)
-    ocp_costs:        [0, 10, 2]  # [c_FN, c_FP, c_DEF] (OCP-cost / OCP-cost-mondrian)
-```
-
-Output folders are named after the mode — `Utility_Score/` for utility mode, `OCP/`, `OCP-W/`, `OCP-cost/`, or `OCP-cost-mondrian/` for OCP variants.
-
----
-
 ## Utils/ Package Architecture
 
 The `Utils/` directory is a fully modular Python package tree. Each subdirectory is a standalone package with a curated public API in its `__init__.py`.
