@@ -251,7 +251,7 @@ flowchart TD
     D --> F[Score: 60%]
     E & F --> G[Convergence]
     G --> H{Verdict}
-    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Seeds & CPCV True</small>"]
+    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Seeds & CPCV</small>"]
     H --> J["&nbsp;&nbsp;&nbsp;AMBER: Risk&nbsp;&nbsp;&nbsp;<br/><small>One True</small>"]
     H --> K["&nbsp;&nbsp;&nbsp;&nbsp;RED: Reject&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Neither True</small>"]
     classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
