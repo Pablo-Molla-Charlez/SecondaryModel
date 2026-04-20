@@ -38,7 +38,7 @@
 flowchart LR
     A[CSV Market Data<br/>multi-asset / multi-granularity] --> B[Utils/data/]
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
-    C --> D[Utils/experiments.py<br/>Pipeline Orchestration<br/>· kronos_tree.py<br/>· Utils.edge<br/>· feature_selection_experiment.py]
+    C --> D[Utils/experiments.py<br/>Pipeline Orchestration]
     D --> K[Utils/classifier/<br/>Model Factory: RF, AutoGluon, TabPFN, TabICL]
     K --> E[Selective Classification<br/>Utility Threshold or SAOCP]
     E --> F[Feature Plots]
@@ -70,18 +70,14 @@ flowchart TD
     A --> G[runtime.training / edge / combined / feature_selection]
     classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    classDef detail fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
     class A root;
-    class B,C,D,F,G group;
-    class E detail;
+    class B,C,D,E,F,G group;
     linkStyle 0,1,2,3,4,5 stroke:#2563eb,stroke-width:6px;
 ```
 
 ---
 
-## Core Architecture: Calibration-First
-
-The pipeline follows a strict **Calibration-First** architecture designed to eliminate data leakage and ensure statistical validity in financial meta-labeling.
+## Core Architecture
 
 ### 1. The 4-Way Splitting Protocol
 Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to isolate model fitting, probability calibration, and threshold optimization.
