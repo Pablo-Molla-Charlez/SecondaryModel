@@ -177,7 +177,8 @@ def _create_objective(model_name: str,
         utility   = op.get("utility", float("-inf"))
         threshold = op.get("threshold", 0.5)
         coverage  = op.get("coverage", 1.0)
-        sel_mean  = op.get("mean_ret", 0.0)
+        sel_mean        = op.get("mean_ret", 0.0)
+        threshold_source = op.get("threshold_source", "unknown")
 
         # ┏━━━━━━━━━━ Compute selective precision on Val-Opt ━━━━━━━━━━┓
         sel_mask = cal_opt_probs >= threshold
@@ -186,6 +187,7 @@ def _create_objective(model_name: str,
 
         # ┏━━━━━━━━━━ Store trial attributes ━━━━━━━━━━┓
         trial.set_user_attr("threshold", float(threshold))
+        trial.set_user_attr("threshold_source", threshold_source)
         trial.set_user_attr("coverage", float(coverage))
         trial.set_user_attr("sel_precision", float(sel_prec))
         trial.set_user_attr("sel_mean_return", float(sel_mean))

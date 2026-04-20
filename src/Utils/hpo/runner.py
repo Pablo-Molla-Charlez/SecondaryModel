@@ -240,15 +240,15 @@ def run_hpo(config: str,
     print(f"\n{'='*70}")
     print(f"HPO SUMMARY")
     print(f"{'='*70}")
-    print(f"{'Model':<10} {'Dir':<6} {'Gran':<6} {'Utility':>10} {'Prec':>8} {'Cov':>8} {'Sharpe':>8} {'Thr':>8}")
-    print(f"{'-'*70}")
+    print(f"{'Model':<10} {'Dir':<6} {'Gran':<6} {'Utility':>10} {'Prec':>8} {'Cov':>8} {'Source':<18} {'Thr':>8}")
+    print(f"{'-'*78}")
     for r in all_results:
         m = r["best_metrics"]
         print(f"{r['model']:<10} {r['direction']:<6} {r['granularity']:<6} "
               f"{r['best_utility']:>10.4f} "
               f"{m.get('sel_precision', 0):>8.3f} "
               f"{m.get('coverage', 0):>8.3f} "
-              f"{m.get('sel_sharpe', 0):>8.2f} "
+              f"{m.get('threshold_source', 'unknown'):<18} "
               f"{m.get('threshold', 0.5):>8.3f}")
     print(f"{'='*70}")
     print(f"Completed {len(all_results)}/{total} configurations.")
