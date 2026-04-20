@@ -54,6 +54,7 @@ from Utils.ts_cross_validation import (_gran_to_timedelta,
                                        _generate_cpcv_splits,
                                        _reconstruct_paths,
                                        compute_embargo_splits as _compute_embargo_splits,
+                                       compute_seeds_embargo_splits as _compute_seeds_embargo_splits,
                                        CAL_SPLIT_RATIO)
 
 # ┏━━━━━━━━━ Fixed seed for CPCV — variance measures regime sensitivity, not model noise ━━━━━━━━━━┓
@@ -230,19 +231,25 @@ def _run_single_trial(eng, labels, returns, split_indices, direction, fee, seed,
                       model_key="rf"):
     """Train one model with a given seed, return metrics.
 
-    4-way split: Train / Val-Cal / Val-Opt / Test (with embargo gaps handled upstream).
-    Order: Train → Calibrate on Cal → Sweep τ on calibrated Opt → Evaluate on calibrated Test.
+    4-way split: Train / Val-Cal / Val-Opt / Val-Eval (all carved inside
+    train+val — the real TEST window is never referenced here; embargo gaps
+    are handled upstream by ``compute_seeds_embargo_splits``).
+    Order: Train → Calibrate on Cal → Sweep τ on calibrated Opt → Evaluate on calibrated Val-Eval.
+
+    The result key remains ``"test"`` (in the dict) to keep downstream plot
+    code unchanged; it means "evaluation set of this trial" = Val-Eval, NOT
+    the real test window.
     """
-    # ┏━━━━━━━━━━ Get 4-way split indices ━━━━━━━━━━┓
-    idx_train, idx_cal, idx_opt, idx_test = split_indices
+    # ┏━━━━━━━━━━ Get 4-way split indices (Val-Eval is the per-trial hold-out) ━━━━━━━━━━┓
+    idx_train, idx_cal, idx_opt, idx_val_eval = split_indices
 
     # ┏━━━━━━━━━━ Extract data for each split ━━━━━━━━━━┓
-    X_train = eng[idx_train];  y_train = labels[idx_train].astype(int)
-    X_cal   = eng[idx_cal];    y_cal   = labels[idx_cal].astype(int)
-    X_opt   = eng[idx_opt];    y_opt   = labels[idx_opt].astype(int)
-    X_test  = eng[idx_test];   y_test  = labels[idx_test].astype(int)
+    X_train = eng[idx_train];     y_train = labels[idx_train].astype(int)
+    X_cal   = eng[idx_cal];       y_cal   = labels[idx_cal].astype(int)
+    X_opt   = eng[idx_opt];       y_opt   = labels[idx_opt].astype(int)
+    X_test  = eng[idx_val_eval];  y_test  = labels[idx_val_eval].astype(int)   # Val-Eval acts as "test" within this trial
     opt_returns  = returns[idx_opt].copy()
-    test_returns = returns[idx_test].copy()
+    test_returns = returns[idx_val_eval].copy()
 
     # ┏━━━━━━━━━━ Adjust returns based on direction ━━━━━━━━━━┓
     if direction.lower() == "down":
@@ -363,43 +370,76 @@ def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_na
         dates_all = sub["dates"]
         dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid[i]]
 
-        # ┏━━━━━━━━━━ 4-way split with embargo ━━━━━━━━━━┓
-        splits = _compute_embargo_splits(dates_valid, train_end, val_end, horizon, gran)
-        idx_train = splits["idx_train"]
-        idx_cal   = splits["idx_cal"]
-        idx_opt   = splits["idx_opt"]
-        idx_test  = splits["idx_test"]
-        cal_end   = splits["cal_end"]
-        purge_td  = splits["purge_td"]
+        # ┏━━━━━━━━━━ 4-way split with embargo — INSIDE train+val only (no TEST leakage) ━━━━━━━━━━┓
+        # The real TEST window (dates > val_end) is never exposed during the
+        # seeds-convergence experiment. Per-seed noise is measured on Val-Eval,
+        # a held-out slice carved from the tail of the train+val timeline.
+        splits = _compute_seeds_embargo_splits(dates_valid, train_end, val_end, horizon, gran)
+        idx_train    = splits["idx_train"]
+        idx_cal      = splits["idx_cal"]
+        idx_opt      = splits["idx_opt"]
+        idx_val_eval = splits["idx_val_eval"]
+        purge_td     = splits["purge_td"]
+        b            = splits["boundaries"]
 
         # ┏━━━━━━━━━━ Check for empty splits ━━━━━━━━━━┓
-        if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_test]):
-            print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} opt={len(idx_opt)} test={len(idx_test)})"); continue
+        if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_val_eval]):
+            print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} "
+                  f"opt={len(idx_opt)} val_eval={len(idx_val_eval)})")
+            continue
 
-        print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  opt={len(idx_opt):,}  test={len(idx_test):,}")
-        print(f"  Cal end: {cal_end.strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
+        # ┏━━━━━━━━━━ Print split info ━━━━━━━━━━┓
+        print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  "
+              f"opt={len(idx_opt):,}  val_eval={len(idx_val_eval):,}  (TEST window excluded)")
+        print(f"  Boundaries: train→{b['train_end'].strftime('%Y-%m-%d')} | "
+              f"cal→{b['cal_end'].strftime('%Y-%m-%d')} | "
+              f"opt→{b['opt_end'].strftime('%Y-%m-%d')} | "
+              f"val_eval→{b['val_end'].strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
         print(f"  Features: {eng.shape[1]}")
 
-        # ┏━━━━━━━━━━ Compute M1 baselines ━━━━━━━━━━┓
-        # Use Val-cal + Val-Opt combined as "val" for M1 baseline purposes
-        idx_val_combined = np.concatenate([idx_cal, idx_opt])
-        m1_baselines = _compute_m1_baselines(sub, dates_all, train_end, val_end, returns, idx_val_combined, idx_test, direction, fee)
-        m1_acc_test  = m1_baselines["test"]["m1_acc"]
-        m1_prec_test = m1_baselines["test"]["m1_prec"]
-        m1_ret_test  = m1_baselines["test"]["m1_mean_ret"]
+        # ┏━━━━━━━━━━ Compute M1 baselines on Val-Eval (NOT on real test) ━━━━━━━━━━┓
+        # Build raw-index list that matches idx_val_eval in the valid-filtered space.
+        m1_pred = sub.get("m1_pred_labels")
+        m1_true = sub.get("m1_true_labels")
+        if isinstance(m1_pred, torch.Tensor): m1_pred = m1_pred.numpy()
+        if isinstance(m1_true, torch.Tensor): m1_true = m1_true.numpy()
+        # Map valid-filtered Val-Eval indices back to raw cache indices
+        valid_to_raw = np.flatnonzero(valid)
+        idx_val_eval_raw = valid_to_raw[idx_val_eval].tolist() if len(idx_val_eval) else []
 
-        # ┏━━━━━━━━━━ Print M1 baselines ━━━━━━━━━━┓
+        m1_acc_test = m1_prec_test = None
+        if m1_pred is not None and m1_true is not None and len(idx_val_eval_raw) > 0:
+            p = m1_pred[idx_val_eval_raw]
+            t = m1_true[idx_val_eval_raw]
+            ok = ~np.isnan(p) & ~np.isnan(t)
+            if ok.sum() > 0:
+                m1_acc_test  = float(accuracy_score(t[ok], p[ok]))
+                m1_prec_test = float(precision_score(t[ok], p[ok], zero_division=0))
+
+        rets_val_eval = returns[idx_val_eval].copy()
+        if direction.lower() == "down":
+            rets_val_eval = -rets_val_eval
+        m1_ret_test = float(np.nanmean(rets_val_eval - fee)) if len(rets_val_eval) > 0 else 0.0
+
+        # ┏━━━━━━━━━━ Keep the dict shape expected by plot helpers ━━━━━━━━━━┓
+        m1_baselines = {"val":  {"m1_acc": None, "m1_prec": None, "m1_mean_ret": None},
+                        "test": {"m1_acc":  m1_acc_test,
+                                 "m1_prec": m1_prec_test,
+                                 "m1_mean_ret": m1_ret_test}}
+
+        # ┏━━━━━━━━━━ Print M1 baselines (on Val-Eval) ━━━━━━━━━━┓
         if m1_acc_test is not None:
-            print(f"  M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}  mean_ret={m1_ret_test:.6f}")
+            print(f"  M1 Baseline Val-Eval: acc={m1_acc_test:.4f}  "
+                  f"prec={m1_prec_test:.4f}  mean_ret={m1_ret_test:.6f}")
         else:
-            print(f"  M1 Baselines — not available | Mean Ret Test: {m1_ret_test:.6f}")
+            print(f"  M1 Baselines — not available | Mean Ret Val-Eval: {m1_ret_test:.6f}")
 
-        # ┏━━━━━━━━━━ Run trials ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Run trials (Val-Eval stands in for 'test' within each trial) ━━━━━━━━━━┓
         all_trials = []
         for trial_i in range(n_trials):
             seed = trial_i * 7 + 1
             result = _run_single_trial(eng, labels, returns,
-                                       (idx_train, idx_cal, idx_opt, idx_test),
+                                       (idx_train, idx_cal, idx_opt, idx_val_eval),
                                        direction, fee, seed, gran, horizon,
                                        model_key=model_key)
             all_trials.append(result)
@@ -453,9 +493,17 @@ def run_seeds_analysis(cache_path, cfg, n_trials=100, output_root=None, model_na
         summary = {
             "granularity": gran, "direction": direction, "n_trials": n_trials,
             "n_train": len(idx_train), "n_cal": len(idx_cal),
-            "n_opt": len(idx_opt), "n_test": len(idx_test),
+            "n_opt": len(idx_opt), "n_val_eval": len(idx_val_eval),
+            "eval_split": "val_eval (carved inside train+val; real TEST excluded)",
             "n_features": eng.shape[1],
-            "cal_end": str(cal_end), "purge": str(purge_td),
+            "train_end":    str(b["train_end"]),
+            "cal_end":      str(b["cal_end"]),
+            "opt_end":      str(b["opt_end"]),
+            "val_eval_end": str(b["val_end"]),
+            "purge": str(purge_td),
+            "m1_baseline_val_eval_acc":  m1_acc_test,
+            "m1_baseline_val_eval_prec": m1_prec_test,
+            # Legacy keys retained for downstream plot compatibility:
             "m1_baseline_test_acc": m1_acc_test, "m1_baseline_test_prec": m1_prec_test,
             "test_acc_mean": float(np.mean(test_accs)), "test_acc_std": float(np.std(test_accs)),
             "test_prec_mean": float(np.mean(test_precs)), "test_prec_std": float(np.std(test_precs)),

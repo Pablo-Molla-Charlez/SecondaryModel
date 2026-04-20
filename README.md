@@ -270,6 +270,45 @@ flowchart TD
 
 CPCV uses **datetime-based block partitioning** by default (`CombinatorialPurgedCV(mode="datetime")`), where blocks are defined by equal calendar spans and purge windows match `horizon × bar_width`. Index-based partitioning is available as `mode="index"` for backward compatibility.
 
+### Convergence Gate Conditions — the exact rules
+
+The convergence verdict is **not** a handcrafted heuristic — it's the outcome of two independent quantitative gates (see [`Utils/edge/edge.py`](src/Utils/edge/edge.py)).
+
+**Gate 1 — CPCV (Regime Sensitivity).** Evaluated across all CPCV back-test paths:
+
+```
+cpcv_pass  ⇔  median_path_sharpe > 0   AND   fraction_profitable > 0.60
+cpcv_score = fraction_profitable × clip(median_path_sharpe, 0, 1)
+```
+
+`fraction_profitable` is the share of CPCV paths with positive total return; `median_path_sharpe` is the median of per-path Sharpe ratios.
+
+**Gate 2 — Seeds (Model Stability).** Evaluated over N random-seed replicas (default `N = 100`) on a held-out **Val-Eval** split (see below):
+
+```
+sharpe_ci_lower = mean_sharpe − 1.96 · std_sharpe / √N
+seeds_pass  ⇔  fraction_profitable > 0.70   AND   sharpe_ci_lower > 0
+CV_sharpe   = std_sharpe / |mean_sharpe|
+seeds_score = fraction_profitable × clip(1 − CV_sharpe, 0, 1)
+```
+
+**Final verdict and composite score.**
+
+```
+verdict = GREEN  if cpcv_pass ∧ seeds_pass
+          AMBER  if cpcv_pass ⊕ seeds_pass
+          RED    otherwise
+final_score = 0.6 · cpcv_score + 0.4 · seeds_score
+```
+
+**Val-Eval split for seeds mode (test-set integrity).** To keep the real test window fully unseen during stability measurement, `seeds` mode carves a 4-way split **entirely inside the Train+Val timeline** — the real test window is never touched. Ratios (of the Train+Val span) are:
+
+```
+[ Train 65% | purge | Val-Cal 12% | purge | Val-Opt 10% | purge | Val-Eval 13% ]   ( | Test — untouched )
+```
+
+Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. `Val-Eval` is the hold-out on which per-seed Sharpe / return / precision are measured. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
+
 ---
 
 ## Setup
