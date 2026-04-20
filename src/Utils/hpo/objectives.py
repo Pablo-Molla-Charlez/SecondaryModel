@@ -165,8 +165,10 @@ def _create_objective(model_name: str,
         try:
             raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
             cal_opt_probs = calibrator.predict(raw_opt_probs)
-            op = _find_best_utility_threshold(cal_opt_probs, opt_returns,
-                                              fee=fee, labels=y_opt)
+            op = _find_best_utility_threshold(cal_opt_probs,
+                                              opt_returns,
+                                              fee    = fee,
+                                              labels = y_opt)
         except Exception as e:
             print(f"  [Trial {trial.number}] Threshold optimization failed: {e}")
             return float("-inf")
@@ -175,8 +177,7 @@ def _create_objective(model_name: str,
         utility   = op.get("utility", float("-inf"))
         threshold = op.get("threshold", 0.5)
         coverage  = op.get("coverage", 1.0)
-        sel_mean  = op.get("sel_mean_return", 0.0)
-        sel_sharpe = op.get("sel_sharpe", 0.0)
+        sel_mean  = op.get("mean_ret", 0.0)
 
         # ┏━━━━━━━━━━ Compute selective precision on Val-Opt ━━━━━━━━━━┓
         sel_mask = cal_opt_probs >= threshold
@@ -188,7 +189,6 @@ def _create_objective(model_name: str,
         trial.set_user_attr("coverage", float(coverage))
         trial.set_user_attr("sel_precision", float(sel_prec))
         trial.set_user_attr("sel_mean_return", float(sel_mean))
-        trial.set_user_attr("sel_sharpe", float(sel_sharpe))
         trial.set_user_attr("n_selected", int(n_sel))
         trial.set_user_attr("n_opt_total", int(len(y_opt)))
 
