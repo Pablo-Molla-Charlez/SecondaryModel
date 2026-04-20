@@ -6,7 +6,7 @@ share the same ``fit`` / ``predict`` / ``save_model`` / ``load_model`` interface
 """
 
 # ┏━━━━━━━━━━ Model registry ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
+MODEL_CHOICES = ("randforest", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
 
 # ┏━━━━━━━━━━ Models that must NOT receive StandardScaler-transformed data ━━━━━━━━━━┓
 MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl"}
@@ -19,8 +19,8 @@ _AG_TIME_LIMIT = 3600          # overridden by --ag-time-limit
 _AG_PRESETS = "best_quality"  # overridden by --ag-presets
 
 
-def _build_tree_model(model_name: str,
-                      n_samples: int,
+def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc we also use it for tabpfn etc.
+                      n_samples: int,  # TODO never used?!
                       class_weight_ratio: float = 1.0,
                       feature_names=None,
                       time_limit=None,
@@ -43,7 +43,7 @@ def _build_tree_model(model_name: str,
         AutoGluon quality preset.
     """
     # ┏━━━━━━━━━━ Random Forest ━━━━━━━━━━┓
-    if model_name == "rf":
+    if model_name == "randforest":
         from Utils.classifier.random_forest_classifier import RFClassifier
         return RFClassifier(n_estimators     = 500,
                             max_depth        = 6,

@@ -84,3 +84,9 @@ class BaseTimeSeriesCV(ABC):
 
             if len(X) != len(y):
                 raise ValueError("X and y must have same length")
+            
+    def get_evaluation_path_ids(self) -> dict:
+        """
+        Return a dictionary mapping that tells you which split is used for what path
+        """
+        raise NotImplementedError()

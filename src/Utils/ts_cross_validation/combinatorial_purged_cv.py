@@ -309,3 +309,26 @@ class CombinatorialPurgedCV(BaseTimeSeriesCV):
         if self.mode != "datetime":
             raise ValueError("get_datetime_splits() is only available for mode='datetime'")
         return self._get_datetime_splits()
+    
+    def get_evaluation_path_ids(self):
+        splits = list(combinations(range(self.n_splits), self.n_test_splits))
+        """Reconstruct C(N-1, k-1) chronological paths from CPCV splits."""
+        # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
+        n_paths = math.comb(self.n_splits - 1, self.n_test_splits - 1)
+        block_to_splits = {b: [] for b in range(self.n_splits)}
+        
+        # ┏━━━━━━━━━━ Map each block to the splits that test it ━━━━━━━━━━┓
+        for si, sp in enumerate(splits):
+            for b in sp:
+                block_to_splits[b].append(si)
+        
+        # ┏━━━━━━━━━━ Create paths by picking the p-th split for every block ━━━━━━━━━━┓
+        paths = []
+        for p in range(n_paths):
+            path_entries = []
+            for b in range(self.n_splits):
+                split_idx = block_to_splits[b][p]
+                path_entries.append({"block": b, "split_idx": split_idx})
+            paths.append(path_entries)
+        
+        return paths
