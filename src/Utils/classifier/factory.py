@@ -3,10 +3,15 @@
 Provides ``_build_tree_model`` and the ``MODEL_CHOICES`` / ``MODELS_NO_SCALING``
 registries. Every branch returns a ``BaseClassifier`` subclass so all models
 share the same ``fit`` / ``predict`` / ``save_model`` / ``load_model`` interface.
+Also exposes ``_save_final_model`` for persisting the single production model
+used for Test predictions.
 """
 
+import pickle
+from pathlib import Path
+
 # ┏━━━━━━━━━━ Model registry ━━━━━━━━━━┓
-MODEL_CHOICES = ("randforest", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
+MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
 
 # ┏━━━━━━━━━━ Models that must NOT receive StandardScaler-transformed data ━━━━━━━━━━┓
 MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl"}
@@ -24,7 +29,8 @@ def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc 
                       class_weight_ratio: float = 1.0,
                       feature_names=None,
                       time_limit=None,
-                      presets: str = "best_quality"):
+                      presets: str = "best_quality",
+                      params: dict | None = None):
     """Return a ``BaseClassifier``-compatible instance for the requested model.
 
     Parameters
@@ -41,16 +47,23 @@ def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc 
         Training time cap in seconds (AutoGluon only); falls back to ``_AG_TIME_LIMIT``.
     presets : str
         AutoGluon quality preset.
+    params : dict | None
+        Best hyperparameters from HPO (overrides defaults for rf/tabpfn/tabicl).
     """
     # ┏━━━━━━━━━━ Random Forest ━━━━━━━━━━┓
-    if model_name == "randforest":
+    if model_name == "rf":
         from Utils.classifier.random_forest_classifier import RFClassifier
-        return RFClassifier(n_estimators     = 500,
-                            max_depth        = 6,
-                            min_samples_leaf = 20,
-                            random_state     = 42,
-                            n_jobs           = -1,
-                            class_weight     = "balanced")
+        defaults = {"n_estimators":     500,
+                    "max_depth":        6,
+                    "min_samples_leaf": 20,
+                    "min_samples_split": 2,
+                    "max_features":     "sqrt",
+                    "class_weight":     "balanced"}
+        if params:
+            defaults.update({k: v for k, v in params.items() if k in defaults})
+        return RFClassifier(**defaults,
+                            random_state = 42,
+                            n_jobs       = -1)
 
     # ┏━━━━━━━━━━ XGBoost ━━━━━━━━━━┓
     elif model_name == "xgboost":
@@ -81,6 +94,13 @@ def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc 
     # ┏━━━━━━━━━━ TabPFN (zero-shot) ━━━━━━━━━━┓
     elif model_name == "tabpfn":
         from Utils.classifier.tabpfn_classifier import TabPFN
+        if params:
+            return TabPFN(n_estimators           = params.get("n_estimators", 4),
+                          softmax_temperature    = params.get("softmax_temperature", 0.9),
+                          balance_probabilities  = params.get("balance_probabilities", False),
+                          average_before_softmax = params.get("average_before_softmax", False),
+                          inference_config       = params.get("inference_config"),
+                          random_state           = 42)
         return TabPFN()
 
     # ┏━━━━━━━━━━ TabPFN (fine-tuned) ━━━━━━━━━━┓
@@ -91,7 +111,55 @@ def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc 
     # ┏━━━━━━━━━━ TabICL (in-context learning) ━━━━━━━━━━┓
     elif model_name == "tabicl":
         from Utils.classifier.tabicl_classifier import TabICL
+        if params:
+            return TabICL(n_estimators        = params.get("n_estimators", 8),
+                          softmax_temperature = params.get("softmax_temperature", 0.9),
+                          random_state        = 42)
         return TabICL()
 
     else:
         raise ValueError(f"Unknown model: {model_name!r}. Choose from {MODEL_CHOICES}")
+
+
+# ------------------------------------------------------------------------------
+# Final production-model persistence
+# ------------------------------------------------------------------------------
+def _save_final_model(artifacts: dict,
+                      save_dir: Path,
+                      model_name: str,
+                      features_used: list,
+                      best_params: dict | None,
+                      meta: dict) -> None:
+    """Persist the final train+cal+opt-fitted model used for Test predictions.
+
+    Excludes CPCV fold models, seed-experiment models, and per-trial HPO models.
+    Only the single production model returned by ``temporal_eval(all features)``
+    is saved, together with the pre-processing scaler, isotonic calibrator,
+    feature list, chosen threshold, and the HPO params that built it.
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model = artifacts["model"]
+    bundle = {"scaler":        artifacts["scaler"],
+              "calibrator":    artifacts["calibrator"],
+              "col_indices":   artifacts["col_indices"],
+              "val_op":        artifacts["val_op"],
+              "features_used": features_used,
+              "model_name":    model_name,
+              "best_params":   best_params,
+              "meta":          meta}
+
+    # ┏━━━━━━━━━━ Model payload (format depends on classifier type) ━━━━━━━━━━┓
+    if model_name == "autogluon":
+        model.save_to(save_dir)                  # AutoGluon writes its own directory layout
+    else:
+        try:
+            model.save_model(str(save_dir / "model"))
+        except Exception as e:                   # fallback when classifier lacks a native serializer
+            print(f"    [save] native save_model failed ({e}); falling back to pickle")
+            with open(save_dir / "model.pkl", "wb") as f:
+                pickle.dump(model, f)
+
+    with open(save_dir / "bundle.pkl", "wb") as f:
+        pickle.dump(bundle, f)
+    print(f"    Final model saved to {save_dir}")

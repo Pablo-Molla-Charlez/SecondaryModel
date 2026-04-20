@@ -163,7 +163,7 @@ if __name__ == "__main__":
     #     gran_list,
     #     metric="Accuracy",
     #     display=True,
-    #     save_path=os.path.join(dir_path, f"{m1}/randforest/{direction.upper()}/interpretability", "acc_learning_curves_overview.pdf")
+    #     save_path=os.path.join(dir_path, f"{m1}/rf/{direction.upper()}/interpretability", "acc_learning_curves_overview.pdf")
     # )
 
     plot_learning_curves_grid(
@@ -175,5 +175,5 @@ if __name__ == "__main__":
         gran_list,
         metric="Precision",
         display=True,
-        save_path=os.path.join(dir_path, f"{m1}/randforest/{direction.upper()}/interpretability", "pre_learning_curves_overview.pdf")
+        save_path=os.path.join(dir_path, f"{m1}/rf/{direction.upper()}/interpretability", "pre_learning_curves_overview.pdf")
     )

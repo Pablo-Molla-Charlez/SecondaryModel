@@ -2,10 +2,11 @@
 
 Iterates over the (m2 × direction × granularity) cross product defined in
 `experiment:` and dispatches subprocesses for each enabled phase in `runtime.skip`:
+  0. Hyperparameter optimization   → python -m Utils.hpo    (phase=hpo; rf/tabpfn/tabicl only)
   1. Per-granularity training      → kronos_tree.py         (phase=training)
   2. Edge convergence protocol     → python -m Utils.edge   (phase=edge)
   3. Combined UP+DOWN backtest     → kronos_tree.py         (phase=combined)
-  4. Feature selection experiment  → feature_selection_experiment.py (phase=feature_selection)
+  4. Feature selection experiment  → Utils/feature_selection_experiment.py (phase=feature_selection)
 
 Usage:
     python Utils/experiments.py --config config.yaml
@@ -26,7 +27,7 @@ _SRC = Path(__file__).resolve().parent.parent
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from Utils.utils import _load_config
+from Utils.utils import _load_config, HPO_SUPPORTED_M2
 
 
 # ┏━━━━━━━━━━ Run subprocess ━━━━━━━━━━┓
@@ -60,12 +61,56 @@ def _find_cache(cfg_path: str, direction: str, m1: str = None) -> str | None:
 
 
 # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
-def run_experiments(config: dict):
+def run_experiments(config: dict, config_path: str):
     """Execute the full experiment suite."""
-    
+
     python = sys.executable
     results = {}
-    
+
+    # ┏━━━━━━━━━━ Phase 0: Hyperparameter Optimization ━━━━━━━━━━┓
+    # Runs per (m2, direction) over ALL configured granularities in one invocation.
+    # Results land in Output/{M1}/HPO/{m2}/{DIR}/{gran}/best_params.json and are
+    # picked up by Phase 1 training via Utils.utils._load_best_params.
+    if not config["runtime"]["skip"].get("hpo", True):
+        print(f"\n{'#' * 70}")
+        print(f"# PHASE 0: Hyperparameter Optimization")
+        print(f"# M1 Model: {config['experiment']['m1']}")
+        print(f"# M2 Models: {config['experiment']['m2']}")
+        print(f"# Directions: {config['experiment']['direction']}")
+        print(f"# Granularities: {config['experiment']['granularity']}")
+        print(f"# Trials: {config['runtime']['hpo']['n_trials']}")
+        print(f"{'#' * 70}")
+
+        # ┏━━━━━━━━━━ Loop through M2 models ━━━━━━━━━━┓
+        for m2 in config['experiment']['m2']:
+
+            # ┏━━━━━━━━━━ Skip if HPO not supported for m2 ━━━━━━━━━━┓
+            if m2 not in HPO_SUPPORTED_M2:
+                print(f"  [SKIP] HPO not supported for m2={m2} (supported: {sorted(HPO_SUPPORTED_M2)}) — will use defaults")
+                continue
+
+            # ┏━━━━━━━━━━ Loop through directions ━━━━━━━━━━┓
+            for direction in config['experiment']['direction']:
+
+                # ┏━━━━━━━━━━ Find cache path ━━━━━━━━━━┓
+                cache_path = _find_cache(config["paths"]["output_root"], direction, m1=config['experiment']['m1'])
+                if cache_path is None:
+                    print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
+                    continue
+
+                # ┏━━━━━━━━━━ Build command for HPO ━━━━━━━━━━┓
+                label = f"HPO {m2.upper()} {direction.upper()}"
+                cmd = [python, "-m", "Utils.hpo",
+                       "--config",     config_path,
+                       "--cache",      cache_path,
+                       "--models",     m2,
+                       "--directions", direction,
+                       "--grans",      *config['experiment']['granularity'],
+                       "--n-trials",   str(config['runtime']['hpo']['n_trials']),
+                       "--seed",       str(config['runtime']['hpo']['seed'])]
+                ok = _run(cmd, label)
+                results[label] = ok
+
     # ┏━━━━━━━━━━ Phase 1: Training (per-gran) ━━━━━━━━━━┓
     if not config["runtime"]['skip']["training"]:
         print(f"\n{'#' * 70}")
@@ -211,7 +256,7 @@ def run_experiments(config: dict):
                         continue
                     
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
-                    cmd = [python, "feature_selection_experiment.py",
+                    cmd = [python, "Utils/feature_selection_experiment.py",
                            "--cache_path", cache_path,
                            "--config", json.dumps(config),
                            "--phase", "feature_selection",
@@ -257,7 +302,7 @@ def main():
     print(f"{'=' * 70}")
     
     # ┏━━━━━━━━━━ Run experiments ━━━━━━━━━━┓
-    run_experiments(config=cfg)
+    run_experiments(config=cfg, config_path=str(config_path))
 
 
 if __name__ == "__main__":

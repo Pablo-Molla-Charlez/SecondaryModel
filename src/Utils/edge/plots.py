@@ -6,7 +6,7 @@ Two modes:
   --mode cpcv   : Combinatorial Purged Cross-Validation (Lopez de Prado)
                   N=6 datetime blocks, k=2 test → C(6,2)=15 splits → 5 paths
 
-Supported models: rf (randforest), xgboost, autogluon, tabpfn, tabpfn_ft
+Supported models: rf, xgboost, autogluon, tabpfn, tabpfn_ft
 
 Usage:
   python -m Utils.edge --cache path/to/multi_cache.pt --mode seeds
@@ -51,15 +51,6 @@ CAL_SPLIT_RATIO = 0.40
 # First 40% of OOB Train (Calibration Set ~ Val-Cal)
 # Last 60% (Threshold Optimization Set ~ Val-Opt) (CPCV only)
 CPCV_OOB_CAL_RATIO = 0.40
-
-# ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
-_CLI_TO_MODEL_KEY = {"randforest": "rf",
-                     "xgboost":    "xgboost",
-                     "autogluon":  "autogluon",
-                     "tabpfn":     "tabpfn",
-                     "tabpfn_ft":  "tabpfn_ft",
-                     "tabicl":     "tabicl"}
-
 
 # ┏━━━━━━━━━━ Metrics to plot ━━━━━━━━━━┓
 METRICS_TO_PLOT = [("accuracy",      "Accuracy (@0.5)"),

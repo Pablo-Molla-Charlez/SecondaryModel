@@ -83,11 +83,13 @@ from Utils.utils import (NumpyJSONEncoder,
                          _resolve_caches,
                          _class_names,
                          _infer_direction,
-                         _load_multi_cache)
+                         _load_multi_cache,
+                         _load_best_params)
 # ┏━━━━━━━━━━ Models ━━━━━━━━━━┓
 from Utils.classifier import (MODEL_CHOICES,
                               MODELS_NO_SCALING,
-                              _build_tree_model)
+                              _build_tree_model,
+                              _save_final_model)
 from Utils.classifier.factory import (_AG_TIME_LIMIT,
                                       _AG_PRESETS)
 
@@ -131,7 +133,8 @@ def temporal_eval(dataset: dict,
                   split_indices_raw: tuple = None,
                   granularity: str = "1d",
                   ocp_costs: tuple = (0.0, 10.0, 2.0),
-                  ocp_window_days: int = 25) -> dict:
+                  ocp_window_days: int = 25,
+                  best_params: dict | None = None) -> dict:
     """Train on Train, calibrate on Val-Cal, sweep threshold on Val-Opt, evaluate on Test.
 
     4-way split: Train / Val-Cal / Val-Opt / Test with embargo gaps.
@@ -243,11 +246,14 @@ def temporal_eval(dataset: dict,
     cw_ratio = n_neg / max(n_pos, 1)
     
     # ┏━━━━━━━━━━ Build Tree Model + Fit on Train ━━━━━━━━━━┓
+    if best_params:
+        print(f"    Using HPO best_params for {model_name} ({granularity}/{direction}): {best_params}")
     model = _build_tree_model(model_name,
                               len(y_train),
                               cw_ratio,
                               feature_names=feature_cols,
-                              presets=_AG_PRESETS)
+                              presets=_AG_PRESETS,
+                              params=best_params)
     model.fit(X_train, y_train)
     
     # ┏━━━━━━━━━━ Autogluon Leaderboard and Model Info ━━━━━━━━━━┓
@@ -590,7 +596,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                  run_features: bool = True, thres_mode: str = "utility",
                  ocp_alpha: float = 0.10,
                  ocp_costs: tuple = (0.0, 10.0, 2.0),
-                 ocp_window_days: int = 25):
+                 ocp_window_days: int = 25,
+                 best_params: dict | None = None):
     """Run full feature analysis for one direction/granularity.
 
     Args:
@@ -834,8 +841,21 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                     split_indices_raw=split_indices_raw,
                                                     granularity=granularity,
                                                     ocp_costs=ocp_costs,
-                                                    ocp_window_days=ocp_window_days)
-        
+                                                    ocp_window_days=ocp_window_days,
+                                                    best_params=best_params)
+
+        # ┏━━━━━━━━━━ Persist final production model (train+cal+opt fitted model used for Test) ━━━━━━━━━━┓
+        _save_final_model(artifacts_all,
+                          save_dir=save_dir / "final_model",
+                          model_name=model_name,
+                          features_used=active_features,
+                          best_params=best_params,
+                          meta={"granularity":     granularity,
+                                "direction":       direction,
+                                "meta_label_mode": mode,
+                                "thres_mode":      thres_mode,
+                                "m1":              cfg.get("data", {}).get("load", {}).get("m1") if cfg else None})
+
         # TODO: Change the selection when Till creates pipeline
         if run_top5:
             # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
@@ -861,7 +881,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                           split_indices_raw=split_indices_raw,
                                                           granularity=granularity,
                                                           ocp_costs=ocp_costs,
-                                                          ocp_window_days=ocp_window_days)
+                                                          ocp_window_days=ocp_window_days,
+                                                          best_params=best_params)
         
         # ┏━━━━━━━━━━ Financial Backtest (Equity Curves + ROI Reports) ━━━━━━━━━━┓
         if cfg is not None:
@@ -956,18 +977,12 @@ def run_unified_analysis(cache_path: Path,
     # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
-    model_folder = {"rf": "randforest",
-                    "xgboost": "xgboost",
-                    "autogluon": "autogluon",
-                    "tabpfn": "tabpfn",
-                    "tabpfn_ft": "tabpfn_ft",
-                    "tabicl": "tabicl"}[model_name]
     if thres_mode.startswith("OCP"):
         thres_folder = thres_mode
     else:
         thres_folder = "Utility_Score"
     save_dir = output_root / _m1_output_bucket(
-        cfg) / model_folder / direction.upper() / thres_folder / f"unified_{mode}"
+        cfg) / model_name / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # ┏━━━━━━━━━━ Fee and Horizon ━━━━━━━━━━┓
@@ -1617,6 +1632,7 @@ def main():
             direction_caches = _resolve_caches(args.config, args.cache_path)
 
             for direction, cache_path in sorted(direction_caches.items()):
+                best_params = _load_best_params(args.config, args.m2, direction, args.granularity)
                 run_analysis(cache_path=cache_path,
                              direction=direction,
                              mode=args.config['data']['load']['meta_label_mode'],
@@ -1631,7 +1647,8 @@ def main():
                              thres_mode=args.config['runtime'][args.phase]["thres"],
                              ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
                              ocp_costs=ocp_costs,
-                             ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
+                             ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"],
+                             best_params=best_params)
             print(f"\nAll analyses complete.")
             return
 

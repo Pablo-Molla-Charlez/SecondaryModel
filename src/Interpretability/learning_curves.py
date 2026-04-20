@@ -142,7 +142,7 @@ if __name__ == "__main__":
         f"{args.output_root}/{args.m1}/interpretability/learning_curves/direction={args.direction}/{args.gran}/",
         exist_ok=True)
     os.makedirs(
-        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/",
+        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/",
         exist_ok=True)
     
     save_frame = pd.DataFrame(save_dict_acc_val)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
         index=False)
     
     plot_learning_curve(save_frame,
-                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_val_learning_curve.png",
+                        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_val_learning_curve.png",
                         display=False,
                         metric="Validation Accuracy",
                         gran=args.gran,
@@ -168,7 +168,7 @@ if __name__ == "__main__":
         index=False)
     
     plot_learning_curve(save_frame,
-                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_test_learning_curve.png",
+                        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/acc_test_learning_curve.png",
                         display=False,
                         metric="Test Accuracy",
                         gran=args.gran,
@@ -184,7 +184,7 @@ if __name__ == "__main__":
         index=False)
     
     plot_learning_curve(save_frame,
-                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_val_learning_curve.png",
+                        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_val_learning_curve.png",
                         display=False,
                         metric="Validation Precision",
                         gran=args.gran,
@@ -200,7 +200,7 @@ if __name__ == "__main__":
         index=False)
     
     plot_learning_curve(save_frame,
-                        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_test_learning_curve.png",
+                        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/interpretability/{args.gran}_{args.meta_label_mode}/pre_test_learning_curve.png",
                         display=False,
                         metric="Test Precision",
                         gran=args.gran,

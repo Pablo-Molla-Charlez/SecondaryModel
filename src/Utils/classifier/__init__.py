@@ -38,6 +38,7 @@ except Exception:  # pragma: no cover
 # Factory — never fails on import (xgboost + sklearn are hard deps).
 from Utils.classifier.factory import (
     _build_tree_model,
+    _save_final_model,
     MODEL_CHOICES,
     MODELS_NO_SCALING,
     _TABPFN_MAX_ROWS,
@@ -54,6 +55,7 @@ __all__ = [
     "AutoGluon",
     "AutogluonClassifier",
     "_build_tree_model",
+    "_save_final_model",
     "MODEL_CHOICES",
     "MODELS_NO_SCALING",
     "_TABPFN_MAX_ROWS",

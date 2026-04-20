@@ -45,7 +45,7 @@ evaluation:
 # ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
 experiment:
   m1: "kronos"                                                      # choice:  ["chronos2", "fincast", "tirex", "kronos"]
-  m2: [ "randforest" ]                                              # choice:  ["randforest", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
+  m2: [ "rf" ]                                                      # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
   direction: [ "up", "down" ]                                       # choices: ["up", "down"]
   granularity: [ "1d", "12h", "8h", "6", "4h", "2h", "1h", "30m" ]  # choices: ["1d", "12h", "8h", "6", "4h", "2h", "1h", "30m"]
 
@@ -53,17 +53,22 @@ experiment:
 # ┏━━━━━━━━━━ Runtime / Experiment Configuration ━━━━━━━━━━┓
 runtime:
   skip:
+    hpo: false                # choice: ["true" or "false"] — Phase 0: hyperparameter search (rf / tabpfn / tabicl only)
     training: true            # choice: ["true" or "false"]
     edge: true                # choice: ["true" or "false"]
     combined: true            # choice: ["true" or "false"]
     feature_selection: false  # choice: ["true" or "false"]
 
+  hpo:
+    n_trials: 100  # Optuna trials per (m2, direction, granularity)
+    seed:     42   # TPE sampler seed
+
   training:
     ocp_costs: [ 0, 10 ,2 ]    # Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')
     ocp_alpha: 0.10            # OCP target miscoverage rate (default: 0.10 → 90%% coverage target)
     ocp_window_days: 25        # Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)
-    paradigm_comparison: null  # "Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees randforest_7_fees randforest_OCP)
-    combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs (e.g. Output/Kronos/randforest/UP/Utility_Score Output/Kronos/randforest/DOWN/Utility_Score
+    paradigm_comparison: null  # "Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees rf_7_fees rf_OCP)
+    combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs (e.g. Output/Kronos/rf/UP/Utility_Score Output/Kronos/rf/DOWN/Utility_Score
     comparison: null           # [str, str]; Build comparison table from existing per-gran and unified result dirs
     all_grans: false           # Unified model trained on all granularities, evaluated per-gran
     top5: false                # TODO check how to use this properly; Whether to run top-5 feature analysis/backtest

@@ -41,6 +41,37 @@ def m1_display_label(cfg: dict | None) -> str:
     return f"M1 {m1_output_bucket(cfg)}"
 
 
+# ┏━━━━━━━━━━ HPO best-params loader ━━━━━━━━━━┓
+# Models whose hyperparameters are currently tunable via Utils.hpo.
+HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}
+
+def _load_best_params(cfg: dict,
+                      m2: str,
+                      direction: str,
+                      granularity: str) -> dict | None:
+    """Return best params dict from HPO, or None if absent.
+
+    Reads ``Output/{M1}/HPO/{m2}/{DIR}/{gran}/best_params.json`` produced by
+    ``Utils.hpo``. Only rf/tabpfn/tabicl are tunable; other m2 return None.
+    """
+    # ┏━━━━━━━━━━ Determine M2 output bucket ━━━━━━━━━━┓
+    if m2 not in HPO_SUPPORTED_M2:
+        return None
+    
+    # ┏━━━━━━━━━━ Build best-params path ━━━━━━━━━━┓
+    best_path = (Path(cfg["paths"]["output_root"])
+                 / m1_output_bucket(cfg) / "HPO"
+                 / m2 / direction.upper() / granularity / "best_params.json")
+    
+    # ┏━━━━━━━━━━ Load best-params file ━━━━━━━━━━┓
+    if not best_path.exists():
+        return None
+    with open(best_path) as f:
+        payload = json.load(f)
+
+    return payload.get("best_params")
+
+
 # ┏━━━━━━━━━━ JSON Encoder ━━━━━━━━━━┓
 class NumpyJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles common numpy scalar and array types."""

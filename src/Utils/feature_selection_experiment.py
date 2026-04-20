@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # select model
     clf = _build_tree_model(args.m2, X_analysis.shape[0])  # TODO number of samples not used
 
-    print(f"[Feature selection] Is parallelizable: {True if args.m2 == "randforest" else False}")
+    print(f"[Feature selection] Is parallelizable: {True if args.m2 == "rf" else False}")
     # select cross validation strategy
     if args.config["runtime"][args.phase]["cv_strategy"] == "cpcv":
         cv = CombinatorialPurgedCV(n_splits=args.config["runtime"][args.phase]["n_blocks"],
@@ -313,7 +313,7 @@ if __name__ == "__main__":
                                              f"{args.granularity}_{args.config["data"]["load"]["meta_label_mode"]}/",
                           cache_feature_tag=f"{args.config["runtime"][args.phase]["scoring"]}_{cv.name}_{args.config["runtime"][args.phase]["n_blocks"]}",
                           take_n_best_combinations=args.config["runtime"][args.phase]["take_n_best_combinations"],
-                          can_be_parallelized=True if args.m2 == "randforest" else False)
+                          can_be_parallelized=True if args.m2 == "rf" else False)
     elif args.config["runtime"][args.phase]["method"] == "rfecv":
         res = do_rfecv(clf,
                        X_analysis,

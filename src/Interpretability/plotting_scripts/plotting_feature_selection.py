@@ -139,11 +139,11 @@ def plot_scoring_over_features(ret_dict, args=None):
 
     if args is not None:
         os.makedirs(
-            f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/"
+            f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/"
             f"interpretability/{args.gran}_{args.meta_label_mode}",
             exist_ok=True)
         plt.savefig(
-            f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/"
+            f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/"
             f"interpretability/{args.gran}_{args.meta_label_mode}/"
             f"feature_selection_strategy={args.strategy}_scoring={args.scoring}_n_splits={args.n_splits}_min_max={args.min_features}_{args.max_features}.pdf")
         plt.close()

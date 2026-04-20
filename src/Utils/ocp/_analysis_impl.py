@@ -16,8 +16,8 @@ Tests:
 Usage:
   python ocp_analysis.py --folder <path_to_results_folder> [--mode separate|unified]
 
-  --folder : path to e.g. .../randforest/8h_down_tp  (separate)
-             or            .../randforest/unified_down_tp  (unified)
+  --folder : path to e.g. .../rf/8h_down_tp  (separate)
+             or            .../rf/unified_down_tp  (unified)
   --mode   : auto-detected from folder name if not provided
 """
 

@@ -6,7 +6,7 @@ Two modes:
   --mode cpcv   : Combinatorial Purged Cross-Validation (Lopez de Prado)
                   N=6 datetime blocks, k=2 test → C(6,2)=15 splits → 5 paths
 
-Supported models: rf (randforest), xgboost, autogluon, tabpfn, tabpfn_ft
+Supported models: rf, xgboost, autogluon, tabpfn, tabpfn_ft
 
 Usage:
   python -m Utils.edge --cache path/to/multi_cache.pt --mode seeds
@@ -90,13 +90,6 @@ EDGE_SEED = 42
 # First CPCV_OOB_CAL_RATIO of OOB Train = Val-Cal; remainder = Val-Opt (CPCV only).
 CPCV_OOB_CAL_RATIO = 0.40
 
-# ┏━━━━━━━━━━ CLI model name → models.py model key ━━━━━━━━━━┓
-# _CLI_TO_MODEL_KEY = {"randforest": "rf",
-#                      "xgboost":    "xgboost",
-#                      "autogluon":  "autogluon",
-#                      "tabpfn":     "tabpfn",
-#                      "tabpfn_ft":  "tabpfn_ft",
-#                      "tabicl":     "tabicl"}
 
 
 # ┏━━━━━━━━━━ Metrics to plot ━━━━━━━━━━┓
@@ -403,15 +396,13 @@ def _run_single_trial(eng, labels, returns, split_indices, direction, fee, seed,
 
 
 # ┏━━━━━━━━━━ Seeds: main runner ━━━━━━━━━━┓
-def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="randforest", direction="up", granularity="1d"):
+def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="rf", direction="up", granularity="1d"):
     # ┏━━━━━━━━━━ Extract config ━━━━━━━━━━┓
     train_end  = config["data"]["split"]["train_end"]
     val_end    = config["data"]["split"]["val_end"]
     fee        = config["evaluation"]["fee_per_trade"]
     horizon    = config["data"]["load"]["forecast_horizon"]
     
-    # model_key  = _CLI_TO_MODEL_KEY.get(model_name, model_name)
-
     # ┏━━━━━━━━━━ Load cache ━━━━━━━━━━┓
     print(f"\n[edge-seeds] Loading cache: {cache_path}")
     multi = _load_multi_cache(cache_path)
@@ -806,7 +797,7 @@ def _compute_path_metrics(path_results, fee):
 
 
 # ┏━━━━━━━━━━ CPCV: main runner ━━━━━━━━━━┓
-def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="randforest", direction="up", granularity="1d"):
+def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="rf", direction="up", granularity="1d"):
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     fee       = config["evaluation"]["fee_per_trade"]
     horizon   = config["data"]["load"]["forecast_horizon"]
@@ -1052,7 +1043,7 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
 
 
 # ┏━━━━━━━━━━ Compute edge convergence score ━━━━━━━━━━┓
-def compute_edge_convergence_score(cache_path, config, direction="up", model_name="randforest", granularity="1d"):
+def compute_edge_convergence_score(cache_path, config, direction="up", model_name="rf", granularity="1d"):
     """2-stage convergence score: CPCV (60%) + Seeds (40%).
 
     Hard gates (AND logic — both must pass for GREEN):
@@ -1215,7 +1206,6 @@ def compute_edge_convergence_score(cache_path, config, direction="up", model_nam
 # ┏━━━━━━━━━━ CLI ━━━━━━━━━━┓
 def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
-    # _VALID_CLI_MODELS = tuple(_CLI_TO_MODEL_KEY.keys())
     parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")  # TODO adjust description
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
     parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)

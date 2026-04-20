@@ -114,11 +114,11 @@ if __name__ == "__main__":
     fig.suptitle(f"{args.m1} | {args.direction} | {args.gran} | {args.meta_label_mode} | {args.forecast_horizon}")
     plt.tight_layout()
     os.makedirs(
-        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/"
+        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/"
         f"interpretability/{args.gran}_{args.meta_label_mode}",
         exist_ok=True)
     plt.savefig(
-        f"{args.output_root}/{args.m1}/randforest/{args.direction.upper()}/"
+        f"{args.output_root}/{args.m1}/rf/{args.direction.upper()}/"
         f"interpretability/{args.gran}_{args.meta_label_mode}/"
         f"overview_shap_beeswarm.pdf")
     plt.close()

@@ -2220,7 +2220,7 @@ def plot_return_quality_distribution(cache_roots: Optional[Dict[str, Path]] = No
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def plot_performance_over_n_features(base_dir:         str = "/home/till/PycharmProjects/Secondary-Model/src/Output",
                                      m1:               str = "kronos",
-                                     m2:               str = "randforest",
+                                     m2:               str = "rf",
                                      direction:        str = "up",
                                      granularity:      str = "1d",
                                      meta_label_mode:  str = "tp",
