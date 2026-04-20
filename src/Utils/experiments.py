@@ -54,7 +54,7 @@ def _find_cache(cfg_path: str, direction: str, m1: str = None) -> str | None:
     if not cache_dir.exists():
         return None
     
-    for pt in sorted(cache_dir.glob(f"multi_7_fee_{direction}_*.pt")):
+    for pt in sorted(cache_dir.glob(f"multi_{m1.lower()}_7_fee_{direction}_*.pt")):
         return str(pt)
     
     return None

@@ -114,6 +114,99 @@ We enforce **Temporal Embargoes** at every boundary. A purge window (based on th
 
 ---
 
+### 3. Threshold Optimization — `utility` mode
+
+> **Source**: `Utils/selective_classification/thresholds.py::_find_best_utility_threshold`  
+> **Triggered when**: `runtime.training.thres: "utility"` (the default)
+
+The threshold τ is chosen on **Val-Opt** (the calibrated probability slice never seen during training or calibration) via a **five-stage cascade**. Each stage only fires if the previous stage found nothing. The winning τ is then applied **fixed** to Test.
+
+#### Stage A — Utility-Opt (strict) ✅ preferred
+Grid-searches τ ∈ [median(p≥0.5), 0.95] over 200 points. A candidate τ is accepted only when **all** of the following hold simultaneously:
+
+| Gate | Condition |
+|------|-----------|
+| Coverage floor | Selected trades ≥ max(50, 5 % of Val-Opt) |
+| Positive return | Mean net-of-fee return μ > 0 |
+| Precision gate | Precision(τ) ≥ precision(τ=0.5) — must beat the argmax baseline |
+| Statistical gate | Regularized t-stat t\* ≥ 1.0 (shrinkage prior n=50 toward base variance) |
+
+Among all candidates the winner maximises a **coverage-penalised utility score**:
+
+```
+utility = t* × cov_factor
+cov_factor = 1.0           if cov ≥ cov_star (0.15)
+           = (cov/cov_star)²  otherwise        # quadratic penalty for thin coverage
+```
+
+The penalty prevents τ from collapsing to a tiny high-precision tail: a threshold that only triggers on 1 % of samples is punished heavily even if its t-stat is high.
+
+#### Stage B — Precision-Coverage Pareto ⚠️ first fallback
+Fires when Stage A finds nothing (the profitable, statistically-significant region is too narrow).  
+Relaxes the t-stat and coverage-floor constraints but keeps μ > 0. Picks τ that maximises **precision × coverage** (expected hit rate), with a precision floor of `max(0, baseline_prec − 0.02)`.  
+Result tagged `threshold_source = "Precision-Coverage"`, `constraint_satisfied = False`.
+
+#### Stage C — Risk-Fallback ⚠️ second fallback
+Fires when the whole [0.5, 0.9] probability space has μ ≤ 0 everywhere — no threshold can achieve positive expected returns in this Val-Opt window.  
+Picks the τ that minimises **empirical loss rate** while penalising coverage loss:
+
+```
+score = risk + 0.10 × (1 − cov/cov_base)     # cov_base = coverage at τ=0.5
+```
+
+Still requires μ > 0 on the selected subset. Tagged `"Risk-Fallback"`, `constraint_satisfied = False`.
+
+#### Stage D — Baseline 🔴 last resort
+If even Stage C finds nothing (no τ anywhere achieves positive returns), falls back to `τ = 0.50` — equivalent to using raw model predictions without any selective filter. Tagged `"Baseline"`.
+
+#### Stage E — Baseline-Override Guard
+Applied **after** the winning stage, regardless of which one fired. If the unfiltered `τ=0.50` strategy has:
+- precision ≥ op.precision, **AND**
+- coverage ≥ 10 × op.coverage
+
+then the selected τ is discarded and replaced with `τ = 0.50` (tagged `"Baseline-Override"`). This prevents a narrow fluke tail from being reported as a genuine edge when a simpler, wider strategy dominates it on both precision and exposure.
+
+#### Summary table
+
+| Stage | Fires when | Key objective | `constraint_satisfied` |
+|-------|-----------|---------------|------------------------|
+| A — Utility-Opt | Default | Maximise coverage-penalised t-stat | `True` |
+| B — Precision-Coverage | Stage A empty | Maximise precision × coverage | `False` |
+| C — Risk-Fallback | Stage B empty | Minimise loss rate | `False` |
+| D — Baseline | Stage C empty | τ = 0.50 | `False` |
+| E — Override Guard | Post-selection | Replace with τ=0.50 if baseline dominates | `False` |
+
+The `threshold_source` field in every result JSON records which stage fired.
+
+---
+
+### 4. Threshold Optimization — OCP modes
+
+> **Triggered when**: `runtime.training.thres` ∈ `{"OCP", "OCP-W", "OCP-cost", "OCP-cost-mondrian"}`
+
+Instead of a fixed τ, Online Conformal Prediction (SAOCP) adapts the threshold sample-by-sample on the Test window using delayed feedback (predictions are confirmed after `forecast_horizon` bars). The Val-Cal + Val-Opt window is used as the warm-up sequence.
+
+| Mode | Description |
+|------|-------------|
+| `OCP` | Standard SAOCP with unbounded history — threshold adapts to maintain α miscoverage target (default α=0.10, i.e. 90 % coverage). |
+| `OCP-W` | Windowed SAOCP — only the most recent `ocp_window_days` calendar days of residuals are used for calibration, making it more reactive to regime changes. |
+| `OCP-cost` | Cost-aware deferral — replaces the coverage constraint with an asymmetric cost vector `[c_FN, c_FP, c_DEF]`. The deferral set (abstain) is chosen when neither predicting 0 nor 1 minimises expected cost. |
+| `OCP-cost-mondrian` | Same as `OCP-cost` but with **Mondrian conditioning**: cost thresholds are computed separately per volatility regime, so the model abstains more aggressively in high-volatility periods. |
+
+Key config knobs:
+```yaml
+runtime:
+  training:
+    thres:            "utility"   # or OCP / OCP-W / OCP-cost / OCP-cost-mondrian
+    ocp_alpha:        0.10        # target miscoverage (OCP / OCP-W)
+    ocp_window_days:  25          # calibration window in days (OCP-W / OCP-cost modes)
+    ocp_costs:        [0, 10, 2]  # [c_FN, c_FP, c_DEF] (OCP-cost / OCP-cost-mondrian)
+```
+
+Output folders are named after the mode — `Utility_Score/` for utility mode, `OCP/`, `OCP-W/`, `OCP-cost/`, or `OCP-cost-mondrian/` for OCP variants.
+
+---
+
 ## Utils/ Package Architecture
 
 The `Utils/` directory is a fully modular Python package tree. Each subdirectory is a standalone package with a curated public API in its `__init__.py`.
