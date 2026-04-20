@@ -365,12 +365,12 @@ conda run -n m2 python Utils/experiments.py --config config.yaml
 
 #### Phases (driven by `runtime.skip`)
 
-| Phase &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | What it runs | Enable via |
+| Phase &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | What it runs | Enable via |
 | :--- | :--- | :--- |
 | **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}` are skipped automatically. | `runtime.skip.hpo: false` |
 | **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. Each run loads the matching `best_params.json` from Phase 0 via `_load_best_params` and threads it through `_build_tree_model(params=...)`. | `runtime.skip.training: false` |
 | **2. Edge** | `python -m Utils.edge` in `seeds` → `cpcv` → `convergence` modes per `(m2 × direction × granularity)`. | `runtime.skip.edge: false` |
-| **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
+| **3. Combined** &nbsp;&nbsp; | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
 | **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
 
 Phase 0 and Phase 1 run sequentially: Phase 0 completes the full Optuna sweep for every HPO-supported `(m2, direction, granularity)` tuple before Phase 1 starts, so Phase 1 always reads the freshest `best_params.json`. Non-HPO-supported models (`xgboost`, `autogluon`, `tabpfn_ft`) use the hard-coded defaults in `factory.py`.
