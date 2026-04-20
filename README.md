@@ -66,8 +66,8 @@ flowchart TD
     A --> C[experiment<br/>m1 · m2 · direction · granularity]
     A --> D[data.load / data.split / data.features]
     A --> E[evaluation.fee_per_trade]
-    A --> F[runtime.skip<br/>training · edge · combined · feature_selection]
-    A --> G[runtime.training / edge / combined / feature_selection]
+    A --> F[runtime.skip<br/>hpo · training · edge · combined · feature_selection]
+    A --> G[runtime.hpo / training / edge / combined / feature_selection]
     classDef root fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     class A root;
@@ -346,17 +346,18 @@ There is **one** entry point and **one** config. To switch M1 backbones, models,
 conda run -n m2 python Utils/experiments.py --config config.yaml
 ```
 
-`experiments.py` reads the YAML, serializes it to JSON, and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `feature_selection_experiment.py`). All three read the same config dict, so there is no drift between the orchestrator and its workers.
+`experiments.py` reads the YAML, serializes it to JSON, and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`). All three read the same config dict, so there is no drift between the orchestrator and its workers.
 
 #### Config knobs that drive the run
 
 | Section | Key | What it does |
 | --- | --- | --- |
 | `experiment` | `m1` | M1 backbone — one of `kronos`, `fincast`, `chronos2`, `tirex`. **Must also update `paths.csv_dir` and `data.load.m1` to match.** |
-| `experiment` | `m2` | List of M2 models to run (`randforest`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`). |
+| `experiment` | `m2` | List of M2 models to run (`rf`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`). |
 | `experiment` | `direction` | List of directions (`up`, `down`, or both). |
 | `experiment` | `granularity` | List of granularities (`1d`, `12h`, `8h`, `6`, `4h`, `2h`, `1h`, `30m`). |
-| `runtime.skip` | `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
+| `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
+| `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
 | `runtime.training` | `thres`, `ocp_alpha`, `ocp_costs`, `ocp_window_days`, `all_grans`, `top5`, `run_features` | Training-phase knobs: threshold selection mode, OCP cost vector, unified-vs-per-gran mode, feature sub-analysis toggles. |
 | `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — seeds + CPCV shape. |
 | `runtime.combined` | `combined_backtest` | Populated automatically by `experiments.py`; leave as-is. |
@@ -366,10 +367,26 @@ conda run -n m2 python Utils/experiments.py --config config.yaml
 
 | Phase | What it runs | Enable via |
 | --- | --- | --- |
-| **1. Training** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. | `runtime.skip.training: false` |
+| **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}` are skipped automatically. | `runtime.skip.hpo: false` |
+| **1. Training** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. Each run loads the matching `best_params.json` from Phase 0 via `_load_best_params` and threads it through `_build_tree_model(params=...)`. | `runtime.skip.training: false` |
 | **2. Edge** | `python -m Utils.edge` in `seeds` → `cpcv` → `convergence` modes per `(m2 × direction × granularity)`. | `runtime.skip.edge: false` |
 | **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
-| **4. Feature selection** | `feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
+| **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
+
+Phase 0 and Phase 1 run sequentially: Phase 0 completes the full Optuna sweep for every HPO-supported `(m2, direction, granularity)` tuple before Phase 1 starts, so Phase 1 always reads the freshest `best_params.json`. Non-HPO-supported models (`xgboost`, `autogluon`, `tabpfn_ft`) use the hard-coded defaults in `factory.py`.
+
+#### Final production-model persistence
+
+Each completed training run persists a single production model — the one trained on Train+Cal and used for Test predictions. Saved per `(m2, direction, granularity)` at:
+
+```
+Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<dir>_<mode>/final_model/
+├── model{.pkl or native serialized files}   # native save_model with pickle fallback (AutoGluon uses save_to directory)
+└── bundle.pkl                               # scaler, isotonic calibrator, col_indices, val_op threshold,
+                                             # features_used, model_name, best_params, meta
+```
+
+CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py::_save_final_model`](src/Utils/classifier/factory.py).
 
 #### Switching M1 backbone
 
@@ -391,9 +408,9 @@ data:
 
 ---
 
-### `Utils/hpo/` — Hyperparameter Optimization (standalone)
+### `Utils/hpo/` — Hyperparameter Optimization
 
-HPO is **not** wired into `experiments.py`. Run it directly with Optuna when you want to tune a specific `(model, direction, granularity)` combination. It reads the same `config.yaml` for paths, splits, and fees.
+HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip.hpo: false`). Phase 1 reads the resulting `best_params.json` automatically via `Utils.utils._load_best_params`. You can also invoke it directly as a standalone CLI when you want to tune a specific `(model, direction, granularity)` combination without running the full pipeline — it reads the same `config.yaml` for paths, splits, and fees.
 
 ```bash
 # HPO for RF — up direction, 4h granularity, 50 trials
@@ -424,7 +441,7 @@ Post-hoc analysis of completed OCP runs. Requires a result folder produced by th
 ```bash
 # Practical diagnostics — per-granularity result folder
 conda run -n m2 python -m Utils.ocp.analysis \
-  --folder Output/Kronos/randforest/UP/OCP/4h_up_tp
+  --folder Output/Kronos/rf/UP/OCP/4h_up_tp
 
 # Theory / simulation studies (requires a cache .pt file)
 conda run -n m2 python -m Utils.ocp.theory \
@@ -442,7 +459,7 @@ conda run -n m2 python -m Utils.ocp.theory \
 | `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, OCP knobs, edge/feature-selection parameters. |
 | `Utils/experiments.py` | **User entry point.** Reads `config.yaml`, orchestrates training → edge → combined → feature-selection phases across every `(m2 × direction × granularity)` combination. |
 | `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with the JSON-serialized config. Not meant to be called directly. |
-| `feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
+| `Utils/feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
 | `Utils/edge/` | Worker for the edge phase — seeds stability + CPCV regime sensitivity. Invoked as `python -m Utils.edge` by `experiments.py`. |
 | `Utils/data/` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, embargo/purge logic. |
@@ -469,7 +486,7 @@ paths:
 # ┏━━━━━━━━━━ Experiment matrix — the cross product that experiments.py sweeps ━━━━━━━━━━┓
 experiment:
   m1:          "kronos"                            # kronos | fincast | chronos2 | tirex
-  m2:          ["randforest"]                      # randforest | xgboost | autogluon | tabpfn | tabpfn_ft | tabicl
+  m2:          ["rf"]                              # rf | xgboost | autogluon | tabpfn | tabpfn_ft | tabicl
   direction:   ["up", "down"]
   granularity: ["1d", "12h", "8h", "6", "4h", "2h", "1h", "30m"]
 
@@ -504,10 +521,15 @@ evaluation:
 # ┏━━━━━━━━━━ Runtime — phase toggles and per-phase knobs ━━━━━━━━━━┓
 runtime:
   skip:
+    hpo:               false
     training:          true
     edge:              true
     combined:          true
     feature_selection: false
+
+  hpo:
+    n_trials: 100       # Optuna trials per (m2, direction, granularity)
+    seed:     42        # TPE sampler seed
 
   training:
     ocp_costs:           [0, 10, 2]
@@ -614,14 +636,18 @@ src/Output/
     │   ├── DOWN/  {OCP/, Utility_Score/}
     │   └── UP/    {OCP/, Utility_Score/}
     ├── cache/
-    └── randforest/
-        ├── DOWN/  {OCP/, Utility_Score/}
-        └── UP/    {OCP/, Utility_Score/}
+    ├── HPO/                                    # Phase 0 outputs — best_params.json per (m2, dir, gran)
+    │   └── <m2>/<DIR>/<gran>/best_params.json
+    └── rf/
+        ├── DOWN/  {OCP/, Utility_Score/<gran>_<dir>_<mode>/final_model/}
+        └── UP/    {OCP/, Utility_Score/<gran>_<dir>_<mode>/final_model/}
 ```
 
 - `src/Output/<M1>/` is the active result tree for the currently configured M1 backbone.
 - `src/Output/<M1>/cache/` stores `MultiGranDataset` pickles, rebuilt on demand from `config.yaml`.
-- Additional model folders (`tabpfn/`, `tabicl/`, `xgboost/`) appear when those runs are generated.
+- `src/Output/<M1>/HPO/` stores Phase 0 best-params JSONs, consumed by Phase 1 via `_load_best_params`.
+- `final_model/` inside each run folder holds the single production classifier used for Test predictions (see "Final production-model persistence" above).
+- Additional model folders (`tabpfn/`, `tabicl/`, `xgboost/`) appear when those runs are generated. Legacy `randforest/` dirs from pre-rename runs are left in place.
 - `src/Output/Analysis/` contains edge and theory study outputs (cross-model, cross-M1).
 
 ---
@@ -652,11 +678,12 @@ src/Output/
 ## Practical Notes
 
 - The canonical output location for run results is `src/Output/<M1>/` (M1 taken from `experiment.m1`).
-- **Run everything through `Utils/experiments.py`**. `kronos_tree.py`, `Utils.edge`, and `feature_selection_experiment.py` are subprocess workers — they expect `--config` as a **JSON-serialized dict**, not a path, and will not accept a YAML argument.
+- **Run everything through `Utils/experiments.py`**. `kronos_tree.py`, `Utils.edge`, and `Utils/feature_selection_experiment.py` are subprocess workers — they expect `--config` as a **JSON-serialized dict**, not a path, and will not accept a YAML argument.
 - `Utils/feature_selection/` and `Utils/backtest/comparison.py` are library modules; they are reached via the training / feature-selection phases in `experiments.py`, not standalone CLI.
 - Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally. The scaler bypass is controlled by `MODELS_NO_SCALING` in `Utils/classifier/factory.py`.
 - The M2 model list in `experiment.m2` is resolved to concrete classifiers in `Utils/classifier/factory.py` via `_build_tree_model()`.
-- `Utils/hpo` and `Utils/ocp.analysis` / `Utils/ocp.theory` are **standalone** — they take `--config config.yaml` as a path and run independently of `experiments.py`.
+- `Utils/hpo` is integrated as Phase 0 of `experiments.py` (toggle via `runtime.skip.hpo`); it also supports a standalone CLI with `--config config.yaml`. `Utils/ocp.analysis` / `Utils/ocp.theory` are **standalone** — they take `--config config.yaml` as a path and run independently of `experiments.py`.
+- Only `rf`, `tabpfn`, `tabicl` are HPO-supported (`HPO_SUPPORTED_M2` in `Utils/utils.py`). Other M2 models skip Phase 0 and use the defaults in `Utils/classifier/factory.py::_build_tree_model`.
 
 ---
 
