@@ -2,6 +2,7 @@
 
 import warnings
 import re
+import glob
 import os
 import torch
 import matplotlib
@@ -1563,3 +1564,76 @@ def plot_asset_correlation(pearson_corr:  pd.DataFrame,
     plt.tight_layout()
     fig.savefig(save_dir / "asset_corr_rolling.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_performance_over_n_features(base_dir: str ="/home/till/PycharmProjects/Secondary-Model/src/Output",
+                                     m1: str = "kronos",
+                                     m2: str = "randforest",
+                                     direction: str = "up",
+                                     granularity: str = "1d",
+                                     meta_label_mode: str = "tp",
+                                     scoring: str = "accuracy",
+                                     cv_strategy: str = "CombinatorialPurgedEmbargoCV",
+                                     n_splits: int = 10) -> None:
+    # 1_features_accuracy_CombinatorialPurgedEmbargoCV_10_cached.csv
+
+    search_dir = (f"{base_dir}/"
+                  f"{m1.capitalize()}/"
+                  f"{m2}/"
+                  f"{direction.upper()}/"
+                  f"interpretability/"
+                  f"feature_selection/"
+                  f"{granularity}_{meta_label_mode}")
+    file_mask = f"*_features_{scoring}_{cv_strategy}_{n_splits}_cached.csv"
+    # print(search_dir)
+    # files = os.listdir(search_dir)
+    # for file in files:
+    #     print(file)
+    # print(file_mask)
+    files = sorted(
+        glob.glob(f"{search_dir}/{file_mask}"),
+        key=lambda x: int(re.search(r"^(\d+)_features", os.path.basename(x)).group(1))
+    )
+
+    n_features = []
+    val_mean = []
+    val_std = []
+    test_mean = []
+    test_std = []
+
+    for file in files:
+        df = pd.read_csv(file)
+        file_name = os.path.basename(file)
+        n_feature = int(file_name.split("_")[0])
+
+        best_idx = df['mean_val_scoring'].argmax()
+        n_features.append(n_feature)
+        val_mean.append(df['mean_val_scoring'].iloc[best_idx])
+        val_std.append(df['std_val_scoring'].iloc[best_idx])
+        test_mean.append(df['mean_test_scoring'].iloc[best_idx])
+        test_std.append(df['std_test_scoring'].iloc[best_idx])
+
+    n_features = np.array(n_features)
+    val_mean = np.array(val_mean)
+    val_std = np.array(val_std)
+    test_mean = np.array(test_mean)
+    test_std = np.array(test_std)
+
+    # plot
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    ax.plot(n_features, val_mean, label="Validation", marker="o")
+    ax.fill_between(n_features, val_mean - val_std, val_mean + val_std, alpha=0.2)
+
+    ax.plot(n_features, test_mean, label="Test", marker="o")
+    ax.fill_between(n_features, test_mean - test_std, test_mean + test_std, alpha=0.2)
+
+    ax.set_xlabel("Number of Features")
+    ax.set_ylabel("Scoring")
+    ax.set_title(f"M1={m1} | M2={m2} | time frame={granularity} | direction={direction} | meta label mode={meta_label_mode}")
+    ax.legend()
+    ax.grid(True)
+    plt.tight_layout()
+    # plt.show()
+    plt.savefig(f"{search_dir}/strategy={cv_strategy}_scoring={scoring}_n_splits={n_splits}_min_max={1}_{len(files)}_summary_plot.pdf")
+    plt.close()
