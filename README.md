@@ -116,7 +116,7 @@ We enforce **Temporal Embargoes** at every boundary. A purge window (based on th
 
 ## Utils/ Package Architecture
 
-The `Utils/` directory is a fully modular Python package tree. Each subdirectory is a standalone package with a curated public API in its `__init__.py`. There are no flat `.py` shim files — all logic lives in the subpackages.
+The `Utils/` directory is a fully modular Python package tree. Each subdirectory is a standalone package with a curated public API in its `__init__.py`.
 
 ```
 src/Utils/
@@ -267,7 +267,7 @@ flowchart TD
 
 CPCV uses **datetime-based block partitioning** by default (`CombinatorialPurgedCV(mode="datetime")`), where blocks are defined by equal calendar spans and purge windows match `horizon × bar_width`. Index-based partitioning is available as `mode="index"` for backward compatibility.
 
-### Convergence Gate Conditions — the exact rules
+### Convergence Gate Conditions
 
 The convergence verdict is **not** a handcrafted heuristic — it's the outcome of two independent quantitative gates (see [`Utils/edge/edge.py`](src/Utils/edge/edge.py)).
 
@@ -282,12 +282,23 @@ cpcv_score = fraction_profitable × clip(median_path_sharpe, 0, 1)
 
 **Gate 2 — Seeds (Model Stability).** Evaluated over N random-seed replicas (default `N = 100`) on a held-out **Val-Eval** split (see below):
 
+`sharpe_ci_lower` is the lower bound of the 95% confidence interval for the mean Sharpe across seeds. If this lower bound is above zero, the model's edge is statistically unlikely to be a noise artifact — even in the worst plausible case within the confidence interval, performance is positive.
+
 ```
-sharpe_ci_lower = mean_sharpe − 1.96 · std_sharpe / √N
-seeds_pass  ⇔  fraction_profitable > 0.70   AND   sharpe_ci_lower > 0
-CV_sharpe   = std_sharpe / |mean_sharpe|
-seeds_score = fraction_profitable × clip(1 − CV_sharpe, 0, 1)
+sharpe_ci_lower = mean_sharpe − z₀.₉₇₅ · std_sharpe / √N     # z₀.₉₇₅ = 1.96 (95% CI)
+seeds_pass      ⇔  fraction_profitable > 0.70   AND   sharpe_ci_lower > 0
+CV_sharpe       = std_sharpe / |mean_sharpe|
+seeds_score     = fraction_profitable × clip(1 − CV_sharpe, 0, 1)
 ```
+**Val-Eval split for seeds mode (test-set integrity).** To keep the real test window fully unseen during stability measurement, `seeds` mode carves a 4-way split **entirely inside the Train+Val timeline** — the real test window is never touched. Ratios (of the Train+Val span) are:
+
+```
+[ Train 65% | purge | Val-Cal 12% | purge | Val-Opt 10% | purge | Val-Eval 13% ]   ( | Test — untouched | )
+```
+
+Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. `Val-Eval` is the hold-out on which per-seed Sharpe / return / precision are measured. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
+
+---
 
 **Final verdict and composite score.**
 
@@ -298,30 +309,20 @@ verdict = GREEN  if cpcv_pass ∧ seeds_pass
 final_score = 0.6 · cpcv_score + 0.4 · seeds_score
 ```
 
-**Val-Eval split for seeds mode (test-set integrity).** To keep the real test window fully unseen during stability measurement, `seeds` mode carves a 4-way split **entirely inside the Train+Val timeline** — the real test window is never touched. Ratios (of the Train+Val span) are:
-
-```
-[ Train 65% | purge | Val-Cal 12% | purge | Val-Opt 10% | purge | Val-Eval 13% ]   ( | Test — untouched )
-```
-
-Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. `Val-Eval` is the hold-out on which per-seed Sharpe / return / precision are measured. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
-
----
-
 ## Setup
 
 ### 1. Conda environment
 
-All scripts must run inside the `CTTS` conda environment. Activate it once per terminal session:
+All scripts must run inside the `m2` conda environment. Activate it once per terminal session:
 
 ```bash
-conda activate CTTS
+conda activate m2
 ```
 
-Or prefix any command with `conda run -n CTTS` to run it without activating:
+Or prefix any command with `conda run -n m2` to run it without activating:
 
 ```bash
-conda run -n CTTS python Utils/experiments.py --config config.yaml
+conda run -n m2 python Utils/experiments.py --config config.yaml
 ```
 
 ### 2. Working directory
@@ -330,7 +331,7 @@ All commands below assume you are in `Secondary-Model/src/`:
 
 ```bash
 cd /home/pablo/M2_DS/Secondary-Model/src
-conda activate CTTS
+conda activate m2
 ```
 
 ---
@@ -342,7 +343,7 @@ conda activate CTTS
 There is **one** entry point and **one** config. To switch M1 backbones, models, directions, granularities, or which phases run, edit [config.yaml](src/config.yaml) — no CLI flags.
 
 ```bash
-conda run -n CTTS python Utils/experiments.py --config config.yaml
+conda run -n m2 python Utils/experiments.py --config config.yaml
 ```
 
 `experiments.py` reads the YAML, serializes it to JSON, and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `feature_selection_experiment.py`). All three read the same config dict, so there is no drift between the orchestrator and its workers.
@@ -396,7 +397,7 @@ HPO is **not** wired into `experiments.py`. Run it directly with Optuna when you
 
 ```bash
 # HPO for RF — up direction, 4h granularity, 50 trials
-conda run -n CTTS python -m Utils.hpo \
+conda run -n m2 python -m Utils.hpo \
   --config config.yaml \
   --models rf \
   --directions up \
@@ -404,7 +405,7 @@ conda run -n CTTS python -m Utils.hpo \
   --n-trials 50
 
 # HPO for TabPFN + TabICL — both directions, multiple granularities
-conda run -n CTTS python -m Utils.hpo \
+conda run -n m2 python -m Utils.hpo \
   --config config.yaml \
   --models tabpfn tabicl \
   --directions up down \
@@ -422,11 +423,11 @@ Post-hoc analysis of completed OCP runs. Requires a result folder produced by th
 
 ```bash
 # Practical diagnostics — per-granularity result folder
-conda run -n CTTS python -m Utils.ocp.analysis \
+conda run -n m2 python -m Utils.ocp.analysis \
   --folder Output/Kronos/randforest/UP/OCP/4h_up_tp
 
 # Theory / simulation studies (requires a cache .pt file)
-conda run -n CTTS python -m Utils.ocp.theory \
+conda run -n m2 python -m Utils.ocp.theory \
   --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt
 ```
 
