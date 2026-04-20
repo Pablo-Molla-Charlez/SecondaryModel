@@ -450,7 +450,7 @@ def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="r
     if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_val_eval]):
         print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} "
                 f"opt={len(idx_opt)} val_eval={len(idx_val_eval)})")
-        continue
+        return None
 
     # ┏━━━━━━━━━━ Print split info ━━━━━━━━━━┓
     print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  "

@@ -220,8 +220,9 @@ def run_experiments(config: dict, config_path: str):
                 config["runtime"]["combined"]["combined_backtest"][1] = str(output_root / m2 / "DOWN" / "Utility_Score")
                 if not os.path.exists(config["runtime"]["combined"]["combined_backtest"][0]) or not \
                     os.path.exists(config["runtime"]["combined"]["combined_backtest"][1]):
-                    print(
-                        f"  [SKIP] Missing UP or DOWN results for {m2}: {config["runtime"]["combined"]["combined_backtest"][1]}, {config["runtime"]["combined"]["combined_backtest"][1]}")
+                    up_path  = config["runtime"]["combined"]["combined_backtest"][0]
+                    dn_path  = config["runtime"]["combined"]["combined_backtest"][1]
+                    print(f"  [SKIP] Missing UP or DOWN results for {m2}: {up_path}, {dn_path}")
                     continue
                 # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"

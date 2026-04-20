@@ -45,7 +45,7 @@ evaluation:
 # ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
 experiment:
   m1: "kronos"                                                      # choice:  ["chronos2", "fincast", "tirex", "kronos"]
-  m2: [ "rf" ]                                                      # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
+  m2: [ "rf", "tabpfn", "tabicl", "autogluon"]                                                      # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
   direction: [ "up", "down" ]                                       # choices: ["up", "down"]
   granularity: [ "1d", "12h", "8h", "6", "4h", "2h", "1h", "30m" ]  # choices: ["1d", "12h", "8h", "6", "4h", "2h", "1h", "30m"]
 
@@ -54,10 +54,10 @@ experiment:
 runtime:
   skip:
     hpo: false                # choice: ["true" or "false"] — Phase 0: hyperparameter search (rf / tabpfn / tabicl only)
-    training: true            # choice: ["true" or "false"]
-    edge: true                # choice: ["true" or "false"]
-    combined: true            # choice: ["true" or "false"]
-    feature_selection: false  # choice: ["true" or "false"]
+    training: false           # choice: ["true" or "false"]
+    edge: false               # choice: ["true" or "false"]
+    combined: false           # choice: ["true" or "false"]
+    feature_selection: true   # choice: ["true" or "false"]
 
   hpo:
     n_trials: 100  # Optuna trials per (m2, direction, granularity)

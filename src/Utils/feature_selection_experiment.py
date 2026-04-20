@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # select model
     clf = _build_tree_model(args.m2, X_analysis.shape[0])  # TODO number of samples not used
 
-    print(f"[Feature selection] Is parallelizable: {True if args.m2 == "rf" else False}")
+    print(f"[Feature selection] Is parallelizable: {args.m2 == 'rf'}")
     # select cross validation strategy
     if args.config["runtime"][args.phase]["cv_strategy"] == "cpcv":
         cv = CombinatorialPurgedCV(n_splits=args.config["runtime"][args.phase]["n_blocks"],
@@ -304,14 +304,12 @@ if __name__ == "__main__":
                           cv=cv,
                           min_features=args.config["runtime"][args.phase]["min_features"],
                           max_features=args.config["runtime"][args.phase]["max_features"],
-                          cache_feature_path=f"{args.config["paths"]["output_root"]}/"
-                                             f"{args.config["experiment"]["m1"].capitalize()}/"
-                                             f"{args.m2}/"
-                                             f"{args.direction.upper()}/"
-                                             f"interpretability/"
-                                             f"feature_selection/"
-                                             f"{args.granularity}_{args.config["data"]["load"]["meta_label_mode"]}/",
-                          cache_feature_tag=f"{args.config["runtime"][args.phase]["scoring"]}_{cv.name}_{args.config["runtime"][args.phase]["n_blocks"]}",
+                          cache_feature_path=(f"{args.config['paths']['output_root']}/"
+                                             f"{args.config['experiment']['m1'].capitalize()}/"
+                                             f"{args.m2}/{args.direction.upper()}/"
+                                             f"interpretability/feature_selection/"
+                                             f"{args.granularity}_{args.config['data']['load']['meta_label_mode']}/"),
+                          cache_feature_tag=f"{args.config['runtime'][args.phase]['scoring']}_{cv.name}_{args.config['runtime'][args.phase]['n_blocks']}",
                           take_n_best_combinations=args.config["runtime"][args.phase]["take_n_best_combinations"],
                           can_be_parallelized=True if args.m2 == "rf" else False)
     elif args.config["runtime"][args.phase]["method"] == "rfecv":
@@ -327,15 +325,14 @@ if __name__ == "__main__":
     else:
         raise ValueError(f"Unknown strategy {args.strategy}")
 
-    save_dir_path = f"{args.config["paths"]["output_root"]}/" \
-                    f"{args.config["experiment"]["m1"].capitalize()}/" \
-                    f"{args.m2}/" \
-                    f"{args.direction.upper()}/" \
-                    f"interpretability/" \
-                    f"feature_selection/" \
-                    f"{args.granularity}_{args.config["data"]["load"]["meta_label_mode"]}/"
+    meta_label_mode = args.config["data"]["load"]["meta_label_mode"]
+    output_root     = args.config["paths"]["output_root"]
+    m1_cap          = args.config["experiment"]["m1"].capitalize()
+    save_dir_path   = (f"{output_root}/{m1_cap}/{args.m2}/{args.direction.upper()}/"
+                       f"interpretability/feature_selection/{args.granularity}_{meta_label_mode}/")
 
     os.makedirs(save_dir_path, exist_ok=True)
-    res.to_csv(os.path.join(save_dir_path,
-                            f"strategy={args.config["runtime"][args.phase]["method"]}_scoring={args.config["runtime"][args.phase]["scoring"]}_n_splits={args.config["runtime"][args.phase]["n_blocks"]}_min_max={args.config["runtime"][args.phase]["min_features"]}_{args.config["runtime"][args.phase]["max_features"]}.csv"),
-               index=False)
+    rt = args.config["runtime"][args.phase]
+    fname = (f"strategy={rt['method']}_scoring={rt['scoring']}_n_splits={rt['n_blocks']}"
+             f"_min_max={rt['min_features']}_{rt['max_features']}.csv")
+    res.to_csv(os.path.join(save_dir_path, fname), index=False)
