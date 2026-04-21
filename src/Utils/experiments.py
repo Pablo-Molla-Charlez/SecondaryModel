@@ -132,7 +132,7 @@ def run_experiments(config: dict, config_path: str):
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
                     cmd = [python, "kronos_tree.py",
                            "--cache_path", cache_path,
-                           "--config", json.dumps(config),
+                           "--config", config_path,
                            "--phase", "training",
                            "--m2", m2,
                            "--direction", direction,
@@ -228,7 +228,7 @@ def run_experiments(config: dict, config_path: str):
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"
                 cmd = [python, "kronos_tree.py",
                        "--cache_path", "not_needed_here",
-                       "--config", json.dumps(config),
+                       "--config", config_path,
                        "--phase", "combined",
                        "--m2", m2,
                        "--direction", "not_needed_here",
@@ -259,7 +259,7 @@ def run_experiments(config: dict, config_path: str):
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
                     cmd = [python, "Utils/feature_selection_experiment.py",
                            "--cache_path", cache_path,
-                           "--config", json.dumps(config),
+                           "--config", config_path,
                            "--phase", "feature_selection",
                            "--m2", m2,
                            "--direction", direction,

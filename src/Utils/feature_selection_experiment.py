@@ -8,6 +8,7 @@ import Utils
 
 import os
 import json
+from Utils.utils import _load_config
 
 # from Utils.classifier.autogluon_classifier import AutogluonClassifier
 # from Utils.classifier.tabpfn_classifier import TabPFN
@@ -252,7 +253,7 @@ def do_rfecv(clf,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
-    parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
+    parser.add_argument("--config", type=_load_config, help="Experiment config", required=True)
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
