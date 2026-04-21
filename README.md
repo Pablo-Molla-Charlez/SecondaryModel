@@ -379,16 +379,16 @@ final_score = 0.6 · cpcv_score + 0.4 · seeds_score
 
 ### 1. Conda environment
 
-All scripts must run inside the `m2` conda environment. Activate it once per terminal session:
+All scripts must run inside the `S2` conda environment. Activate it once per terminal session:
 
 ```bash
-conda activate m2
+conda activate S2
 ```
 
-Or prefix any command with `conda run -n m2` to run it without activating:
+Or prefix any command with `conda run -n S2` to run it without activating:
 
 ```bash
-conda run -n m2 python Utils/experiments.py --config config.yaml
+conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
 ### 2. Working directory
@@ -397,7 +397,7 @@ All commands below assume you are in `Secondary-Model/src/`:
 
 ```bash
 cd /home/pablo/M2_DS/Secondary-Model/src
-conda activate m2
+conda activate S2
 ```
 
 ---
@@ -409,10 +409,12 @@ conda activate m2
 There is **one** entry point and **one** config. To switch M1 backbones, models, directions, granularities, or which phases run, edit [config.yaml](src/config.yaml) — no CLI flags.
 
 ```bash
-conda run -n m2 python Utils/experiments.py --config config.yaml
+conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
-`experiments.py` reads the YAML, serializes it to JSON, and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`). All three read the same config dict, so there is no drift between the orchestrator and its workers.
+`experiments.py` reads the YAML and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`), passing the **YAML file path** via `--config` plus the CLI selectors `--m2 / --direction / --granularity` per iteration. Workers reload the same YAML, so there is no drift between orchestrator and workers.
+
+**CLI vs config contract.** The config defines *what a slice is made of* (data signature, splits, threshold/HPO knobs, output root). CLI args define *which slice a given invocation runs* (`--m2`, `--direction`, `--granularity`, `--phase`). The `experiment.{m2, direction, granularity}` lists in the config are read only by `experiments.py`, which explodes them into per-slice invocations. Each subprocess honours its CLI selectors *exactly* — `--direction up --granularity 1d` trains only up/1d, nothing else.
 
 #### Config knobs that drive the run
 
@@ -421,7 +423,7 @@ conda run -n m2 python Utils/experiments.py --config config.yaml
 | `experiment` | `m1` | M1 backbone — one of `kronos`, `fincast`, `chronos2`, `tirex`. **Must also update `paths.csv_dir` and `data.load.m1` to match.** |
 | `experiment` | `m2` | List of M2 models to run (`rf`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`). |
 | `experiment` | `direction` | List of directions (`up`, `down`, or both). |
-| `experiment` | `granularity` | List of granularities (`1d`, `12h`, `8h`, `6`, `4h`, `2h`, `1h`, `30m`). |
+| `experiment` | `granularity` | List of granularities from `GRAN_ORDER` (`1d`, `12h`, `8h`, `6h`, `4h`, `2h`, `1h`, `30m`, `15m`, `5m`). |
 | `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
 | `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
 | `runtime.training` | `thres`, `ocp_alpha`, `ocp_costs`, `ocp_window_days`, `all_grans`, `top5`, `run_features` | Training-phase knobs: threshold selection mode, OCP cost vector, unified-vs-per-gran mode, feature sub-analysis toggles. |
@@ -441,16 +443,28 @@ conda run -n m2 python Utils/experiments.py --config config.yaml
 
 Phase 0 and Phase 1 run sequentially: Phase 0 completes the full Optuna sweep for every HPO-supported `(m2, direction, granularity)` tuple before Phase 1 starts, so Phase 1 always reads the freshest `best_params.json`. Non-HPO-supported models (`xgboost`, `autogluon`, `tabpfn_ft`) use the hard-coded defaults in `factory.py`.
 
+#### Cache model — one multi-gran file per direction
+
+Caches are **always multi-granularity**, one `.pt` per direction. Filename pattern: `multi_<m1>_<forecast_horizon>_fee_<direction>_<hash>.pt`, under `Output/<M1>/cache/`. The hash signs `data.load.*`, `data.window.*`, `data.features.*` and `m1` — any change invalidates the hash and a fresh cache is built on the next run.
+
+- `_resolve_caches` (in [Utils/utils.py](src/Utils/utils.py)) auto-discovers both direction caches on every `kronos_tree.py` invocation; missing directions are built from the config automatically. Both directions are always built on first run, so the next call for the opposite direction is a cache hit.
+- `_filter_dataset_by_granularity` (also in `Utils/utils.py`) subsets the multi-gran cache to `--granularity` immediately after `torch.load` inside `run_analysis`. Every downstream step (split, HPO-resolved params, temporal eval, backtest) sees only that granularity's rows.
+- `run_combined_backtest` and `run_unified_analysis` intentionally **do not** apply the per-gran filter — they are designed to operate across granularity folders / all granularities respectively.
+
+To force a full rebuild: delete the existing `.pt` files under `Output/<M1>/cache/` and rerun any `kronos_tree.py` command.
+
 #### Final production-model persistence
 
 Each completed training run persists a single production model — the one trained on Train+Cal and used for Test predictions. Saved per `(m2, direction, granularity)` at:
 
 ```
-Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<dir>_<mode>/final_model/
+Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<mode>/final_model/
 ├── model{.pkl or native serialized files}   # native save_model with pickle fallback (AutoGluon uses save_to directory)
 └── bundle.pkl                               # scaler, isotonic calibrator, col_indices, val_op threshold,
                                              # features_used, model_name, best_params, meta
 ```
+
+`<DIR>` is `UP` or `DOWN` (from `--direction`); `<gran>` is the CLI `--granularity`; `<mode>` is `data.load.meta_label_mode` (`tp`/`fp`/`og`).
 
 CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py::_save_final_model`](src/Utils/classifier/factory.py).
 
@@ -480,7 +494,7 @@ HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip
 
 ```bash
 # HPO for RF — up direction, 4h granularity, 50 trials
-conda run -n m2 python -m Utils.hpo \
+conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models rf \
   --directions up \
@@ -488,7 +502,7 @@ conda run -n m2 python -m Utils.hpo \
   --n-trials 50
 
 # HPO for TabPFN + TabICL — both directions, multiple granularities
-conda run -n m2 python -m Utils.hpo \
+conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models tabpfn tabicl \
   --directions up down \
@@ -506,11 +520,11 @@ Post-hoc analysis of completed OCP runs. Requires a result folder produced by th
 
 ```bash
 # Practical diagnostics — per-granularity result folder
-conda run -n m2 python -m Utils.ocp.analysis \
+conda run -n S2 python -m Utils.ocp.analysis \
   --folder Output/Kronos/rf/UP/OCP/4h_up_tp
 
 # Theory / simulation studies (requires a cache .pt file)
-conda run -n m2 python -m Utils.ocp.theory \
+conda run -n S2 python -m Utils.ocp.theory \
   --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt
 ```
 
@@ -524,7 +538,7 @@ conda run -n m2 python -m Utils.ocp.theory \
 | --- | --- |
 | `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, OCP knobs, edge/feature-selection parameters. |
 | `Utils/experiments.py` | **User entry point.** Reads `config.yaml`, orchestrates training → edge → combined → feature-selection phases across every `(m2 × direction × granularity)` combination. |
-| `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with the JSON-serialized config. Not meant to be called directly. |
+| `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with `--config <yaml> --m2 <x> --direction <up\|down> --granularity <gran>`. Supports direct invocation with the same CLI for targeted runs. |
 | `Utils/feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
 | `Utils/edge/` | Worker for the edge phase — seeds stability + CPCV regime sensitivity. Invoked as `python -m Utils.edge` by `experiments.py`. |
@@ -554,7 +568,7 @@ experiment:
   m1:          "kronos"                            # kronos | fincast | chronos2 | tirex
   m2:          ["rf"]                              # rf | xgboost | autogluon | tabpfn | tabpfn_ft | tabicl
   direction:   ["up", "down"]
-  granularity: ["1d", "12h", "8h", "6", "4h", "2h", "1h", "30m"]
+  granularity: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m", "5m"]
 
 # ┏━━━━━━━━━━ Data ━━━━━━━━━━┓
 data:
@@ -652,7 +666,7 @@ runtime:
 | `data.load.m1` | Must match `experiment.m1` and `paths.csv_dir`. Validated at load time. |
 | `data.load.target_col` | Target column the M2 classifier predicts. |
 | `data.load.meta_label_mode` | Meta-label variant (`tp` is the active setup). |
-| `data.load.direction` | Default direction used for cache rebuilds when no explicit cache is found. |
+| `data.load.direction` | Vestigial — kept for backward-compat. Cache selection is driven by the CLI `--direction`; `_resolve_caches` auto-builds both `up` and `down` caches on first run. |
 | `data.load.granularity` | `"all"` enables multi-granularity cache assembly. |
 | `data.load.forecast_horizon` | Prediction horizon; drives return alignment, backtests, and OCP delayed feedback. |
 
@@ -705,8 +719,8 @@ src/Output/
     ├── HPO/                                    # Phase 0 outputs — best_params.json per (m2, dir, gran)
     │   └── <m2>/<DIR>/<gran>/best_params.json
     └── rf/
-        ├── DOWN/  {OCP/, Utility_Score/<gran>_<dir>_<mode>/final_model/}
-        └── UP/    {OCP/, Utility_Score/<gran>_<dir>_<mode>/final_model/}
+        ├── DOWN/  {OCP/, Utility_Score/<gran>_<mode>/final_model/}
+        └── UP/    {OCP/, Utility_Score/<gran>_<mode>/final_model/}
 ```
 
 - `src/Output/<M1>/` is the active result tree for the currently configured M1 backbone.
@@ -744,7 +758,7 @@ src/Output/
 ## Practical Notes
 
 - The canonical output location for run results is `src/Output/<M1>/` (M1 taken from `experiment.m1`).
-- **Run everything through `Utils/experiments.py`**. `kronos_tree.py`, `Utils.edge`, and `Utils/feature_selection_experiment.py` are subprocess workers — they expect `--config` as a **JSON-serialized dict**, not a path, and will not accept a YAML argument.
+- **Normal runs go through `Utils/experiments.py`**, which orchestrates the `(m2 × direction × granularity)` sweep. Workers (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`) accept `--config` as a YAML file path plus CLI selectors (`--m2 / --direction / --granularity`), so they can also be invoked directly for targeted debugging. Each direct invocation runs *exactly* the slice its CLI describes — `--direction up --granularity 1d` does up/1d only.
 - `Utils/feature_selection/` and `Utils/backtest/comparison.py` are library modules; they are reached via the training / feature-selection phases in `experiments.py`, not standalone CLI.
 - Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally. The scaler bypass is controlled by `MODELS_NO_SCALING` in `Utils/classifier/factory.py`.
 - The M2 model list in `experiment.m2` is resolved to concrete classifiers in `Utils/classifier/factory.py` via `_build_tree_model()`.
