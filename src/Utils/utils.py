@@ -11,7 +11,8 @@ from typing import Any
 from Utils.data import (load_dataset_from_config,
                         prepare_multi_gran_dataset,
                         prepare_multi_asset_dataset,
-                        GRAN_SEQ_LEN)
+                        GRAN_SEQ_LEN,
+                        GRAN_TO_ID)
 
 # ┏━━━━━━━━━━ Model Label ━━━━━━━━━━┓
 def model_label(model_name: str) -> str:
@@ -227,7 +228,7 @@ def _build_cache_from_config(config: dict, direction: str) -> tuple[Path, object
 
 # ┏━━━━━━━━━━ Resolve caches ━━━━━━━━━━┓
 def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
-    """Return {direction: cache_path} for each direction that has a cache."""
+    """Return {direction: cache_path} for each direction that has a cache, building any that are missing."""
     # ┏━━━━━━━━━━ Extract Configs ━━━━━━━━━━┓
     gran = cfg["data"]["load"]["granularity"]
     cache_dir = Path(cfg["paths"]["output_root"]) / m1_output_bucket(cfg) / "cache"
@@ -239,44 +240,97 @@ def _resolve_caches(cfg: dict, explicit: str | None) -> dict[str, Path]:
         p = Path(explicit)
         if not p.exists():
             raise FileNotFoundError(f"Cache not found: {p}")
-        # ┏━━━━━━━━━━ Infer direction from filename ━━━━━━━━━━┓
         parts = p.stem.split("_")
-        direction = "up"
+        inferred = "up"
         for d in ("up", "down"):
             if d in parts:
-                direction = d
+                inferred = d
                 break
-        return {direction: p}
+        return {inferred: p}
 
     # ┏━━━━━━━━━━ Auto-detect: find caches for both directions ━━━━━━━━━━┓
     result = {}
-    for direction in ("up", "down"):
+    for d in ("up", "down"):
         if gran_prefix == "multi":
-            pattern = f"multi_{m1_name}_*_fee_{direction}_*.pt"
+            pattern = f"multi_{m1_name}_*_fee_{d}_*.pt"
         else:
-            pattern = f"{gran_prefix}_*_{m1_name}_*_fee_{direction}_*.pt"
-            
+            pattern = f"{gran_prefix}_*_{m1_name}_*_fee_{d}_*.pt"
         candidates = sorted(cache_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
         if candidates:
-            result[direction] = candidates[0]
-            print(f"[utils] Auto-selected cache ({direction}): {candidates[0].name}")
+            result[d] = candidates[0]
+            print(f"[utils] Auto-selected cache ({d}): {candidates[0].name}")
 
-    if not result:
-        # ┏━━━━━━━━━━ Fallback: try old naming without direction ━━━━━━━━━━┓
-        candidates = sorted(cache_dir.glob(f"{gran_prefix}_*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if candidates and "legacy" not in [c.name for c in candidates]: # minor safety to avoid false positives
-            direction = cfg["data"]["load"].get("direction", "up").lower()
-            result[direction] = candidates[0]
-            print(f"[utils] Auto-selected cache (legacy): {candidates[0].name}")
-
-    # ┏━━━━━━━━━━ Always ensure config direction is built ━━━━━━━━━━┓
-    cfg_direction = cfg["data"]["load"].get("direction", "up").lower()
-    if cfg_direction not in result:
-        print(f"[utils] No existing cache found for config direction='{cfg_direction}'. Building from config...")
-        cache_path, _ = _build_cache_from_config(cfg)
-        result[cfg_direction] = cache_path
+    # ┏━━━━━━━━━━ Build any missing direction caches from config ━━━━━━━━━━┓
+    for d in ("up", "down"):
+        if d not in result:
+            print(f"[utils] No existing cache found for direction='{d}'. Building from config...")
+            cache_path, _ = _build_cache_from_config(cfg, direction=d)
+            result[d] = cache_path
 
     return result
+
+
+# ┏━━━━━━━━━━ Filter Multi-Gran Cache by Granularity ━━━━━━━━━━┓
+def _filter_dataset_by_granularity(dataset, granularity: str) -> dict:
+    """Subset a multi-gran cache to rows matching the requested granularity.
+
+    Returns a plain dict mirroring the MultiGranDataset attribute names that
+    downstream helpers already read (eng_features, labels, dates, returns,
+    asset_ids, m1_pred_*, gran_ids). All per-row tensors/lists are filtered
+    to the same granularity so that split_by_global_time and every subsequent
+    step operate only on that slice.
+    """
+    # ┏━━━━━━━━━━ Check granularity ━━━━━━━━━━┓
+    if granularity not in GRAN_TO_ID:
+        raise ValueError(f"Unknown granularity '{granularity}'. Valid: {sorted(GRAN_TO_ID.keys())}")
+
+    # ┏━━━━━━━━━━ Check if dataset is a dict ━━━━━━━━━━┓
+    _is_dict = isinstance(dataset, dict)
+    gran_ids = dataset["gran_ids"] if _is_dict else dataset.gran_ids
+    if isinstance(gran_ids, torch.Tensor):
+        gran_ids_np = gran_ids.numpy()
+    else:
+        gran_ids_np = np.asarray(gran_ids)
+
+    # ┏━━━━━━━━━━ Mask for the requested granularity ━━━━━━━━━━┓
+    mask = gran_ids_np == GRAN_TO_ID[granularity]
+    n_match = int(mask.sum())
+    if n_match == 0:
+        present = sorted({k for k, v in GRAN_TO_ID.items() if (gran_ids_np == v).any()})
+        raise ValueError(f"Granularity '{granularity}' not present in cache. Present: {present}")
+
+    # ┏━━━━━━━━━━ Get function ━━━━━━━━━━┓
+    def _get(key):
+        return dataset[key] if _is_dict else getattr(dataset, key, None)
+
+    # ┏━━━━━━━━━━ Subset function ━━━━━━━━━━┓
+    def _subset(arr):
+        if arr is None:
+            return None
+        if isinstance(arr, torch.Tensor):
+            return arr[torch.as_tensor(mask)]
+        if isinstance(arr, list):
+            return [arr[i] for i in range(len(arr)) if mask[i]]
+        return np.asarray(arr)[mask]
+
+    # ┏━━━━━━━━━━ Filtered dataset ━━━━━━━━━━┓
+    filtered = {"eng_features":    _subset(_get("eng_features")),
+                "labels":          _subset(_get("labels")),
+                "dates":           _subset(_get("dates")),
+                "returns":         _subset(_get("returns")),
+                "asset_ids":       _subset(_get("asset_ids")),
+                "gran_ids":        _subset(_get("gran_ids")),
+                "m1_pred_labels":  _subset(_get("m1_pred_labels")),
+                "m1_pred_returns": _subset(_get("m1_pred_returns")),
+                "m1_true_labels":  _subset(_get("m1_true_labels"))}
+
+    # ┏━━━━━━━━━━ Asset map ━━━━━━━━━━┓
+    asset_map = _get("asset_map")
+    if asset_map is not None:
+        filtered["asset_map"] = asset_map
+
+    print(f"[utils] Granularity filter '{granularity}': kept {n_match:,} / {len(gran_ids_np):,} windows")
+    return filtered
 
 
 # ┏━━━━━━━━━━ Class names ━━━━━━━━━━┓

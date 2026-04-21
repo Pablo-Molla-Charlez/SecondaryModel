@@ -1,9 +1,19 @@
 """
 Kronos Tree — M2 Meta-Labeling worker (training + combined phases).
 
-Driven by Utils/experiments.py, which serializes config.yaml to JSON and invokes
-this module as a subprocess. Not intended to be called directly from the shell —
-the `--config` argument expects a JSON string, not a path.
+Invocation contract:
+    CLI args (--m2, --direction, --granularity, --phase) select WHICH slice to
+    run. The YAML file passed to --config defines HOW a slice is built (data
+    signature, splits, threshold/HPO knobs, output root). config.experiment.*
+    lists are read only by Utils/experiments.py, which explodes them into
+    per-slice invocations of this module.
+
+    Example (direct invocation):
+        python kronos_tree.py --config config.yaml --phase training \\
+            --m2 rf --direction up --granularity 1d
+
+    `--config` accepts a YAML file path. On first run `_resolve_caches` will
+    build the multi-gran cache for both directions automatically.
 """
 
 import argparse, hashlib, sys, json, pickle
@@ -81,6 +91,7 @@ from Utils.utils import (NumpyJSONEncoder,
                          _load_config,
                          _build_cache_from_config,
                          _resolve_caches,
+                         _filter_dataset_by_granularity,
                          _class_names,
                          _infer_direction,
                          _load_multi_cache,
@@ -99,6 +110,8 @@ def _build_dataframe(dataset) -> tuple[pd.DataFrame, np.ndarray]:
     eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
     if isinstance(eng, torch.Tensor):
         eng = eng.numpy()
+
+    # ┏━━━━━━━━━━ Get labels ━━━━━━━━━━┓
     labels = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
     
     # ┏━━━━━━━━━━ Convert labels to numpy ━━━━━━━━━━┓
@@ -627,12 +640,15 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     dataset = torch.load(cache_path, weights_only=False)
-    
+
     # ┏━━━━━━━━━━ Check if cache contains eng_features (engineered features) ━━━━━━━━━━┓
     _eng_check = dataset.get("eng_features") if isinstance(dataset, dict) else getattr(dataset, "eng_features", None)
     if _eng_check is None:
         print("ERROR: Cache does not contain 'eng_features'. Rebuild cache with engineered features enabled.")
         return
+
+    # ┏━━━━━━━━━━ Filter multi-gran cache to the requested granularity ━━━━━━━━━━┓
+    dataset = _filter_dataset_by_granularity(dataset, granularity)
     
     # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
     df_all, labels_all = _build_dataframe(dataset)
@@ -1600,20 +1616,19 @@ def main():
         # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓ # NOTE this is phase 1
         # One model trained on all granularities, evaluated per-gran
         if args.config["runtime"][args.phase]["all_grans"]:
-            # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-            if args.cache_path:
-                if not args.cache_path.exists():
-                    raise FileNotFoundError(f"Cache not found: {args.cache_path}")
-            else:
-                # ┏━━━━━━━━━━ Auto-build multi-gran cache from config ━━━━━━━━━━┓
-                args.cache_path, _ = _build_cache_from_config(args.config, direction=args.direction)
+            # ┏━━━━━━━━━━ Resolve caches (builds both directions if missing) ━━━━━━━━━━┓
+            direction_caches = _resolve_caches(args.config, args.cache_path)
+            if args.direction not in direction_caches:
+                raise RuntimeError(f"No cache resolved for direction='{args.direction}'. "
+                                   f"Available: {sorted(direction_caches.keys())}")
+            cache_path = direction_caches[args.direction]
 
             # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-            print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {args.cache_path.name}")
-            multi = _load_multi_cache(args.cache_path)
+            print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {cache_path.name}")
+            multi = _load_multi_cache(cache_path)
 
             # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
-            run_unified_analysis(args.cache_path,
+            run_unified_analysis(cache_path,
                                  multi,
                                  args.direction,
                                  args.config['data']['load']['meta_label_mode'],
@@ -1627,29 +1642,34 @@ def main():
                                  ocp_costs=ocp_costs,
                                  ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
             return
-        # ┏━━━━━━━━━━ Single granularity (auto-detect from config) ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Single granularity — run ONLY the CLI-specified direction ━━━━━━━━━━┓
         else:
+            # Build/discover both direction caches once (so the other is ready for future runs),
+            # but only run analysis for args.direction.
             direction_caches = _resolve_caches(args.config, args.cache_path)
+            if args.direction not in direction_caches:
+                raise RuntimeError(f"No cache resolved for direction='{args.direction}'. "
+                                   f"Available: {sorted(direction_caches.keys())}")
 
-            for direction, cache_path in sorted(direction_caches.items()):
-                best_params = _load_best_params(args.config, args.m2, direction, args.granularity)
-                run_analysis(cache_path=cache_path,
-                             direction=direction,
-                             mode=args.config['data']['load']['meta_label_mode'],
-                             granularity=args.granularity,
-                             output_root=args.config['paths']['output_root'],
-                             train_end=args.config['data']['split']['train_end'],
-                             val_end=args.config['data']['split']['val_end'],
-                             model_name=args.m2,
-                             cfg=args.config,
-                             run_top5=args.config['runtime'][args.phase]["top5"],
-                             run_features=args.config['runtime'][args.phase]["run_features"],
-                             thres_mode=args.config['runtime'][args.phase]["thres"],
-                             ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
-                             ocp_costs=ocp_costs,
-                             ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"],
-                             best_params=best_params)
-            print(f"\nAll analyses complete.")
+            cache_path = direction_caches[args.direction]
+            best_params = _load_best_params(args.config, args.m2, args.direction, args.granularity)
+            run_analysis(cache_path=cache_path,
+                         direction=args.direction,
+                         mode=args.config['data']['load']['meta_label_mode'],
+                         granularity=args.granularity,
+                         output_root=args.config['paths']['output_root'],
+                         train_end=args.config['data']['split']['train_end'],
+                         val_end=args.config['data']['split']['val_end'],
+                         model_name=args.m2,
+                         cfg=args.config,
+                         run_top5=args.config['runtime'][args.phase]["top5"],
+                         run_features=args.config['runtime'][args.phase]["run_features"],
+                         thres_mode=args.config['runtime'][args.phase]["thres"],
+                         ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
+                         ocp_costs=ocp_costs,
+                         ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"],
+                         best_params=best_params)
+            print(f"\nAnalysis complete ({args.m2}/{args.direction}/{args.granularity}).")
             return
 
     # ┏━━━━━━━━━━ Phase 3: Combined ━━━━━━━━━━┓
