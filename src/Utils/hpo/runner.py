@@ -2,8 +2,11 @@
 import argparse
 import json
 import time
+import warnings
+import numpy as np
 import optuna
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler
 
 # ┏━━━━━━━━━━ Utils ━━━━━━━━━━┓
 from Utils.utils import (_load_config,
@@ -12,9 +15,12 @@ from Utils.utils import (_load_config,
                          _infer_direction,
                          m1_output_bucket)
 
+from Utils.classifier import MODELS_NO_SCALING
+from Utils.selective_classification import calibrate_probabilities
 from Utils.hpo.objectives import (_load_dataset_for_gran,
                                   _prepare_splits,
                                   _create_objective)
+from Utils.hpo.search_spaces import _build_model_from_params
 
 # ┏━━━━━━━━━━ Constants ━━━━━━━━━━┓
 ALL_GRANS  = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
@@ -138,7 +144,74 @@ def run_hpo_single(model_name: str,
     df = study.trials_dataframe()
     df.to_csv(history_path, index=False)
 
+    # ┏━━━━━━━━━━ Persist raw+cal probs for the best trial ━━━━━━━━━━┓
+    try:
+        _save_best_trial_probs(out_dir   = out_dir,
+                               model_name = model_name,
+                               best_params = best.params,
+                               X_train   = X_train,
+                               y_train   = y_train,
+                               X_cal     = X_cal,
+                               y_cal     = y_cal,
+                               X_opt     = X_opt,
+                               y_opt     = y_opt,
+                               seed      = seed)
+    except Exception as e:
+        print(f"  [WARN] Failed to persist best-trial probs: {e}")
+
     return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Best-trial probability persistence
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _save_best_trial_probs(out_dir: Path,
+                           model_name: str,
+                           best_params: dict,
+                           X_train: np.ndarray,
+                           y_train: np.ndarray,
+                           X_cal: np.ndarray,
+                           y_cal: np.ndarray,
+                           X_opt: np.ndarray,
+                           y_opt: np.ndarray,
+                           seed: int = 42) -> None:
+    """Refit best-params model and persist raw+calibrated probs for Cal / Opt.
+
+    Writes `best_probs.npz` under `out_dir` with keys:
+      cal_probs_raw, cal_probs_cal, y_cal,
+      opt_probs_raw, opt_probs_cal, y_opt.
+    """
+    needs_scaling = model_name not in MODELS_NO_SCALING
+    scaler = StandardScaler()
+    if needs_scaling:
+        X_train_s = scaler.fit_transform(X_train)
+        X_cal_s   = scaler.transform(X_cal)
+        X_opt_s   = scaler.transform(X_opt)
+    else:
+        X_train_s, X_cal_s, X_opt_s = X_train, X_cal, X_opt
+
+    model = _build_model_from_params(model_name, best_params, seed=seed)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model.fit(X_train_s, y_train)
+
+    cal_probs_raw = model.predict_proba(X_cal_s)[:, 1]
+    calib = calibrate_probabilities(cal_probs_raw, y_cal)
+    calibrator = calib["calibrator"]
+    cal_probs_cal = calibrator.predict(cal_probs_raw)
+
+    opt_probs_raw = model.predict_proba(X_opt_s)[:, 1]
+    opt_probs_cal = calibrator.predict(opt_probs_raw)
+
+    probs_path = out_dir / "best_probs.npz"
+    np.savez(probs_path,
+             cal_probs_raw = cal_probs_raw,
+             cal_probs_cal = cal_probs_cal,
+             y_cal         = y_cal,
+             opt_probs_raw = opt_probs_raw,
+             opt_probs_cal = opt_probs_cal,
+             y_opt         = y_opt)
+    print(f"  [probs] Saved raw+cal probs: {probs_path.name}")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

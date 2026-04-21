@@ -39,7 +39,7 @@ class TabPFN(BaseClassifier):
     """
 
     def __init__(self,
-                 device:                 str   = "auto",
+                 device:                 str   = "cuda",
                  n_estimators:           int   = 16,
                  softmax_temperature:    float = 0.9,
                  balance_probabilities:  bool  = False,

@@ -226,8 +226,9 @@ def run_feature_backtest(dataset,
                               "return": net_returns,
                               "label": y_test,
                               "m2_approved": m2_approved,
+                              "m2_prob_raw": probs_raw,
                               "m2_prob": probs})
-    
+
     # ┏━━━━━━━━━━ Handle NaN Returns ━━━━━━━━━━┓
     n_nan_rets = int(df_trades["return"].isna().sum())
     if n_nan_rets > 0:
@@ -235,6 +236,7 @@ def run_feature_backtest(dataset,
         df_trades = df_trades.dropna(subset=["return"]).reset_index(drop=True)
         m2_approved = df_trades["m2_approved"].values
         probs = df_trades["m2_prob"].values
+        probs_raw = df_trades["m2_prob_raw"].values
         net_returns = df_trades["return"].values
         y_test = df_trades["label"].values
     
