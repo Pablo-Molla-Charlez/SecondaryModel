@@ -25,7 +25,7 @@ class TabICL(BaseClassifier):
                  n_estimators:        int   = 8,
                  softmax_temperature: float = 0.9,
                  random_state:        int   = 42,
-                 device:              str   = None) -> None:
+                 device:              str   = "cuda") -> None:
         super().__init__(random_state)
         self.n_estimators        = n_estimators
         self.softmax_temperature = softmax_temperature
