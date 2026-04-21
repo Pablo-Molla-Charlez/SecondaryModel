@@ -240,25 +240,34 @@ def run_hpo(config: str,
     print(f"\n{'='*70}")
     print(f"HPO SUMMARY")
     print(f"{'='*70}")
-    print(f"{'Model':<10} {'Dir':<6} {'Gran':<6} {'Utility':>10} {'Prec':>8} {'Cov':>8} {'Source':<18} {'Thr':>8}")
-    print(f"{'-'*78}")
+    print(f"{'Model':<10} {'Dir':<6} {'Gran':<6} {'Utility':>10} {'Prec':>8} {'Cov':>8} {'MeanRet':>9} {'Source':<22} {'Thr':>8}")
+    print(f"{'-'*90}")
     for r in all_results:
         m = r["best_metrics"]
         print(f"{r['model']:<10} {r['direction']:<6} {r['granularity']:<6} "
               f"{r['best_utility']:>10.4f} "
               f"{m.get('sel_precision', 0):>8.3f} "
               f"{m.get('coverage', 0):>8.3f} "
-              f"{m.get('threshold_source', 'unknown'):<18} "
+              f"{m.get('sel_mean_return', 0):>9.4f} "
+              f"{m.get('threshold_source', 'unknown'):<22} "
               f"{m.get('threshold', 0.5):>8.3f}")
     print(f"{'='*70}")
     print(f"Completed {len(all_results)}/{total} configurations.")
 
-    # ┏━━━━━━━━━━ Save global summary ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Save global summary (upsert) ━━━━━━━━━━┓
     m1_bucket = m1_output_bucket(cfg)
     summary_path = output_root / m1_bucket / "HPO" / "hpo_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = []
+    if summary_path.exists():
+        with open(summary_path) as f:
+            existing = json.load(f)
+    key = lambda r: (r["model"], r["direction"], r["granularity"])
+    merged = {key(r): r for r in existing}
+    for r in all_results:
+        merged[key(r)] = r
     with open(summary_path, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
+        json.dump(list(merged.values()), f, indent=2, default=str)
     print(f"Summary saved: {summary_path}")
 
     return all_results
