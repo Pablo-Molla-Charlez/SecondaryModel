@@ -228,7 +228,7 @@ def run_experiments(config: dict, config_path: str):
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"
                 cmd = [python, "kronos_tree.py",
                        "--cache_path", "not_needed_here",
-                       "--config", config_path,
+                       "--config", json.dumps(config),
                        "--phase", "combined",
                        "--m2", m2,
                        "--direction", "not_needed_here",

@@ -51,7 +51,31 @@ def run_hpo_single(model_name: str,
     if best_path.exists():
         print(f"  [SKIP] {model_name.upper()} {direction.upper()} {granularity} — best_params.json exists")
         with open(best_path) as f:
-            return json.load(f)
+            result = json.load(f)
+        # ┏━━━━━━━━━━ Backfill probs if missing from a prior run ━━━━━━━━━━┓
+        if not (out_dir / "best_probs.npz").exists():
+            try:
+                (X_train, y_train,
+                 X_cal, y_cal,
+                 X_opt, y_opt,
+                 _, _, _) = _prepare_splits(
+                    _load_dataset_for_gran(multi_cache, granularity),
+                    cfg, granularity, direction)
+                _save_best_trial_probs(out_dir     = out_dir,
+                                       model_name  = model_name,
+                                       best_params = result.get("best_params", {}),
+                                       X_train     = X_train,
+                                       y_train     = y_train,
+                                       X_cal       = X_cal,
+                                       y_cal       = y_cal,
+                                       X_opt       = X_opt,
+                                       y_opt       = y_opt,
+                                       seed        = seed)
+            except Exception as e:
+                import traceback
+                print(f"  [WARN] Backfill best-trial probs failed: {e}")
+                traceback.print_exc()
+        return result
 
     print(f"\n{'='*60}")
     print(f"  HPO: {model_name.upper()} | {direction.upper()} | {granularity}")
@@ -157,7 +181,9 @@ def run_hpo_single(model_name: str,
                                y_opt     = y_opt,
                                seed      = seed)
     except Exception as e:
+        import traceback
         print(f"  [WARN] Failed to persist best-trial probs: {e}")
+        traceback.print_exc()
 
     return result
 

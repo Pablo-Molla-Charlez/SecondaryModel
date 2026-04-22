@@ -39,12 +39,6 @@ class AutoGluon(BaseClassifier):
         self._weight_col = "__sample_weight__"
         self.classes_ = None
         
-        self.args = kwargs.pop("args", None)  # pop so it's not passed to TabularPredictor
-        if self.args is None:
-            raise ValueError("Argument 'args' is None -- Please pass it!")
-        self.model_cache_path = (
-            f"{self.args.output_root}/{self.args.m1}/cache/autogluon/{self.args.m2}/"
-            f"direction={self.args.direction}/{self.args.gran}")
         
     # def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray) -> object:
     #     # TODO the idea is to only run the hyperparameter optimization once

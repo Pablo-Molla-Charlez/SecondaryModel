@@ -438,7 +438,7 @@ def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="r
     # The real TEST window (dates > val_end) is never exposed during the
     # seeds-convergence experiment. Per-seed noise is measured on Val-Eval,
     # a held-out slice carved from the tail of the train+val timeline.
-    splits = _compute_seeds_embargo_splits(dates_valid, train_end, val_end, horizon, gran)
+    splits = _compute_seeds_embargo_splits(dates_valid, train_end, val_end, horizon, granularity)
     idx_train    = splits["idx_train"]
     idx_cal      = splits["idx_cal"]
     idx_opt      = splits["idx_opt"]
