@@ -455,8 +455,8 @@ Phases run sequentially (0 → 1 → 2 → 3 → 4). HPO results propagate downs
 
 ```
 Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train)  ──ag_best_hyperparameters.json──▸  Phase 2 (CPCV)
-                        │                                                                      ▲
-                        └──────────────────── best_params.json ─────────────────────────────────┘
+                                                                                              ▲
+                        └──────────────────── best_params.json ───────────────────────────────┘
 ```
 
 - **RF / TabPFN / TabICL**: `best_params.json` from Phase 0 is loaded by both Phase 1 (`kronos_tree.py` via `_load_best_params`) and Phase 2 (`run_cpcv_analysis` via the same function). Each CPCV split uses `_build_edge_model(..., best_params=...)` → `_build_tree_model(params=...)` so the HPO-tuned hyperparameters are applied consistently.

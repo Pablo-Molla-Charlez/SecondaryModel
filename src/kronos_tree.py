@@ -273,7 +273,6 @@ def temporal_eval(dataset: dict,
     if model_name == "autogluon":
         model.leaderboard()
         model.model_info(save_dir)
-        model.save_to(save_dir)
     
     results = {}
     val_thresholds = {}
@@ -307,6 +306,18 @@ def temporal_eval(dataset: dict,
     print(
         f"      Test range [{_raw_test_probs.min():.3f}, {_raw_test_probs.max():.3f}] → [{_cal_test_probs.min():.3f}, {_cal_test_probs.max():.3f}]")
     print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
+    
+    # ┏━━━━━━━━━━ Export Raw & Calibrated Probs (mirroring HPO Phase 0) ━━━━━━━━━━┓
+    probs_path = save_dir / "best_probs.npz"
+    np.savez(probs_path,
+             cal_probs_raw = _raw_cal_probs,
+             cal_probs_cal = _calibrator.predict(_raw_cal_probs),
+             y_cal         = y_cal,
+             opt_probs_raw = _raw_opt_probs,
+             opt_probs_cal = _cal_opt_probs,
+             y_opt         = y_opt)
+    print(f"  [probs] Saved raw+cal probs: {probs_path.name}")
+    
     
     # ┏━━━━━━━━━━ Extract dates for SAOCP ━━━━━━━━━━┓
     _ds_dates = dataset["dates"] if _is_dict else dataset.dates
@@ -1101,11 +1112,10 @@ def run_unified_analysis(cache_path: Path,
     model.fit(X_train_all, y_train_all, sample_weight=w_train_all)
     print(f"  Training complete.\n")
     
-    # ┏━━━━━━━━━━ Save AutoGluon model ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Save AutoGluon model info ━━━━━━━━━━┓
     if model_name == "autogluon":
         model.leaderboard()
         model.model_info(save_dir)
-        model.save_to(save_dir)
     
     # ┏━━━━━━━━━━ Summary of per-granularity evaluation ━━━━━━━━━━┓
     summary = {"cache": str(cache_path),
