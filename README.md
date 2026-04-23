@@ -302,24 +302,30 @@ All models share a 50 000-row soft sub-sampling guard (`_TABPFN_MAX_ROWS`) that 
 
 Model performance on a single test set is often a "lucky" snapshot. `Utils/edge/` provides a statistically robust protocol to determine if a model is truly ready for deployment.
 
-### The Principle of Convergence
-A model is considered "Converged" only if it passes two independent stress tests:
-1. **Regime Sensitivity (CPCV)**: Does the model hold up when the market regime shifts?
-2. **Model Stability (Seeds)**: Is the model's alpha stable across random seeds?
+### Model-Dependent Edge Modes
+
+Not every M2 model benefits from multi-seed stability testing. Seed variation only produces meaningful variance in models with internal stochastic components (bootstrap sampling, feature subsets). For frozen-weight foundation models (TabPFN, TabICL) and AutoGluon (where the seed is not forwarded to the internal predictor), repeating 100 seed trials produces near-identical outputs — a waste of compute. The edge protocol therefore adapts to the model:
+
+| M2 Model | Seeds Mode | CPCV Mode | Convergence Score |
+| --- | --- | --- | --- |
+| **RF, XGBoost** | ✅ 100 seed trials | ✅ CPCV | 60% CPCV + 40% Seeds |
+| **AutoGluon, TabPFN, TabICL** | ❌ Skipped | ✅ CPCV | 100% CPCV |
+
+For AutoGluon / TabPFN / TabICL, the CPCV summary embeds a **standalone GREEN / AMBER / RED verdict** directly — no convergence-score step is needed.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2563eb', 'primaryBorderColor': '#1d4ed8', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dcfce7', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart TD
     A[Cache] --> B{Edge Engine}
-    B --> C[Seeds<br/>Stability]
+    B --> C["Seeds<br/>Stability<br/><small>RF / XGBoost only</small>"]
     B --> D[CPCV<br/>Regime]
     C --> E[Score: 40%]
     D --> F[Score: 60%]
     E & F --> G[Convergence]
     G --> H{Verdict}
-    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Seeds & CPCV</small>"]
-    H --> J["&nbsp;&nbsp;&nbsp;AMBER: Risk&nbsp;&nbsp;&nbsp;<br/><small>One True</small>"]
-    H --> K["&nbsp;&nbsp;&nbsp;&nbsp;RED: Reject&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Neither True</small>"]
+    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Both gates</small>"]
+    H --> J["&nbsp;&nbsp;&nbsp;AMBER: Risk&nbsp;&nbsp;&nbsp;<br/><small>One gate</small>"]
+    H --> K["&nbsp;&nbsp;&nbsp;&nbsp;RED: Reject&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Neither gate</small>"]
     classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
     classDef amber fill:#f59e0b,stroke:#b45309,color:#ffffff;
     classDef red fill:#ef4444,stroke:#b91c1c,color:#ffffff;
@@ -335,44 +341,46 @@ CPCV uses **datetime-based block partitioning** by default (`CombinatorialPurged
 
 ### Convergence Gate Conditions
 
-The convergence verdict is **not** a handcrafted heuristic — it's the outcome of two independent quantitative gates (see [`Utils/edge/edge.py`](src/Utils/edge/edge.py)).
+The convergence verdict is **not** a handcrafted heuristic — it's the outcome of quantitative gates (see [`Utils/edge/edge.py`](src/Utils/edge/edge.py)).
 
-**Gate 1 — CPCV (Regime Sensitivity).** Evaluated across all CPCV back-test paths:
+**Gate 1 — CPCV (Regime Sensitivity).** Evaluated across all CPCV back-test paths (applies to **all** M2 models):
 
 ```
-cpcv_pass  ⇔  median_path_sharpe > 0   AND   fraction_profitable > 0.60
-cpcv_score = fraction_profitable × clip(median_path_sharpe, 0, 1)
+cpcv_pass  ⇔  median_path_sharpe > 0   AND   fraction_profitable ≥ 0.60
 ```
 
 `fraction_profitable` is the share of CPCV paths with positive total return; `median_path_sharpe` is the median of per-path Sharpe ratios.
 
-**Gate 2 — Seeds (Model Stability).** Evaluated over N random-seed replicas (default `N = 100`) on a held-out **Val-Eval** split (see below):
-
-`sharpe_ci_lower` is the lower bound of the 95% confidence interval for the mean Sharpe across seeds. If this lower bound is above zero, the model's edge is statistically unlikely to be a noise artifact — even in the worst plausible case within the confidence interval, performance is positive.
+**Gate 2 — Seeds (Model Stability).** Only for RF and XGBoost. Evaluated over N random-seed replicas (default `N = 100`) on a held-out **Val-Eval** split:
 
 ```
 sharpe_ci_lower = mean_sharpe − z₀.₉₇₅ · std_sharpe / √N     # z₀.₉₇₅ = 1.96 (95% CI)
 seeds_pass      ⇔  fraction_profitable > 0.70   AND   sharpe_ci_lower > 0
-CV_sharpe       = std_sharpe / |mean_sharpe|
-seeds_score     = fraction_profitable × clip(1 − CV_sharpe, 0, 1)
 ```
+
 **Val-Eval split for seeds mode (test-set integrity).** To keep the real test window fully unseen during stability measurement, `seeds` mode carves a 4-way split **entirely inside the Train+Val timeline** — the real test window is never touched. Ratios (of the Train+Val span) are:
 
 ```
 [ Train 65% | purge | Val-Cal 12% | purge | Val-Opt 10% | purge | Val-Eval 13% ]   ( | Test — untouched | )
 ```
 
-Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. `Val-Eval` is the hold-out on which per-seed Sharpe / return / precision are measured. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
+Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
 
 ---
 
-**Final verdict and composite score.**
+**Final verdict.**
 
 ```
+# RF / XGBoost (2-stage)
 verdict = GREEN  if cpcv_pass ∧ seeds_pass
           AMBER  if cpcv_pass ⊕ seeds_pass
           RED    otherwise
 final_score = 0.6 · cpcv_score + 0.4 · seeds_score
+
+# AutoGluon / TabPFN / TabICL (CPCV-only)
+verdict = GREEN  if cpcv_pass (both conditions)
+          AMBER  if exactly one condition passes
+          RED    otherwise
 ```
 
 ## Setup
@@ -427,7 +435,7 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 | `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
 | `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
 | `runtime.training` | `thres`, `ocp_alpha`, `ocp_costs`, `ocp_window_days`, `all_grans`, `top5`, `run_features` | Training-phase knobs: threshold selection mode, OCP cost vector, unified-vs-per-gran mode, feature sub-analysis toggles. |
-| `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — seeds + CPCV shape. |
+| `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — `n_trials` seeds (RF/XGBoost only) + CPCV shape (`n_blocks`, `k_test`). |
 | `runtime.combined` | `combined_backtest` | Populated automatically by `experiments.py`; leave as-is. |
 | `runtime.feature_selection` | `cv_strategy`, `n_blocks`, `k_test`, `method`, `scoring`, `min_features`, `max_features`, `take_n_best_combinations` | SFS+/RFECV feature-selection knobs. |
 
@@ -436,12 +444,36 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 | Phase | What it runs | Enable via |
 | --- | --- | --- |
 | **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}` are skipped automatically. | `runtime.skip.hpo: false` |
-| **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. Each run loads the matching `best_params.json` from Phase 0 via `_load_best_params` and threads it through `_build_tree_model(params=...)`. | `runtime.skip.training: false` |
-| **2. Edge** | `python -m Utils.edge` in `seeds` → `cpcv` → `convergence` modes per `(m2 × direction × granularity)`. | `runtime.skip.edge: false` |
+| **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
+| **2. Edge** | `python -m Utils.edge` — runs CPCV for all models; additionally runs `seeds` → `convergence` for RF/XGBoost only. CPCV splits reuse HPO best_params (RF/TabPFN/TabICL) and Phase 1 best hyperparameters (AutoGluon). | `runtime.skip.edge: false` |
 | **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
 | **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
 
-Phase 0 and Phase 1 run sequentially: Phase 0 completes the full Optuna sweep for every HPO-supported `(m2, direction, granularity)` tuple before Phase 1 starts, so Phase 1 always reads the freshest `best_params.json`. Non-HPO-supported models (`xgboost`, `autogluon`, `tabpfn_ft`) use the hard-coded defaults in `factory.py`.
+#### Hyperparameter reuse chain
+
+Phases run sequentially (0 → 1 → 2 → 3 → 4). HPO results propagate downstream automatically:
+
+```
+Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train)  ──ag_best_hyperparameters.json──▸  Phase 2 (CPCV)
+                        │                                                                      ▲
+                        └──────────────────── best_params.json ─────────────────────────────────┘
+```
+
+- **RF / TabPFN / TabICL**: `best_params.json` from Phase 0 is loaded by both Phase 1 (`kronos_tree.py` via `_load_best_params`) and Phase 2 (`run_cpcv_analysis` via the same function). Each CPCV split uses `_build_edge_model(..., best_params=...)` → `_build_tree_model(params=...)` so the HPO-tuned hyperparameters are applied consistently.
+- **AutoGluon**: No HPO phase (not in `HPO_SUPPORTED_M2`). Instead, Phase 1 training runs the full AutoML search (`time_limit=3600s, presets=best_quality`) and saves the winning model's type and hyperparameters to `ag_best_hyperparameters.json` via `AutoGluon.save_best_hyperparameters()`. Phase 2 CPCV loads this file via `_load_ag_best_hyperparameters()` and calls `model.fit_with_hyperparameters(X, y, ag_hyperparameters={...})` — training only the known-best model type with locked hyperparameters, no search overhead.
+- **XGBoost / TabPFN_ft**: Use hard-coded defaults from `factory.py` (no HPO, no reuse).
+
+#### Per-granularity resumability
+
+`experiments.py` can be safely re-run after a crash or interruption — it detects already-completed work per `(m2, direction, granularity)` and skips it:
+
+| Phase | Skip file checked | Path |
+| --- | --- | --- |
+| **0. HPO** | `best_params.json` | `Output/<M1>/HPO/<m2>/<DIR>/<gran>/best_params.json` |
+| **1. Train** | `analysis_summary.json` | `Output/<M1>/<m2>/<DIR>/Utility_Score/<gran>_<mode>/analysis_summary.json` |
+| **2. Edge (CPCV)** | `edge_summary_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/edge_summary_<gran>.json` |
+
+To **force re-execution** of a specific granularity, delete its skip file and re-run `experiments.py`. Global `runtime.skip.<phase>: true` overrides all per-granularity checks — the entire phase is skipped.
 
 #### Cache model — one multi-gran file per direction
 
@@ -459,14 +491,16 @@ Each completed training run persists a single production model — the one train
 
 ```
 Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<mode>/final_model/
-├── model{.pkl or native serialized files}   # native save_model with pickle fallback (AutoGluon uses save_to directory)
+├── model{.pkl or native serialized files}   # native save_model with pickle fallback
+├── ag_model/                                # AutoGluon-only: full predictor directory
+├── ag_best_hyperparameters.json             # AutoGluon-only: best model type + params for CPCV reuse
 └── bundle.pkl                               # scaler, isotonic calibrator, col_indices, val_op threshold,
                                              # features_used, model_name, best_params, meta
 ```
 
 `<DIR>` is `UP` or `DOWN` (from `--direction`); `<gran>` is the CLI `--granularity`; `<mode>` is `data.load.meta_label_mode` (`tp`/`fp`/`og`).
 
-CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py::_save_final_model`](src/Utils/classifier/factory.py).
+CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py::_save_final_model`](src/Utils/classifier/factory.py). For AutoGluon, `save_best_hyperparameters()` additionally writes a JSON file that Phase 2 CPCV reads to avoid re-running the 3600s AutoML search per split.
 
 #### Switching M1 backbone
 
@@ -490,7 +524,7 @@ data:
 
 ### `Utils/hpo/` — Hyperparameter Optimization
 
-HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip.hpo: false`). Phase 1 reads the resulting `best_params.json` automatically via `Utils.utils._load_best_params`. You can also invoke it directly as a standalone CLI when you want to tune a specific `(model, direction, granularity)` combination without running the full pipeline — it reads the same `config.yaml` for paths, splits, and fees.
+HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip.hpo: false`). Both Phase 1 (training) and Phase 2 (CPCV) read the resulting `best_params.json` automatically via `Utils.utils._load_best_params`, so HPO-tuned hyperparameters are consistently applied across the main training run and all 15 CPCV splits. You can also invoke HPO directly as a standalone CLI when you want to tune a specific `(model, direction, granularity)` combination without running the full pipeline — it reads the same `config.yaml` for paths, splits, and fees.
 
 ```bash
 # HPO for RF — up direction, 4h granularity, 50 trials
@@ -541,11 +575,11 @@ conda run -n S2 python -m Utils.ocp.theory \
 | `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with `--config <yaml> --m2 <x> --direction <up\|down> --granularity <gran>`. Supports direct invocation with the same CLI for targeted runs. |
 | `Utils/feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
-| `Utils/edge/` | Worker for the edge phase — seeds stability + CPCV regime sensitivity. Invoked as `python -m Utils.edge` by `experiments.py`. |
+| `Utils/edge/` | Worker for the edge phase — CPCV regime sensitivity (all models) + optional seeds stability (RF/XGBoost only). CPCV splits reuse HPO best_params and AutoGluon best hyperparameters from Phase 1. Invoked as `python -m Utils.edge` by `experiments.py`. |
 | `Utils/data/` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, embargo/purge logic. |
 | `Utils/feature_selection/` | Feature plots, feature ranking, confusion matrices, return histograms, and probability diagnostics. |
 | `Utils/backtest/` | Backtest helpers, equity construction, Sharpe/drawdown, reporting, combined UP+DOWN backtest, comparison tables. |
-| `Utils/hpo/` | Optuna-based HPO — **standalone**, not orchestrated by `experiments.py`. CLI: `python -m Utils.hpo`. |
+| `Utils/hpo/` | Optuna-based HPO — Phase 0 of `experiments.py`. Results consumed by both Phase 1 training and Phase 2 CPCV. CLI: `python -m Utils.hpo`. |
 | `Utils/ocp/` | SAOCP core logic + OCP diagnostic CLI. CLI: `python -m Utils.ocp.analysis`, `python -m Utils.ocp.theory`. |
 | `Utils/selective_classification/` | Probability calibration (Isotonic, Platt) and utility-threshold selection. |
 | `Utils/ts_cross_validation/` | CPCV, PurgedEmbargoCV, embargo-split helpers for financial time-series CV. |
@@ -694,7 +728,7 @@ Flip each flag to `false` to enable its phase. `experiments.py` iterates phases 
 Threshold mode (`utility`, `OCP`, `OCP-W`, `OCP-cost`, `OCP-cost-mondrian`), OCP cost vector + coverage target + calibration window, plus the `all_grans` / `top5` / `run_features` toggles for unified-vs-per-gran and feature sub-analysis.
 
 #### `runtime.edge`
-Seeds trial count (`n_trials`), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
+Seeds trial count (`n_trials`, RF/XGBoost only — ignored for AutoGluon/TabPFN/TabICL), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
 
 #### `runtime.combined`
 `combined_backtest` is **auto-populated** by `experiments.py` from the training phase outputs — don't edit the placeholder pair by hand.

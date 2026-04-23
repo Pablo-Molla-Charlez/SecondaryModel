@@ -93,6 +93,52 @@ class AutoGluon(BaseClassifier):
         cols = self.feature_names if self.feature_names else [f"f{i}" for i in range(X.shape[1])]
         return pd.DataFrame(X, columns=cols)
 
+    # ┏━━━━━━━━━━ Fit with locked hyperparameters (CPCV reuse) ━━━━━━━━━━┓
+    def fit_with_hyperparameters(self,
+                                 X_train: Union[np.ndarray, pd.DataFrame],
+                                 y_train: np.ndarray,
+                                 ag_hyperparameters: dict,
+                                 sample_weight = None):
+        """Fit a single AutoGluon model using pre-determined hyperparameters.
+
+        Used in CPCV splits to avoid re-running the full 3600s AutoML search.
+        `ag_hyperparameters` must be in AutoGluon's native format:
+            {"GBM": [{...}], "NN_TORCH": [{...}], ...}
+        which is recovered from `save_best_hyperparameters()`.
+        """
+        from autogluon.tabular import TabularPredictor
+
+        # ┏━━━━━━━━━━ Convert to DataFrame ━━━━━━━━━━┓
+        X = np.asarray(X_train) if not isinstance(X_train, pd.DataFrame) else X_train.values
+        self.n_features_in_ = X.shape[1]
+        df = self._to_df(X)
+        df[self._label_col] = y_train
+
+        # ━━━━━━━━━━ Sample Weight ━━━━━━━━━━
+        ag_ctor_kwargs = {}
+        if sample_weight is not None:
+            df[self._weight_col] = sample_weight
+            ag_ctor_kwargs["sample_weight"] = self._weight_col
+
+        # ━━━━━━━━━━ Temp Dir ━━━━━━━━━━
+        save_dir = tempfile.mkdtemp(prefix="ag_cpcv_")
+
+        # ━━━━━━━━━━ Autogluon Predictor ━━━━━━━━━━
+        self._predictor = TabularPredictor(label       = self._label_col,
+                                           path        = save_dir,
+                                           eval_metric = "f1",
+                                           verbosity   = 0,
+                                           **ag_ctor_kwargs).fit(
+                                               train_data      = df,
+                                               hyperparameters = ag_hyperparameters,
+                                               # No time_limit — single model, no search overhead
+                                               time_limit      = None,
+                                               fit_weighted_ensemble = False)
+        
+        self._train_df = df
+        self.classes_ = np.unique(np.asarray(y_train))
+        return self
+
     # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, sample_weight=None):
         from autogluon.tabular import TabularPredictor
@@ -187,6 +233,36 @@ class AutoGluon(BaseClassifier):
             json.dump(export, f, indent=2, default=str)
         print(f"  AutoGluon model info saved to {info_path}")
         return export
+
+    # ┏━━━━━━━━━━ Save best hyperparameters for CPCV reuse ━━━━━━━━━━┓
+    def save_best_hyperparameters(self, save_dir) -> dict | None:
+        """Extract the best single model's type and hyperparameters and write them to
+        `ag_best_hyperparameters.json` so that CPCV splits can re-train exactly that
+        model without running the full AutoML search again.
+
+        Returns the hyperparameters dict, or None if extraction fails.
+        """
+        if self._predictor is None:
+            return None
+        try:
+            best_name = self._predictor.get_model_best()
+            info = self._predictor.info()
+            model_info = info.get("model_info", {}).get(best_name, {})
+            model_type = str(model_info.get("model_type", ""))
+            hyperparameters = {k: _safe_json(v) for k, v in model_info.get("hyperparameters", {}).items()}
+            payload = {"best_model_name": best_name,
+                       "model_type":      model_type,
+                       "hyperparameters": hyperparameters,
+                       "eval_metric":     "f1",
+                       "feature_names":   self.feature_names}
+            out_path = Path(save_dir) / "ag_best_hyperparameters.json"
+            with open(out_path, "w") as f:
+                json.dump(payload, f, indent=2)
+            print(f"  AutoGluon best hyperparameters saved to {out_path}")
+            return payload
+        except Exception as e:
+            print(f"  [WARN] Could not save AutoGluon best hyperparameters: {e}")
+            return None
 
     # ┏━━━━━━━━━━ Save ━━━━━━━━━━┓
     def save_to(self, path):

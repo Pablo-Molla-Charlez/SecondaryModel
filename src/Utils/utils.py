@@ -73,6 +73,31 @@ def _load_best_params(cfg: dict,
     return payload.get("best_params")
 
 
+def _load_ag_best_hyperparameters(cfg: dict,
+                                   direction: str,
+                                   granularity: str) -> dict | None:
+    """Return AutoGluon's best-model hyperparameters saved during Phase 1 training.
+
+    Reads ``Output/{M1}/autogluon/{DIR}/Utility_Score/{gran}_training/final_model/ag_best_hyperparameters.json``
+    written by ``AutoGluon.save_best_hyperparameters()`` inside ``_save_final_model``.
+
+    Returns a dict with keys ``best_model_name``, ``model_type``, ``hyperparameters``,
+    ``eval_metric``, and ``feature_names``, or None if the file does not exist.
+    """
+    final_model_dir = (Path(cfg["paths"]["output_root"])
+                       / m1_output_bucket(cfg)
+                       / "autogluon"
+                       / direction.upper()
+                       / "Utility_Score"
+                       / f"{granularity}_training"
+                       / "final_model")
+    hp_path = final_model_dir / "ag_best_hyperparameters.json"
+    if not hp_path.exists():
+        return None
+    with open(hp_path) as f:
+        return json.load(f)
+
+
 # ┏━━━━━━━━━━ JSON Encoder ━━━━━━━━━━┓
 class NumpyJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles common numpy scalar and array types."""

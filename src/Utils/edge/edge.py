@@ -53,7 +53,9 @@ from Utils.utils import (_load_config,
                          _load_multi_cache,
                          _class_names,
                          m1_output_bucket,
-                         m1_display_label)
+                         m1_display_label,
+                         _load_best_params,
+                         _load_ag_best_hyperparameters)
 
 # ┏━━━━━━━━━━ Imports from TS Cross-Validation ━━━━━━━━━━┓
 from Utils.ts_cross_validation import (_gran_to_timedelta,
@@ -173,20 +175,34 @@ def _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularit
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ┏━━━━━━━━━━ Build model for edge analysis ━━━━━━━━━━┓
-def _build_edge_model(model_key: str, 
-                      n_samples: int, 
+def _build_edge_model(model_key: str,
+                      n_samples: int,
                       seed: int = EDGE_SEED,
-                      class_weight_ratio: float = 1.0):
-    """Build a model via _build_tree_model, then override random_state for seed control."""
-    model = _build_tree_model(model_key, n_samples, class_weight_ratio=class_weight_ratio)
+                      class_weight_ratio: float = 1.0,
+                      best_params: dict | None = None,
+                      feature_names=None):
+    """Build a model via _build_tree_model, then override random_state for seed control.
+
+    For TabPFN and TabICL, ``best_params`` from HPO are forwarded so CPCV splits
+    reuse the tuned hyperparameters instead of model defaults.
+    AutoGluon is NOT built here — it is handled separately in _run_cpcv_split
+    via ``fit_with_hyperparameters`` to avoid the 3600s search per split.
+    """
+    # ┏━━━━━━━━━━ Build the classifier ━━━━━━━━━━┓
+    model = _build_tree_model(model_key,
+                              n_samples          = n_samples,
+                              class_weight_ratio = class_weight_ratio,
+                              feature_names      = feature_names,
+                              params             = best_params)
+
     # ┏━━━━━━━━━━ Override seed for reproducibility / seed-trial variance measurement ━━━━━━━━━━┓
     if hasattr(model, "random_state"):
         model.random_state = seed
-    
+
     # ┏━━━━━━━━━━ Propagate seed to internal sklearn/xgb classifier (already constructed) ━━━━━━━━━━┓
     if hasattr(model, "_clf") and hasattr(model._clf, "random_state"):
         model._clf.random_state = seed
-    
+
     # ┏━━━━━━━━━━ RF also needs oob_score for CPCV threshold estimation ━━━━━━━━━━┓
     if model_key == "rf":
         if hasattr(model, "_clf"):
@@ -620,17 +636,20 @@ def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="r
 
 
 # ┏━━━━━━━━━━ Helper to run CPCV split (with & without OOB-calibrated threshold) ━━━━━━━━━━┓
-def _run_cpcv_split(eng, 
-                    labels, 
-                    returns, 
-                    asset_ids, 
-                    asset_map, 
-                    idx_train, 
-                    idx_test, 
-                    direction, 
+def _run_cpcv_split(eng,
+                    labels,
+                    returns,
+                    asset_ids,
+                    asset_map,
+                    idx_train,
+                    idx_test,
+                    direction,
                     fee,
-                    model_key   = "rf", 
-                    dates_valid = None):
+                    model_key          = "rf",
+                    dates_valid        = None,
+                    best_params        = None,
+                    ag_hyperparameters = None,
+                    feature_names      = None):
     """Train on train, calibrate + sweep threshold on training OOB, evaluate on test.
 
     RF path (OOB available):
@@ -676,8 +695,12 @@ def _run_cpcv_split(eng,
     # ┏━━━━━━━━━━ RF path: OOB-calibrated threshold ━━━━━━━━━━┓
     if model_key == "rf":
         # ┏━━━━━━━━━━ Build model ━━━━━━━━━━┓
-        model = _build_edge_model(model_key, len(y_train_all), seed=EDGE_SEED, class_weight_ratio=cw_ratio)
-        
+        model = _build_edge_model(model_key,
+                                  n_samples          = len(y_train_all),
+                                  seed               = EDGE_SEED,
+                                  class_weight_ratio = cw_ratio,
+                                  best_params        = best_params)
+
         # ┏━━━━━━━━━━ Fit model ━━━━━━━━━━┓
         model.fit(X_train_all, y_train_all)
 
@@ -702,21 +725,59 @@ def _run_cpcv_split(eng,
         opt_probs_cal = calibrator.predict(oob_probs[opt_mask])
         op = _find_best_utility_threshold(opt_probs_cal, train_returns_all[opt_mask], fee=fee, labels=y_train_all[opt_mask])
 
-    # ┏━━━━━━━━━━ Non-RF path: 60/20/20 physical split ━━━━━━━━━━┓
-    else:
+    # ┏━━━━━━━━━━ AutoGluon path: reuse Phase-1 best model hyperparameters ━━━━━━━━━━┓
+    elif model_key == "autogluon":
+        from Utils.classifier.autogluon_classifier import AutoGluon
+
         # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
         n_train = len(idx_train)
         n_fit   = int(n_train * 0.60)
         n_cal   = int(n_train * 0.20)
-        
+
         X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
         X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
         X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
         opt_rets = train_returns_all[n_fit+n_cal:]
 
-        # ┏━━━━━━━━━━ Build model ━━━━━━━━━━┓
-        model = _build_edge_model(model_key, n_fit, seed=EDGE_SEED, class_weight_ratio=cw_ratio)
-        
+        # ┏━━━━━━━━━━ Build AutoGluon classifier ━━━━━━━━━━┓
+        model = AutoGluon(feature_names=feature_names, class_weight_ratio=cw_ratio)
+
+        # ┏━━━━━━━━━━ Use HPO best params if available ━━━━━━━━━━┓
+        if ag_hyperparameters is not None:
+            # ┏━━━━━━━━━━ Reuse best Phase-1 model — no search overhead ━━━━━━━━━━┓
+            ag_hp = {ag_hyperparameters["model_type"]: [ag_hyperparameters["hyperparameters"]]}
+            model.fit_with_hyperparameters(X_fit, y_fit, ag_hyperparameters=ag_hp)
+        else:
+            # ┏━━━━━━━━━━ Fallback: full AutoGluon fit (slow — Phase 1 model not found) ━━━━━━━━━━┓
+            print(f"  [WARN] AutoGluon best hyperparameters not found; falling back to full fit (time_limit=3600s)")
+            model.fit(X_fit, y_fit)
+
+        # ┏━━━━━━━━━━ Calibrate on cal ━━━━━━━━━━┓
+        cal_probs_raw = model.predict_proba(X_cal)[:, 1]
+        _cal = calibrate_probabilities(cal_probs_raw, y_cal)
+        calibrator = _cal["calibrator"]
+
+        # ┏━━━━━━━━━━ Sweep threshold on calibrated opt ━━━━━━━━━━┓
+        opt_probs_cal = calibrator.predict(model.predict_proba(X_opt)[:, 1])
+        op = _find_best_utility_threshold(opt_probs_cal, opt_rets, fee=fee, labels=y_opt)
+
+    # ┏━━━━━━━━━━ Non-RF / Non-AutoGluon path: 60/20/20 physical split ━━━━━━━━━━┓
+    else:
+        # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
+        n_train = len(idx_train)
+        n_fit   = int(n_train * 0.60)
+        n_cal   = int(n_train * 0.20)
+
+        X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
+        X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
+        X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
+        opt_rets = train_returns_all[n_fit+n_cal:]
+
+        # ┏━━━━━━━━━━ Build model with HPO best_params if available ━━━━━━━━━━┓
+        model = _build_edge_model(model_key, n_fit, seed=EDGE_SEED,
+                                  class_weight_ratio=cw_ratio, best_params=best_params,
+                                  feature_names=feature_names)
+
         # ┏━━━━━━━━━━ Fit model ━━━━━━━━━━┓
         model.fit(X_fit, y_fit)
 
@@ -893,11 +954,32 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
                        granularity,
                        direction)
 
+    # ┏━━━━━━━━━━ Load HPO params for this (m2, direction, granularity) ━━━━━━━━━━┓
+    # TabPFN / TabICL: load from Utils.hpo best_params.json
+    # AutoGluon: load from Phase-1 final_model/ag_best_hyperparameters.json
+    _best_params = _load_best_params(config, m2_name, direction, granularity)
+    _ag_hyperparameters = None
+    if m2_name == "autogluon":
+        _ag_hyperparameters = _load_ag_best_hyperparameters(config, direction, granularity)
+        if _ag_hyperparameters is not None:
+            print(f"  [AutoGluon] Reusing Phase-1 best model: {_ag_hyperparameters['best_model_name']} "
+                  f"({_ag_hyperparameters['model_type']}) for all {len(splits)} CPCV splits")
+        else:
+            print(f"  [AutoGluon] WARNING: Phase-1 best hyperparameters not found — "
+                  f"CPCV will run full 3600s fit per split (run Phase 1 first)")
+
+    _feature_names = list(sub.get("feature_names", [])) if hasattr(sub, "feature_names") or "feature_names" in sub else None
+
     # ┏━━━━━━━━━━ Run splits ━━━━━━━━━━┓
     split_results = []
     for si, sp in enumerate(splits):
-        result = _run_cpcv_split(eng, labels, returns, asset_ids, asset_map, sp["idx_train"], sp["idx_test"], direction, fee,
-                                 model_key=m2_name)
+        result = _run_cpcv_split(eng, labels, returns, asset_ids, asset_map,
+                                 sp["idx_train"], sp["idx_test"],
+                                 direction, fee,
+                                 model_key          = m2_name,
+                                 best_params        = _best_params,
+                                 ag_hyperparameters = _ag_hyperparameters,
+                                 feature_names      = _feature_names)
         split_results.append(result)
         if (si + 1) % 5 == 0 or si == 0:
             acc = accuracy_score(result["y_test"], result["preds"])
@@ -1000,7 +1082,24 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     s_rets  = np.array([pm["sel_mean_ret"]  for pm in path_metrics_list])
     worst_sharpe = min(sharpes) if sharpes else 0.0
 
-    # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ CPCV-only verdict ━━━━━━━━━━┓
+    # GREEN : median path Sharpe > 0  AND  ≥60% of paths have positive total return
+    # AMBER : exactly one condition passes
+    # RED   : neither condition passes
+    path_total_rets_arr = np.array(total_rets) if total_rets else np.array([0.0])
+    frac_profitable = float(np.mean(path_total_rets_arr > 0))
+    median_sharpe   = float(np.median(sharpes)) if sharpes else 0.0
+    cpcv_sharpe_ok  = median_sharpe > 0
+    cpcv_profit_ok  = frac_profitable >= 0.60
+    if cpcv_sharpe_ok and cpcv_profit_ok:
+        verdict = "GREEN"
+    elif cpcv_sharpe_ok or cpcv_profit_ok:
+        verdict = "AMBER"
+    else:
+        verdict = "RED"
+    verdict_icon = {"GREEN": "✓", "AMBER": "~", "RED": "✗"}[verdict]
+
+    # ┏━━━━━━━━━━ Summary dict ━━━━━━━━━━┓
     summary = {"granularity": granularity, "direction": direction,
                "n_blocks": n_blocks, "k_test": k_test, "n_splits": len(splits),
                "n_paths": len(path_metrics_list), "n_features": eng.shape[1],
@@ -1014,7 +1113,13 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
                "path_sel_cov_mean": float(np.mean(s_covs)), "path_sel_cov_std": float(np.std(s_covs)),
                "path_sel_ret_mean": float(np.mean(s_rets)), "path_sel_ret_std": float(np.std(s_rets)),
                "worst_path_sharpe": worst_sharpe,
-               "path_sharpes": sharpes, "path_total_rets": total_rets}
+               "path_sharpes": sharpes, "path_total_rets": total_rets,
+               # CPCV-only gate fields
+               "median_path_sharpe":  median_sharpe,
+               "frac_profitable":     frac_profitable,
+               "cpcv_sharpe_passes":  cpcv_sharpe_ok,
+               "cpcv_profit_passes":  cpcv_profit_ok,
+               "verdict":             verdict}
 
     summary_all[granularity] = summary
 
@@ -1027,7 +1132,9 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     print(f"  │ Path Sel Prec:  {summary['path_sel_prec_mean']:.4f} ± {summary['path_sel_prec_std']:.4f}")
     print(f"  │ Path Sel Cov:   {summary['path_sel_cov_mean']:.4f} ± {summary['path_sel_cov_std']:.4f}")
     print(f"  │ Path Sel μ-Ret: {summary['path_sel_ret_mean']:+.5f} ± {summary['path_sel_ret_std']:.5f}")
-    print(f"  │ Worst Path SR:  {worst_sharpe:.2f}")
+    print(f"  │ Median SR:      {median_sharpe:.2f}  (gate: {'>0' if cpcv_sharpe_ok else '≤0 FAIL'})")
+    print(f"  │ Frac Profitable:{frac_profitable:.0%}  (gate: {'≥60%' if cpcv_profit_ok else '<60% FAIL'})")
+    print(f"  │ Verdict:        [{verdict_icon}] {verdict}")
     print(f"  └─────────────────────────────────────────┘")
     print(f"  Saved to: {gran_dir}")
 
@@ -1203,13 +1310,21 @@ def compute_edge_convergence_score(cache_path, config, direction="up", model_nam
 
 
 
+# ┏━━━━━━━━━━ Models that use seeds mode (RF only) ━━━━━━━━━━┓
+# AutoGluon, TabPFN, and TabICL skip seeds — CPCV is the sole edge gate for those.
+_SEEDS_SUPPORTED_M2 = {"rf", "xgboost"}
+
+
 # ┏━━━━━━━━━━ CLI ━━━━━━━━━━┓
 def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
-    parser = argparse.ArgumentParser(description="Edge Analysis — Model stability (seeds) or regime sensitivity (CPCV)")  # TODO adjust description
+    parser = argparse.ArgumentParser(description="Edge Analysis — regime sensitivity via CPCV (seeds mode available for RF/XGBoost only)")
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
     parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
-    parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True, help="'seeds' = 100 seed trials; 'cpcv' = Combinatorial Purged CV; convergence = Compute the 3-stage Edge Convergence Score from pre-calculated results")
+    parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True,
+                        help="'cpcv' = Combinatorial Purged CV (all models); "
+                             "'seeds' = 100 seed trials (RF/XGBoost only, skipped for AutoGluon/TabPFN/TabICL); "
+                             "'convergence' = legacy 2-stage score (RF/XGBoost only, skipped otherwise)")
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
@@ -1219,6 +1334,13 @@ def main():
 
     # ┏━━━━━━━━━━ Output directory (includes model name) ━━━━━━━━━━┓
     output_root = Path(args.config["paths"]["output_root"]) / "Analysis" / "Edge" / args.config["experiment"]["m1"].capitalize() / args.m2
+
+    # ┏━━━━━━━━━━ Seeds and convergence: only for RF/XGBoost ━━━━━━━━━━┓
+    if args.mode in ("seeds", "convergence") and args.m2 not in _SEEDS_SUPPORTED_M2:
+        print(f"[edge] --mode {args.mode} is not used for m2={args.m2} "
+              f"(seeds/convergence only apply to {sorted(_SEEDS_SUPPORTED_M2)}). "
+              f"Verdict is determined purely from CPCV results. Skipping.")
+        return
 
     # ┏━━━━━━━━━━ Run analysis ━━━━━━━━━━┓
     if args.mode == "convergence":

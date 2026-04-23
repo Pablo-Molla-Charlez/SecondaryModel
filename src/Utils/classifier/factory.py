@@ -151,7 +151,8 @@ def _save_final_model(artifacts: dict,
 
     # ┏━━━━━━━━━━ Model payload (format depends on classifier type) ━━━━━━━━━━┓
     if model_name == "autogluon":
-        model.save_to(save_dir)                  # AutoGluon writes its own directory layout
+        model.save_to(save_dir)                          # AutoGluon writes its own directory layout
+        model.save_best_hyperparameters(save_dir)        # Save best model's params for CPCV reuse
     else:
         try:
             model.save_model(str(save_dir / "model"))

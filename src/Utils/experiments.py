@@ -29,6 +29,9 @@ if str(_SRC) not in sys.path:
 
 from Utils.utils import _load_config, HPO_SUPPORTED_M2
 
+# Models for which seeds+convergence modes are skipped — CPCV is the sole gate.
+_SEEDS_SUPPORTED_M2 = {"rf", "xgboost"}
+
 
 # ┏━━━━━━━━━━ Run subprocess ━━━━━━━━━━┓
 def _run(cmd: list[str], label: str):
@@ -121,6 +124,9 @@ def run_experiments(config: dict, config_path: str):
         print(f"# Granularities: {config['experiment']['granularity']}")
         print(f"{'#' * 70}")
         
+        mode = config["data"]["load"]["meta_label_mode"]   # e.g. "tp"
+        thres_folder = "Utility_Score"                       # default for non-OCP
+
         for m2 in config['experiment']['m2']:
             for direction in config['experiment']['direction']:
                 for granularity in config['experiment']['granularity']:
@@ -128,7 +134,19 @@ def run_experiments(config: dict, config_path: str):
                     if cache_path is None:
                         print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
                         continue
-                    
+
+                    # ┏━━━━━━━━━━ Per-gran skip: analysis_summary.json exists → done ━━━━━━━━━━┓
+                    train_dir = (Path(config["paths"]["output_root"])
+                                 / config["experiment"]["m1"].capitalize()
+                                 / m2 / direction.upper() / thres_folder
+                                 / f"{granularity}_{mode}")
+                    summary_file = train_dir / "analysis_summary.json"
+                    if summary_file.exists():
+                        print(f"  [SKIP] Training already done: {m2.upper()} {direction.upper()} {granularity} "
+                              f"({summary_file})")
+                        results[f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"] = True
+                        continue
+
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
                     cmd = [python, "kronos_tree.py",
                            "--cache_path", cache_path,
@@ -141,6 +159,12 @@ def run_experiments(config: dict, config_path: str):
                     results[label] = ok
     
     # ┏━━━━━━━━━━ Phase 2: Edge Convergence ━━━━━━━━━━┓
+    # For AutoGluon / TabPFN / TabICL: only CPCV is run — seeds and convergence
+    # modes are not supported (too slow to re-train per seed, no HPO noise to
+    # measure). The CPCV summary embeds a GREEN/AMBER/RED verdict directly.
+    # For RF / XGBoost: seeds + CPCV + convergence are all run as before.
+    # Per-granularity skip: if edge_summary_{gran}.json already exists under
+    # the CPCV output dir the granularity is considered done and skipped.
     if not config["runtime"]["skip"]['edge']:
         print(f"\n{'#' * 70}")
         print(f"# PHASE 2: Edge Convergence Protocol")
@@ -148,10 +172,9 @@ def run_experiments(config: dict, config_path: str):
         print(f"# M2 Models: {config['experiment']['m2']}")
         print(f"# Directions: {config['experiment']['direction']}")
         print(f"# Granularities: {config['experiment']['granularity']}")
-        print(f"# Trials: {config['runtime']['edge']['n_trials']}")
         print(f"# Blocks: {config['runtime']['edge']['n_blocks']}")
         print(f"{'#' * 70}")
-        
+
         for m2 in config['experiment']['m2']:
             for direction in config['experiment']['direction']:
                 for granularity in config['experiment']['granularity']:
@@ -159,45 +182,63 @@ def run_experiments(config: dict, config_path: str):
                     if cache_path is None:
                         print(f"  [SKIP] No cache for direction={direction}")
                         continue
-                    
-                    # ┏━━━━━━━━━━ Seeds ━━━━━━━━━━┓
-                    label = f"Edge Seeds {m2.upper()} {direction.upper()}"
-                    cmd = [python, "-m", "Utils.edge",  # TODO why is this not via kronos_tree.py?
-                           "--config", json.dumps(config),
-                           "--cache_path", cache_path,
-                           "--mode", "seeds",
-                           '--phase', 'edge',
-                           '--m2', m2,
-                           '--direction', direction,
-                           '--granularity', granularity]
-                    ok = _run(cmd, label)
-                    results[label] = ok
-                    
-                    # ┏━━━━━━━━━━ CPCV ━━━━━━━━━━┓
-                    label = f"Edge CPCV {m2.upper()} {direction.upper()}"
-                    cmd = [python, "-m", "Utils.edge",  # TODO why is this not via kronos_tree.py?
-                           "--config", json.dumps(config),
-                           "--cache_path", cache_path,
-                           "--mode", "cpcv",
-                           '--phase', 'edge',
-                           '--m2', m2,
-                           '--direction', direction,
-                           '--granularity', granularity]
-                    ok = _run(cmd, label)
-                    results[label] = ok
-                    
-                    # ┏━━━━━━━━━━ Convergence score ━━━━━━━━━━┓
-                    label = f"Edge Convergence {m2.upper()} {direction.upper()}"
+
+                    # ┏━━━━━━━━━━ Per-gran CPCV skip ━━━━━━━━━━┓
+                    edge_root = (Path(config["paths"]["output_root"])
+                                 / "Analysis" / "Edge"
+                                 / config["experiment"]["m1"].capitalize()
+                                 / m2)
+                    cpcv_summary = edge_root / direction.upper() / f"edge_summary_{granularity}.json"
+                    if cpcv_summary.exists():
+                        print(f"  [SKIP] CPCV already done: {m2.upper()} {direction.upper()} {granularity} "
+                              f"({cpcv_summary})")
+                        results[f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"] = True
+                        # Also mark seeds/convergence as skipped-ok so summary counts them
+                        if m2 in _SEEDS_SUPPORTED_M2:
+                            results[f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"] = True
+                            results[f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"] = True
+                        continue
+
+                    # ┏━━━━━━━━━━ Seeds (RF/XGBoost only) ━━━━━━━━━━┓
+                    if m2 in _SEEDS_SUPPORTED_M2:
+                        label = f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"
+                        cmd = [python, "-m", "Utils.edge",
+                               "--config", json.dumps(config),
+                               "--cache_path", cache_path,
+                               "--mode", "seeds",
+                               "--phase", "edge",
+                               "--m2", m2,
+                               "--direction", direction,
+                               "--granularity", granularity]
+                        ok = _run(cmd, label)
+                        results[label] = ok
+
+                    # ┏━━━━━━━━━━ CPCV (all models) ━━━━━━━━━━┓
+                    label = f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"
                     cmd = [python, "-m", "Utils.edge",
                            "--config", json.dumps(config),
                            "--cache_path", cache_path,
-                           "--mode", "convergence",
-                           '--phase', 'edge',
-                           '--m2', m2,
-                           '--direction', direction,
-                           '--granularity', granularity]
+                           "--mode", "cpcv",
+                           "--phase", "edge",
+                           "--m2", m2,
+                           "--direction", direction,
+                           "--granularity", granularity]
                     ok = _run(cmd, label)
                     results[label] = ok
+
+                    # ┏━━━━━━━━━━ Convergence score (RF/XGBoost only) ━━━━━━━━━━┓
+                    if m2 in _SEEDS_SUPPORTED_M2:
+                        label = f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"
+                        cmd = [python, "-m", "Utils.edge",
+                               "--config", json.dumps(config),
+                               "--cache_path", cache_path,
+                               "--mode", "convergence",
+                               "--phase", "edge",
+                               "--m2", m2,
+                               "--direction", direction,
+                               "--granularity", granularity]
+                        ok = _run(cmd, label)
+                        results[label] = ok
     
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓
     if not config["runtime"]["skip"]['combined']:
