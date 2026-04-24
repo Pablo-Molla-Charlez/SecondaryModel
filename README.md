@@ -383,6 +383,39 @@ verdict = GREEN  if cpcv_pass (both conditions)
           RED    otherwise
 ```
 
+## Probability Calibration — Design, Degeneracy, and Empirical Findings
+
+> **Source**: `Utils/selective_classification/calibration.py`  
+> **Study outputs**: `Output/Analysis/Calibration/`  
+> **CLI**: `python -m Utils.calibration --study all --m1 Kronos --m2 rf tabpfn tabicl`
+
+### How calibration works in the pipeline
+
+After the classifier is trained on **Train**, its raw `predict_proba` outputs are passed to an **Isotonic Regression** calibrator fitted on **Val-Cal**. The calibrated probabilities are then used on **Val-Opt** for threshold optimisation and, with the chosen τ*, on **Test** for final evaluation.
+
+```
+Train → fit classifier
+Val-Cal → fit isotonic(raw_probs, labels)    ← calibration happens here
+Val-Opt → calibrated_probs → sweep τ*
+Test    → calibrated_probs ≥ τ*  →  trade / no-trade
+```
+
+The calibration step is designed to map raw model scores to **empirical win-frequencies**, so the threshold sweep operates on a meaningful probability scale rather than on arbitrary model scores.
+
+### Degeneracy and the safety fallback
+
+Isotonic regression can collapse to a near-constant mapping when Val-Cal is imbalanced or small. The production code (`calibrate_probabilities`) evaluates three degeneracy checks on the fitted calibrator's output image:
+
+| Trigger | Condition | Root cause |
+|---------|-----------|------------|
+| **(a) Too few distinct outputs** | < 5 unique calibrated values | Isotonic collapsed to a step function |
+| **(b) Output range too narrow** | max − min < 0.10 | All probs squashed into a tiny band |
+| **(c) Positive-mass squash** | raw fraction ≥ 0.50 had ≥ 5 % of samples above 0.5, but calibrated fraction fell below 25 % of that | Calibrator destroyed the decision boundary by pushing most probs below 0.5 |
+
+If **any** trigger fires, the calibrator is discarded and replaced with the identity map `g(x) = clip(x, 0, 1)` — i.e. raw probabilities are used unchanged. This is the **safety fallback**.
+
+**Important note for the calibration study.** The `best_probs.npz` files produced by HPO and Phase 1 training already have this fallback baked in: in degenerate configs, `opt_probs_cal` is bit-for-bit identical to `opt_probs_raw`. The `Utils/calibration` study therefore re-derives true isotonic calibration unconditionally (no fallback) to produce a fair "what does calibration actually do" baseline, while keeping the degeneracy study (task 2) as a separate layer that reports when the production pipeline would reject the calibration.
+
 ## Setup
 
 ### 1. Conda environment
@@ -471,7 +504,9 @@ Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train)  ──ag_best_h
 | --- | --- | --- |
 | **0. HPO** | `best_params.json` | `Output/<M1>/HPO/<m2>/<DIR>/<gran>/best_params.json` |
 | **1. Train** | `analysis_summary.json` | `Output/<M1>/<m2>/<DIR>/Utility_Score/<gran>_<mode>/analysis_summary.json` |
-| **2. Edge (CPCV)** | `edge_summary_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/edge_summary_<gran>.json` |
+| **2. Edge (Seeds)** | `edge_trials.csv` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/edge_trials.csv` |
+| **2. Edge (CPCV)** | `cpcv_paths.csv` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/cpcv_paths.csv` |
+| **2. Edge (Convergence)** | `convergence_scores_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/convergence_scores_<gran>.json` |
 
 To **force re-execution** of a specific granularity, delete its skip file and re-run `experiments.py`. Global `runtime.skip.<phase>: true` overrides all per-granularity checks — the entire phase is skipped.
 

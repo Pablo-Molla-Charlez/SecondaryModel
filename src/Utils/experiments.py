@@ -1,6 +1,6 @@
 """Experiment orchestrator — runs the full M2 pipeline from a single config.yaml.
 
-Iterates over the (m2 × direction × granularity) cross product defined in
+Iterates over the (m2 x direction x granularity) cross product defined in
 `experiment:` and dispatches subprocesses for each enabled phase in `runtime.skip`:
   0. Hyperparameter optimization   → python -m Utils.hpo    (phase=hpo; rf/tabpfn/tabicl only)
   1. Per-granularity training      → kronos_tree.py         (phase=training)
@@ -30,7 +30,7 @@ if str(_SRC) not in sys.path:
 from Utils.utils import _load_config, HPO_SUPPORTED_M2
 
 # Models for which seeds+convergence modes are skipped — CPCV is the sole gate.
-_SEEDS_SUPPORTED_M2 = {"rf", "xgboost"}
+_SEEDS_SUPPORTED_M2 = set()  # seeds disabled — CPCV is the sole edge gate for all models
 
 
 # ┏━━━━━━━━━━ Run subprocess ━━━━━━━━━━┓
@@ -183,62 +183,84 @@ def run_experiments(config: dict, config_path: str):
                         print(f"  [SKIP] No cache for direction={direction}")
                         continue
 
-                    # ┏━━━━━━━━━━ Per-gran CPCV skip ━━━━━━━━━━┓
+                    # ┏━━━━━━━━━━ Per-gran skip logic ━━━━━━━━━━┓
+                    # Use output-specific sentinel files so seeds and CPCV don't
+                    # falsely skip each other (both write edge_summary_{gran}.json).
+                    #   seeds      → edge_trials.csv
+                    #   cpcv       → cpcv_paths.csv  (inside direction/gran subdir)
+                    #   convergence→ convergence_scores_{gran}.json
                     edge_root = (Path(config["paths"]["output_root"])
                                  / "Analysis" / "Edge"
                                  / config["experiment"]["m1"].capitalize()
                                  / m2)
-                    cpcv_summary = edge_root / direction.upper() / f"edge_summary_{granularity}.json"
-                    if cpcv_summary.exists():
-                        print(f"  [SKIP] CPCV already done: {m2.upper()} {direction.upper()} {granularity} "
-                              f"({cpcv_summary})")
+                    gran_dir      = edge_root / direction.upper() / granularity
+                    cpcv_done     = (gran_dir / "cpcv_paths.csv").exists()
+                    seeds_done    = (gran_dir / "edge_trials.csv").exists()
+                    conv_done     = (edge_root / direction.upper() / f"convergence_scores_{granularity}.json").exists()
+
+                    all_done = cpcv_done and (m2 not in _SEEDS_SUPPORTED_M2 or (seeds_done and conv_done))
+                    if all_done:
+                        print(f"  [SKIP] Edge already complete: {m2.upper()} {direction.upper()} {granularity}")
                         results[f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"] = True
-                        # Also mark seeds/convergence as skipped-ok so summary counts them
                         if m2 in _SEEDS_SUPPORTED_M2:
                             results[f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"] = True
                             results[f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"] = True
                         continue
 
+                    # Individual sub-step skips (so a partial run resumes correctly)
+                    skip_seeds = seeds_done
+                    skip_cpcv  = cpcv_done
+                    skip_conv  = conv_done
+
                     # ┏━━━━━━━━━━ Seeds (RF/XGBoost only) ━━━━━━━━━━┓
                     if m2 in _SEEDS_SUPPORTED_M2:
                         label = f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"
+                        if skip_seeds:
+                            print(f"  [SKIP] Seeds already done: {label}")
+                            results[label] = True
+                        else:
+                            cmd = [python, "-m", "Utils.edge",
+                                   "--config", json.dumps(config),
+                                   "--cache_path", cache_path,
+                                   "--mode", "seeds",
+                                   "--phase", "edge",
+                                   "--m2", m2,
+                                   "--direction", direction,
+                                   "--granularity", granularity]
+                            results[label] = _run(cmd, label)
+
+                    # ┏━━━━━━━━━━ CPCV (all models) ━━━━━━━━━━┓
+                    label = f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"
+                    if skip_cpcv:
+                        print(f"  [SKIP] CPCV already done: {label}")
+                        results[label] = True
+                    else:
                         cmd = [python, "-m", "Utils.edge",
                                "--config", json.dumps(config),
                                "--cache_path", cache_path,
-                               "--mode", "seeds",
+                               "--mode", "cpcv",
                                "--phase", "edge",
                                "--m2", m2,
                                "--direction", direction,
                                "--granularity", granularity]
-                        ok = _run(cmd, label)
-                        results[label] = ok
-
-                    # ┏━━━━━━━━━━ CPCV (all models) ━━━━━━━━━━┓
-                    label = f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"
-                    cmd = [python, "-m", "Utils.edge",
-                           "--config", json.dumps(config),
-                           "--cache_path", cache_path,
-                           "--mode", "cpcv",
-                           "--phase", "edge",
-                           "--m2", m2,
-                           "--direction", direction,
-                           "--granularity", granularity]
-                    ok = _run(cmd, label)
-                    results[label] = ok
+                        results[label] = _run(cmd, label)
 
                     # ┏━━━━━━━━━━ Convergence score (RF/XGBoost only) ━━━━━━━━━━┓
                     if m2 in _SEEDS_SUPPORTED_M2:
                         label = f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"
-                        cmd = [python, "-m", "Utils.edge",
-                               "--config", json.dumps(config),
-                               "--cache_path", cache_path,
-                               "--mode", "convergence",
-                               "--phase", "edge",
-                               "--m2", m2,
-                               "--direction", direction,
-                               "--granularity", granularity]
-                        ok = _run(cmd, label)
-                        results[label] = ok
+                        if skip_conv:
+                            print(f"  [SKIP] Convergence already done: {label}")
+                            results[label] = True
+                        else:
+                            cmd = [python, "-m", "Utils.edge",
+                                   "--config", json.dumps(config),
+                                   "--cache_path", cache_path,
+                                   "--mode", "convergence",
+                                   "--phase", "edge",
+                                   "--m2", m2,
+                                   "--direction", direction,
+                                   "--granularity", granularity]
+                            results[label] = _run(cmd, label)
     
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓
     if not config["runtime"]["skip"]['combined']:

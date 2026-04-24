@@ -937,7 +937,7 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     print(f"  {len(splits)} splits | Avg: train={avg_train:.0f}, test={avg_test:.0f}, purged={avg_purged:.0f}")
 
     # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
-    gran_dir = output_root / config["experiment"]["m1"] / m2_name / direction.upper() / granularity
+    gran_dir = output_root / direction.upper() / granularity
     gran_dir.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ Reconstruct paths ━━━━━━━━━━┓

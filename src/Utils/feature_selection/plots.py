@@ -1942,7 +1942,7 @@ def plot_dataset_size_distribution(cache_roots: Optional[Dict[str, Path]] = None
 def plot_return_quality_distribution(cache_roots: Optional[Dict[str, Path]] = None,
                                      save_dir: Optional[Path] = None,
                                      clip_pct: float = 0.2) -> pd.DataFrame:
-    """Split-violin plot of TP vs FP returns per M1 model × granularity × direction.
+    """Split-violin plot of TP vs FP returns per M1 model x granularity x direction.
 
     Layout: rows = M1 models, columns = granularities (canonical order, no 15m).
     Within each cell: one split violin per direction (UP / DOWN).
