@@ -29,7 +29,7 @@ if str(_SRC) not in sys.path:
 
 from Utils.utils import _load_config, HPO_SUPPORTED_M2
 
-# Models for which seeds+convergence modes are skipped — CPCV is the sole gate.
+# ┏━━━━━━━━━━ Models for which seeds+convergence modes are skipped — CPCV is the sole gate. ━━━━━━━━━━┓
 _SEEDS_SUPPORTED_M2 = set()  # seeds disabled — CPCV is the sole edge gate for all models
 
 
@@ -125,12 +125,26 @@ def run_experiments(config: dict, config_path: str):
         print(f"{'#' * 70}")
         
         mode = config["data"]["load"]["meta_label_mode"]   # e.g. "tp"
-        thres_folder = "Utility_Score"                       # default for non-OCP
+        # Mirror the folder layout chosen inside kronos_tree.py::run_analysis.
+        _training_thres = config["runtime"]["training"].get("thres", "utility")
+        
+        # ┏━━━━━━━━━━ Determine thresholding folder based on mode ━━━━━━━━━━┓
+        if _training_thres.startswith("OCP"):
+            thres_folder = _training_thres
+        elif _training_thres == "utility_nocal":
+            thres_folder = "Utility_Score_NoCal"
+        else:
+            thres_folder = "Utility_Score"
 
+        # ┏━━━━━━━━━━ Loop through M2 models ━━━━━━━━━━┓
         for m2 in config['experiment']['m2']:
+            # ┏━━━━━━━━━━ Loop through directions ━━━━━━━━━━┓
             for direction in config['experiment']['direction']:
+                # ┏━━━━━━━━━━ Loop through granularities ━━━━━━━━━━┓
                 for granularity in config['experiment']['granularity']:
                     cache_path = _find_cache(config["paths"]["output_root"], direction, m1=config['experiment']['m1'])
+                    
+                    # ┏━━━━━━━━━━ Skip if no cache found ━━━━━━━━━━┓
                     if cache_path is None:
                         print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
                         continue
@@ -159,13 +173,15 @@ def run_experiments(config: dict, config_path: str):
                     results[label] = ok
     
     # ┏━━━━━━━━━━ Phase 2: Edge Convergence ━━━━━━━━━━┓
-    # For AutoGluon / TabPFN / TabICL: only CPCV is run — seeds and convergence
-    # modes are not supported (too slow to re-train per seed, no HPO noise to
-    # measure). The CPCV summary embeds a GREEN/AMBER/RED verdict directly.
-    # For RF / XGBoost: seeds + CPCV + convergence are all run as before.
-    # Per-granularity skip: if edge_summary_{gran}.json already exists under
-    # the CPCV output dir the granularity is considered done and skipped.
     if not config["runtime"]["skip"]['edge']:
+        # Threshold-selection mode chosen for the training phase also drives edge:
+        # utility       → Edge/ folder (isotonic calibration in CPCV splits)
+        # utility_nocal → Edge_NoCal/ folder (no calibration; raw τ* sweep)
+        # OCP*          → Edge/ folder (CPCV stays on utility logic regardless)
+        _thres_mode = config["runtime"]["training"].get("thres", "utility")
+        _edge_nocal = (_thres_mode == "utility_nocal")
+        _edge_folder = "Edge_NoCal" if _edge_nocal else "Edge"
+
         print(f"\n{'#' * 70}")
         print(f"# PHASE 2: Edge Convergence Protocol")
         print(f"# M1 Model: {config['experiment']['m1']}")
@@ -173,6 +189,7 @@ def run_experiments(config: dict, config_path: str):
         print(f"# Directions: {config['experiment']['direction']}")
         print(f"# Granularities: {config['experiment']['granularity']}")
         print(f"# Blocks: {config['runtime']['edge']['n_blocks']}")
+        print(f"# Threshold mode: {_thres_mode}  →  outputs in Analysis/{_edge_folder}/")
         print(f"{'#' * 70}")
 
         for m2 in config['experiment']['m2']:
@@ -190,7 +207,7 @@ def run_experiments(config: dict, config_path: str):
                     #   cpcv       → cpcv_paths.csv  (inside direction/gran subdir)
                     #   convergence→ convergence_scores_{gran}.json
                     edge_root = (Path(config["paths"]["output_root"])
-                                 / "Analysis" / "Edge"
+                                 / "Analysis" / _edge_folder
                                  / config["experiment"]["m1"].capitalize()
                                  / m2)
                     gran_dir      = edge_root / direction.upper() / granularity
@@ -227,6 +244,8 @@ def run_experiments(config: dict, config_path: str):
                                    "--m2", m2,
                                    "--direction", direction,
                                    "--granularity", granularity]
+                            if _edge_nocal:
+                                cmd.append("--nocal")
                             results[label] = _run(cmd, label)
 
                     # ┏━━━━━━━━━━ CPCV (all models) ━━━━━━━━━━┓
@@ -243,6 +262,8 @@ def run_experiments(config: dict, config_path: str):
                                "--m2", m2,
                                "--direction", direction,
                                "--granularity", granularity]
+                        if _edge_nocal:
+                            cmd.append("--nocal")
                         results[label] = _run(cmd, label)
 
                     # ┏━━━━━━━━━━ Convergence score (RF/XGBoost only) ━━━━━━━━━━┓
@@ -260,6 +281,8 @@ def run_experiments(config: dict, config_path: str):
                                    "--m2", m2,
                                    "--direction", direction,
                                    "--granularity", granularity]
+                            if _edge_nocal:
+                                cmd.append("--nocal")
                             results[label] = _run(cmd, label)
     
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓

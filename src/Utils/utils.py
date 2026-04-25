@@ -78,18 +78,21 @@ def _load_ag_best_hyperparameters(cfg: dict,
                                    granularity: str) -> dict | None:
     """Return AutoGluon's best-model hyperparameters saved during Phase 1 training.
 
-    Reads ``Output/{M1}/autogluon/{DIR}/Utility_Score/{gran}_training/final_model/ag_best_hyperparameters.json``
+    Reads ``Output/{M1}/autogluon/{DIR}/Utility_Score/{gran}_{meta_label_mode}/final_model/ag_best_hyperparameters.json``
     written by ``AutoGluon.save_best_hyperparameters()`` inside ``_save_final_model``.
 
     Returns a dict with keys ``best_model_name``, ``model_type``, ``hyperparameters``,
     ``eval_metric``, and ``feature_names``, or None if the file does not exist.
     """
+    meta_mode = cfg.get("data", {}).get("load", {}).get("meta_label_mode", "tp")
+    thres_mode = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")
+    thres_folder = "Utility_Score_NoCal" if thres_mode == "utility_nocal" else "Utility_Score"
     final_model_dir = (Path(cfg["paths"]["output_root"])
                        / m1_output_bucket(cfg)
                        / "autogluon"
                        / direction.upper()
-                       / "Utility_Score"
-                       / f"{granularity}_training"
+                       / thres_folder
+                       / f"{granularity}_{meta_mode}"
                        / "final_model")
     hp_path = final_model_dir / "ag_best_hyperparameters.json"
     if not hp_path.exists():

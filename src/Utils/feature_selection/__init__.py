@@ -27,6 +27,7 @@ from Utils.feature_selection.plots import (
     plot_class_distribution,
     plot_confusion_matrix,
     plot_temporal_risk_coverage_curve,
+    plot_temporal_risk_coverage_curve_final,
     plot_ocp_threshold_evolution,
     plot_selective_return_distribution,
     plot_meta_label_returns_histogram,

@@ -54,8 +54,7 @@ from Utils.utils import (_load_config,
                          _class_names,
                          m1_output_bucket,
                          m1_display_label,
-                         _load_best_params,
-                         _load_ag_best_hyperparameters)
+                         _load_best_params)
 
 # ┏━━━━━━━━━━ Imports from TS Cross-Validation ━━━━━━━━━━┓
 from Utils.ts_cross_validation import (_gran_to_timedelta,
@@ -648,8 +647,8 @@ def _run_cpcv_split(eng,
                     model_key          = "rf",
                     dates_valid        = None,
                     best_params        = None,
-                    ag_hyperparameters = None,
-                    feature_names      = None):
+                    feature_names      = None,
+                    nocal              = False):
     """Train on train, calibrate + sweep threshold on training OOB, evaluate on test.
 
     RF path (OOB available):
@@ -709,69 +708,88 @@ def _run_cpcv_split(eng,
             oob_probs = model.oob_decision_function_[:, 1]
         else:
             oob_probs = model.predict_proba(X_train_all)[:, 1]  # fallback
+        
+        # ┏━━━━━━━━━━ NoCal or Calibrated ━━━━━━━━━━┓
+        if nocal:
+            # ┏━━━━━━━━━━ NoCal: identity calibrator, sweep τ* on all OOB probs directly (no Cal/Opt split) ━━━━━━━━━━┓
+            from Utils.selective_classification.calibration import _IdentityCalibrator
+            calibrator = _IdentityCalibrator()
+            op = _find_best_utility_threshold(oob_probs, train_returns_all, fee=fee, labels=y_train_all)
+        else:
+            # ┏━━━━━━━━━━ Chronological split of OOB into Val-cal (40%) / Val-Opt (60%) ━━━━━━━━━━┓
+            n_train = len(idx_train)
+            n_cal = int(n_train * CPCV_OOB_CAL_RATIO)
+            cal_mask = np.zeros(n_train, dtype=bool)
+            cal_mask[:n_cal] = True
+            opt_mask = ~cal_mask
 
-        # ┏━━━━━━━━━━ Chronological split of OOB into Val-cal (40%) / Val-Opt (60%) ━━━━━━━━━━┓
-        n_train = len(idx_train)
-        n_cal = int(n_train * CPCV_OOB_CAL_RATIO)
-        cal_mask = np.zeros(n_train, dtype=bool)
-        cal_mask[:n_cal] = True
-        opt_mask = ~cal_mask
+            # ┏━━━━━━━━━━ Fit isotonic on cal OOB ━━━━━━━━━━┓
+            _cal = calibrate_probabilities(oob_probs[cal_mask], y_train_all[cal_mask])
+            calibrator = _cal["calibrator"]
 
-        # ┏━━━━━━━━━━ Fit isotonic on cal OOB ━━━━━━━━━━┓
-        _cal = calibrate_probabilities(oob_probs[cal_mask], y_train_all[cal_mask])
-        calibrator = _cal["calibrator"]
-
-        # ┏━━━━━━━━━━ Sweep threshold on calibrated opt OOB ━━━━━━━━━━┓
-        opt_probs_cal = calibrator.predict(oob_probs[opt_mask])
-        op = _find_best_utility_threshold(opt_probs_cal, train_returns_all[opt_mask], fee=fee, labels=y_train_all[opt_mask])
+            # ┏━━━━━━━━━━ Sweep threshold on calibrated opt OOB ━━━━━━━━━━┓
+            opt_probs_cal = calibrator.predict(oob_probs[opt_mask])
+            op = _find_best_utility_threshold(opt_probs_cal, train_returns_all[opt_mask], fee=fee, labels=y_train_all[opt_mask])
 
     # ┏━━━━━━━━━━ AutoGluon path: reuse Phase-1 best model hyperparameters ━━━━━━━━━━┓
     elif model_key == "autogluon":
         from Utils.classifier.autogluon_classifier import AutoGluon
 
-        # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
         n_train = len(idx_train)
-        n_fit   = int(n_train * 0.60)
-        n_cal   = int(n_train * 0.20)
-
-        X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
-        X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
-        X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
-        opt_rets = train_returns_all[n_fit+n_cal:]
+        if nocal:
+            # ┏━━━━━━━━━━ NoCal: split 75% fit / 25% opt (Val-Cal merged into Val-Opt → no cal slot) ━━━━━━━━━━┓
+            n_fit   = int(n_train * 0.75)
+            X_fit   = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
+            X_opt   = X_train_all[n_fit:]; y_opt = y_train_all[n_fit:]
+            opt_rets = train_returns_all[n_fit:]
+        else:
+            # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
+            n_fit   = int(n_train * 0.60)
+            n_cal   = int(n_train * 0.20)
+            X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
+            X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
+            X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
+            opt_rets = train_returns_all[n_fit+n_cal:]
 
         # ┏━━━━━━━━━━ Build AutoGluon classifier ━━━━━━━━━━┓
         model = AutoGluon(feature_names=feature_names, class_weight_ratio=cw_ratio)
 
-        # ┏━━━━━━━━━━ Use HPO best params if available ━━━━━━━━━━┓
-        if ag_hyperparameters is not None:
-            # ┏━━━━━━━━━━ Reuse best Phase-1 model — no search overhead ━━━━━━━━━━┓
-            ag_hp = {ag_hyperparameters["model_type"]: [ag_hyperparameters["hyperparameters"]]}
-            model.fit_with_hyperparameters(X_fit, y_fit, ag_hyperparameters=ag_hp)
+        model.fit(X_fit, y_fit)
+
+        # ┏━━━━━━━━━━ Calibrate on cal or use identity ━━━━━━━━━━┓
+        if nocal:
+            # ┏━━━━━━━━━━ NoCal: identity calibrator ━━━━━━━━━━┓
+            from Utils.selective_classification.calibration import _IdentityCalibrator
+            calibrator = _IdentityCalibrator()
+            op = _find_best_utility_threshold(model.predict_proba(X_opt)[:, 1],
+                                              opt_rets, fee=fee, labels=y_opt)
         else:
-            # ┏━━━━━━━━━━ Fallback: full AutoGluon fit (slow — Phase 1 model not found) ━━━━━━━━━━┓
-            print(f"  [WARN] AutoGluon best hyperparameters not found; falling back to full fit (time_limit=3600s)")
-            model.fit(X_fit, y_fit)
+            # ┏━━━━━━━━━━ Calibrate on cal ━━━━━━━━━━┓
+            cal_probs_raw = model.predict_proba(X_cal)[:, 1]
+            _cal = calibrate_probabilities(cal_probs_raw, y_cal)
+            calibrator = _cal["calibrator"]
 
-        # ┏━━━━━━━━━━ Calibrate on cal ━━━━━━━━━━┓
-        cal_probs_raw = model.predict_proba(X_cal)[:, 1]
-        _cal = calibrate_probabilities(cal_probs_raw, y_cal)
-        calibrator = _cal["calibrator"]
-
-        # ┏━━━━━━━━━━ Sweep threshold on calibrated opt ━━━━━━━━━━┓
-        opt_probs_cal = calibrator.predict(model.predict_proba(X_opt)[:, 1])
-        op = _find_best_utility_threshold(opt_probs_cal, opt_rets, fee=fee, labels=y_opt)
+            # ┏━━━━━━━━━━ Sweep threshold on calibrated opt ━━━━━━━━━━┓
+            opt_probs_cal = calibrator.predict(model.predict_proba(X_opt)[:, 1])
+            op = _find_best_utility_threshold(opt_probs_cal, opt_rets, fee=fee, labels=y_opt)
 
     # ┏━━━━━━━━━━ Non-RF / Non-AutoGluon path: 60/20/20 physical split ━━━━━━━━━━┓
     else:
-        # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
         n_train = len(idx_train)
-        n_fit   = int(n_train * 0.60)
-        n_cal   = int(n_train * 0.20)
-
-        X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
-        X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
-        X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
-        opt_rets = train_returns_all[n_fit+n_cal:]
+        if nocal:
+            # ┏━━━━━━━━━━ NoCal: 75% fit / 25% opt (no cal slot) ━━━━━━━━━━┓
+            n_fit   = int(n_train * 0.75)
+            X_fit   = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
+            X_opt   = X_train_all[n_fit:]; y_opt = y_train_all[n_fit:]
+            opt_rets = train_returns_all[n_fit:]
+        else:
+            # ┏━━━━━━━━━━ Split train → fit (60%), Val-cal (20%), Val-Opt (20%) ━━━━━━━━━━┓
+            n_fit   = int(n_train * 0.60)
+            n_cal   = int(n_train * 0.20)
+            X_fit    = X_train_all[:n_fit]; y_fit = y_train_all[:n_fit]
+            X_cal    = X_train_all[n_fit:n_fit+n_cal]; y_cal = y_train_all[n_fit:n_fit+n_cal]
+            X_opt    = X_train_all[n_fit+n_cal:]; y_opt = y_train_all[n_fit+n_cal:]
+            opt_rets = train_returns_all[n_fit+n_cal:]
 
         # ┏━━━━━━━━━━ Build model with HPO best_params if available ━━━━━━━━━━┓
         model = _build_edge_model(model_key, n_fit, seed=EDGE_SEED,
@@ -781,14 +799,21 @@ def _run_cpcv_split(eng,
         # ┏━━━━━━━━━━ Fit model ━━━━━━━━━━┓
         model.fit(X_fit, y_fit)
 
-        # ┏━━━━━━━━━━ Calibrate on cal ━━━━━━━━━━┓
-        cal_probs_raw = model.predict_proba(X_cal)[:, 1]
-        _cal = calibrate_probabilities(cal_probs_raw, y_cal)
-        calibrator = _cal["calibrator"]
+        if nocal:
+            # ┏━━━━━━━━━━ NoCal: identity calibrator ━━━━━━━━━━┓
+            from Utils.selective_classification.calibration import _IdentityCalibrator
+            calibrator = _IdentityCalibrator()
+            op = _find_best_utility_threshold(model.predict_proba(X_opt)[:, 1],
+                                              opt_rets, fee=fee, labels=y_opt)
+        else:
+            # ┏━━━━━━━━━━ Calibrate on cal ━━━━━━━━━━┓
+            cal_probs_raw = model.predict_proba(X_cal)[:, 1]
+            _cal = calibrate_probabilities(cal_probs_raw, y_cal)
+            calibrator = _cal["calibrator"]
 
-        # ┏━━━━━━━━━━ Sweep threshold on calibrated opt ━━━━━━━━━━┓
-        opt_probs_cal = calibrator.predict(model.predict_proba(X_opt)[:, 1])
-        op = _find_best_utility_threshold(opt_probs_cal, opt_rets, fee=fee, labels=y_opt)
+            # ┏━━━━━━━━━━ Sweep threshold on calibrated opt ━━━━━━━━━━┓
+            opt_probs_cal = calibrator.predict(model.predict_proba(X_opt)[:, 1])
+            op = _find_best_utility_threshold(opt_probs_cal, opt_rets, fee=fee, labels=y_opt)
 
     thr = op["threshold"]
 
@@ -858,7 +883,7 @@ def _compute_path_metrics(path_results, fee):
 
 
 # ┏━━━━━━━━━━ CPCV: main runner ━━━━━━━━━━┓
-def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="rf", direction="up", granularity="1d"):
+def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="rf", direction="up", granularity="1d", nocal=False):
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     fee       = config["evaluation"]["fee_per_trade"]
     horizon   = config["data"]["load"]["forecast_horizon"]
@@ -955,18 +980,9 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
                        direction)
 
     # ┏━━━━━━━━━━ Load HPO params for this (m2, direction, granularity) ━━━━━━━━━━┓
-    # TabPFN / TabICL: load from Utils.hpo best_params.json
-    # AutoGluon: load from Phase-1 final_model/ag_best_hyperparameters.json
+    # TabPFN / TabICL / RF: load from Utils.hpo best_params.json
+    # AutoGluon: no param reuse (WeightedEnsemble can't be reconstructed via hyperparameters API)
     _best_params = _load_best_params(config, m2_name, direction, granularity)
-    _ag_hyperparameters = None
-    if m2_name == "autogluon":
-        _ag_hyperparameters = _load_ag_best_hyperparameters(config, direction, granularity)
-        if _ag_hyperparameters is not None:
-            print(f"  [AutoGluon] Reusing Phase-1 best model: {_ag_hyperparameters['best_model_name']} "
-                  f"({_ag_hyperparameters['model_type']}) for all {len(splits)} CPCV splits")
-        else:
-            print(f"  [AutoGluon] WARNING: Phase-1 best hyperparameters not found — "
-                  f"CPCV will run full 3600s fit per split (run Phase 1 first)")
 
     _feature_names = list(sub.get("feature_names", [])) if hasattr(sub, "feature_names") or "feature_names" in sub else None
 
@@ -978,8 +994,8 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
                                  direction, fee,
                                  model_key          = m2_name,
                                  best_params        = _best_params,
-                                 ag_hyperparameters = _ag_hyperparameters,
-                                 feature_names      = _feature_names)
+                                 feature_names      = _feature_names,
+                                 nocal              = nocal)
         split_results.append(result)
         if (si + 1) % 5 == 0 or si == 0:
             acc = accuracy_score(result["y_test"], result["preds"])
@@ -1329,11 +1345,17 @@ def main():
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
     parser.add_argument("--granularity", type=str, help="Granularity to use", required=True)
+    parser.add_argument("--nocal", action="store_true",
+                        help="Disable probability calibration. Merges Val-Cal into Val-Opt and "
+                             "sweeps τ* on raw probabilities. Outputs land under Edge_NoCal/.")
 
     args = parser.parse_args()
 
     # ┏━━━━━━━━━━ Output directory (includes model name) ━━━━━━━━━━┓
-    output_root = Path(args.config["paths"]["output_root"]) / "Analysis" / "Edge" / args.config["experiment"]["m1"].capitalize() / args.m2
+    # When --nocal is set, outputs go under Edge_NoCal/ so they don't collide with the
+    # calibrated results already produced under Edge/.
+    _edge_folder = "Edge_NoCal" if args.nocal else "Edge"
+    output_root = Path(args.config["paths"]["output_root"]) / "Analysis" / _edge_folder / args.config["experiment"]["m1"].capitalize() / args.m2
 
     # ┏━━━━━━━━━━ Seeds and convergence: only for RF/XGBoost ━━━━━━━━━━┓
     if args.mode in ("seeds", "convergence") and args.m2 not in _SEEDS_SUPPORTED_M2:
@@ -1349,6 +1371,7 @@ def main():
                                        direction=args.direction,
                                        model_name=args.m2,
                                        granularity=args.granularity)
+    
     elif args.mode == "seeds":
         run_seeds_analysis(args.cache_path,
                            args.config,
@@ -1357,6 +1380,7 @@ def main():
                            m2_name=args.m2,
                            direction=args.direction,
                            granularity=args.granularity)
+    
     elif args.mode == "cpcv":
         run_cpcv_analysis(args.cache_path,
                           args.config,
@@ -1365,7 +1389,8 @@ def main():
                           k_test=args.config["runtime"][args.phase]["k_test"],
                           m2_name=args.m2,
                           direction=args.direction,
-                          granularity=args.granularity)
+                          granularity=args.granularity,
+                          nocal=args.nocal)
     else:
         print(f"Invalid mode: {args.mode}")
 

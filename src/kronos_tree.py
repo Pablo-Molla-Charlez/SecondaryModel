@@ -65,6 +65,7 @@ from Utils.feature_selection import (_plot_prob_distribution,
                                      plot_ocp_threshold_evolution,
                                      plot_pointbiserial,
                                      plot_temporal_risk_coverage_curve,
+                                     plot_temporal_risk_coverage_curve_final,
                                      plot_tree_importance,
                                      compute_top_features,
                                      run_feature_selection,
@@ -285,28 +286,61 @@ def temporal_eval(dataset: dict,
     y_val_combined = np.concatenate([y_cal, y_opt])
     _val_probs_ocp = model.predict_proba(X_val_combined)[:, 1] if _is_ocp else None
     
-    # ┏━━━━━━━━━━ Calibrate on Val-Cal ━━━━━━━━━━┓
-    _raw_cal_probs = model.predict_proba(X_cal)[:, 1]
-    _calib = calibrate_probabilities(_raw_cal_probs, y_cal)
-    _calibrator = _calib["calibrator"]
-    
-    # ┏━━━━━━━━━━ Sweep threshold on calibrated Val-Opt ━━━━━━━━━━┓
-    _raw_opt_probs = model.predict_proba(X_opt)[:, 1]
-    _cal_opt_probs = _calibrator.predict(_raw_opt_probs)
-    op = _find_best_utility_threshold(_cal_opt_probs, opt_returns, fee=fee, labels=y_opt)
-    val_op = op
-    val_thresholds["thr"] = op["threshold"]
-    
-    # ┏━━━━━━━━━━ Apply calibration to Test ━━━━━━━━━━┓
-    _raw_test_probs = model.predict_proba(X_test)[:, 1]
-    _cal_test_probs = _calibrator.predict(_raw_test_probs)
-    print(f"    Calibration (isotonic on Cal n={len(y_cal)}):")
-    print(
-        f"      Opt range  [{_raw_opt_probs.min():.3f}, {_raw_opt_probs.max():.3f}] → [{_cal_opt_probs.min():.3f}, {_cal_opt_probs.max():.3f}]")
-    print(
-        f"      Test range [{_raw_test_probs.min():.3f}, {_raw_test_probs.max():.3f}] → [{_cal_test_probs.min():.3f}, {_cal_test_probs.max():.3f}]")
-    print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
-    
+    # ┏━━━━━━━━━━ Calibration branch (utility_nocal skips it; merges Val-Cal + Val-Opt) ━━━━━━━━━━┓
+    _nocal = (thres_mode == "utility_nocal")
+
+    if _nocal:
+        # ┏━━━━━━━━━━ No calibrator — use raw probs directly on a merged validation set ━━━━━━━━━━┓
+        # Val-Cal + Val-Opt are concatenated into a single optimisation window.
+        from Utils.selective_classification.calibration import _IdentityCalibrator
+        _calibrator   = _IdentityCalibrator()
+        _raw_cal_probs = model.predict_proba(X_cal)[:, 1]
+        _raw_opt_probs = model.predict_proba(X_opt)[:, 1]
+
+        # ┏━━━━━━━━━━ Merge Cal + Opt → single "val" window; sweep τ* on raw probs over it ━━━━━━━━━━┓
+        _merged_probs   = np.concatenate([_raw_cal_probs, _raw_opt_probs])
+        _merged_y       = np.concatenate([y_cal,           y_opt])
+        _cal_returns    = returns_all[idx_cal].copy()
+        if direction.lower() == "down":
+            _cal_returns = -_cal_returns
+        _merged_returns = np.concatenate([_cal_returns, opt_returns])
+
+        # ┏━━━━━━━━━━ Sweeps threshold on raw probabilities over the merged Val-Cal + Val-Opt window ━━━━━━━━━━┓
+        op = _find_best_utility_threshold(_merged_probs, _merged_returns, fee=fee, labels=_merged_y)
+        val_op = op
+        val_thresholds["thr"] = op["threshold"]
+
+        # ┏━━━━━━━━━━ Calibrated views (identity) so downstream code paths stay unchanged ━━━━━━━━━━┓
+        _cal_opt_probs  = _raw_opt_probs
+        _raw_test_probs = model.predict_proba(X_test)[:, 1]
+        _cal_test_probs = _raw_test_probs
+
+        print(f"    [utility_nocal] Calibration skipped — Val-Cal + Val-Opt merged "
+              f"(n={len(_merged_y)}) for threshold sweep on raw probs.")
+        print(f"    Threshold τ={op['threshold']:.3f} (swept on merged raw Val, n={len(_merged_y)})")
+    else:
+        # ┏━━━━━━━━━━ Calibrate on Val-Cal ━━━━━━━━━━┓
+        _raw_cal_probs = model.predict_proba(X_cal)[:, 1]
+        _calib = calibrate_probabilities(_raw_cal_probs, y_cal)
+        _calibrator = _calib["calibrator"]
+
+        # ┏━━━━━━━━━━ Sweep threshold on calibrated Val-Opt ━━━━━━━━━━┓
+        _raw_opt_probs = model.predict_proba(X_opt)[:, 1]
+        _cal_opt_probs = _calibrator.predict(_raw_opt_probs)
+        op = _find_best_utility_threshold(_cal_opt_probs, opt_returns, fee=fee, labels=y_opt)
+        val_op = op
+        val_thresholds["thr"] = op["threshold"]
+
+        # ┏━━━━━━━━━━ Apply calibration to Test ━━━━━━━━━━┓
+        _raw_test_probs = model.predict_proba(X_test)[:, 1]
+        _cal_test_probs = _calibrator.predict(_raw_test_probs)
+        print(f"    Calibration (isotonic on Cal n={len(y_cal)}):")
+        print(
+            f"      Opt range  [{_raw_opt_probs.min():.3f}, {_raw_opt_probs.max():.3f}] → [{_cal_opt_probs.min():.3f}, {_cal_opt_probs.max():.3f}]")
+        print(
+            f"      Test range [{_raw_test_probs.min():.3f}, {_raw_test_probs.max():.3f}] → [{_cal_test_probs.min():.3f}, {_cal_test_probs.max():.3f}]")
+        print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
+
     # ┏━━━━━━━━━━ Export Raw & Calibrated Probs (mirroring HPO Phase 0) ━━━━━━━━━━┓
     probs_path = save_dir / "best_probs.npz"
     np.savez(probs_path,
@@ -492,6 +526,23 @@ def temporal_eval(dataset: dict,
         
         # ┏━━━━━━━━━━ Plot risk-coverage with return overlay (business-level) ━━━━━━━━━━┓
         rc_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage.png"
+        rc_final_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage_final.png"
+        plot_temporal_risk_coverage_curve_final(save_path=rc_final_path,
+                                                curve=curve,
+                                                probs=score_probs,
+                                                y_true=y_split,
+                                                split_rets=split_rets,
+                                                fee=fee,
+                                                op=op,
+                                                split_name=split_name,
+                                                model_label=mlabel,
+                                                thres_mode=thres_mode,
+                                                ocp_alpha=ocp_alpha,
+                                                val_threshold=val_thresholds.get("thr"),
+                                                val_op=val_op,
+                                                is_ocp=_is_ocp,
+                                                test_approved_ocp=test_approved_ocp if (
+                                                        split_name == "Test" and _is_ocp) else None)
         plot_temporal_risk_coverage_curve(save_path=rc_path,
                                           curve=curve,
                                           probs=score_probs,
@@ -632,8 +683,12 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
+    
+    # ┏━━━━━━━━━━ Determine thresholding folder based on mode ━━━━━━━━━━┓
     if thres_mode.startswith("OCP"):
         thres_folder = thres_mode
+    elif thres_mode == "utility_nocal":
+        thres_folder = "Utility_Score_NoCal"
     else:
         thres_folder = "Utility_Score"
     
@@ -1004,8 +1059,12 @@ def run_unified_analysis(cache_path: Path,
     # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     class_names = _class_names(direction, mode)
+    
+    # ┏━━━━━━━━━━ Determine thresholding folder based on mode ━━━━━━━━━━┓
     if thres_mode.startswith("OCP"):
         thres_folder = thres_mode
+    elif thres_mode == "utility_nocal":
+        thres_folder = "Utility_Score_NoCal"
     else:
         thres_folder = "Utility_Score"
     save_dir = output_root / _m1_output_bucket(
@@ -1170,11 +1229,17 @@ def run_unified_analysis(cache_path: Path,
         test_probs = model.predict_proba(X_test_raw)[:, 1]
         
         # ┏━━━━━━━━━━ Calibrate probabilities (isotonic on val → apply to test only) ━━━━━━━━━━┓
-        _calib_u = calibrate_probabilities(val_probs, y_val, test_probs)
-        test_probs_cal = _calib_u["test_calibrated"]
-        _calibrator_u = _calib_u["calibrator"]
-        print(f"    Calibration (isotonic): test [{test_probs.min():.3f},{test_probs.max():.3f}] → "
-              f"[{test_probs_cal.min():.3f},{test_probs_cal.max():.3f}]")
+        if thres_mode == "utility_nocal":
+            from Utils.selective_classification.calibration import _IdentityCalibrator
+            _calibrator_u = _IdentityCalibrator()
+            test_probs_cal = test_probs
+            print(f"    [utility_nocal] Calibration skipped — raw test probs used directly.")
+        else:
+            _calib_u = calibrate_probabilities(val_probs, y_val, test_probs)
+            test_probs_cal = _calib_u["test_calibrated"]
+            _calibrator_u = _calib_u["calibrator"]
+            print(f"    Calibration (isotonic): test [{test_probs.min():.3f},{test_probs.max():.3f}] → "
+                  f"[{test_probs_cal.min():.3f},{test_probs_cal.max():.3f}]")
         
         # ┏━━━━━━━━━━ Pre-selective confusion matrices + metrics (Val & Test) ━━━━━━━━━━┓
         presel_metrics = {}
