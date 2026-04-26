@@ -1014,7 +1014,9 @@ def plot_temporal_risk_coverage_curve(save_path: Path,
                                       val_threshold: Optional[float] = None,
                                       val_op: Optional[dict] = None,
                                       is_ocp: bool = False,
-                                      test_approved_ocp: Optional[np.ndarray] = None):
+                                      test_approved_ocp: Optional[np.ndarray] = None,
+                                      direction: str = "",
+                                      granularity: str = ""):
     """Plot risk-coverage with return overlays for temporal_eval."""
     thrs = curve["thresholds"]
     covs = curve["coverage"]
@@ -1223,7 +1225,9 @@ def plot_temporal_risk_coverage_curve(save_path: Path,
                             fontweight="bold", zorder=10)
         util_ref_plotted = True
 
-    ax_rc.set_title(f"Coverage-Risk  |  {split_name}  |  {model_label}",
+    _split_display = {"Val": "Validation", "val": "Validation"}.get(split_name, split_name)
+    _dir_gran = f"  |  {direction.upper()}  {granularity}" if direction or granularity else ""
+    ax_rc.set_title(f"Risk-Profitability  |  {_split_display}  |  {model_label}{_dir_gran}",
                     fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
     fig_rc.tight_layout()
     fig_rc.subplots_adjust(bottom=0.22 + (0.05 if util_ref_plotted else 0.0))
@@ -1267,6 +1271,58 @@ def plot_temporal_risk_coverage_curve(save_path: Path,
     fig_rc.savefig(str(save_path), dpi=200, facecolor="white")
     plt.close(fig_rc)
 
+import matplotlib.scale as mscale
+import matplotlib.transforms as mtransforms
+
+class PiecewiseLinearScale(mscale.ScaleBase):
+    name = 'piecewise_linear'
+
+    def __init__(self, axis, **kwargs):
+        super().__init__(axis)
+        self.x_nodes = kwargs.pop('x_nodes', [0.0, 0.5, 1.0])
+        self.y_nodes = kwargs.pop('y_nodes', [0.0, 0.5, 1.0])
+
+    def get_transform(self):
+        return self.PiecewiseTransform(self.x_nodes, self.y_nodes)
+
+    def set_default_locators_and_formatters(self, axis):
+        pass
+
+    class PiecewiseTransform(mtransforms.Transform):
+        input_dims = 1
+        output_dims = 1
+        is_separable = True
+        has_inverse = True
+
+        def __init__(self, x_nodes, y_nodes):
+            mtransforms.Transform.__init__(self)
+            self.x_nodes = np.array(x_nodes, dtype=float)
+            self.y_nodes = np.array(y_nodes, dtype=float)
+
+        def transform_non_affine(self, a):
+            return np.interp(a, self.x_nodes, self.y_nodes)
+
+        def inverted(self):
+            return PiecewiseLinearScale.InvertedPiecewiseTransform(self.x_nodes, self.y_nodes)
+
+    class InvertedPiecewiseTransform(mtransforms.Transform):
+        input_dims = 1
+        output_dims = 1
+        is_separable = True
+        has_inverse = True
+
+        def __init__(self, x_nodes, y_nodes):
+            mtransforms.Transform.__init__(self)
+            self.x_nodes = np.array(x_nodes, dtype=float)
+            self.y_nodes = np.array(y_nodes, dtype=float)
+
+        def transform_non_affine(self, a):
+            return np.interp(a, self.y_nodes, self.x_nodes)
+
+        def inverted(self):
+            return PiecewiseLinearScale.PiecewiseTransform(self.x_nodes, self.y_nodes)
+
+mscale.register_scale(PiecewiseLinearScale)
 
 def plot_temporal_risk_coverage_curve_final(save_path: Path,
                                             curve: dict,
@@ -1286,7 +1342,12 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                                             cov_min: float = 0.05,
                                             cov_star: float = 0.15,
                                             t_min: float = 1.0,
-                                            n_prior: int = 50):
+                                            n_prior: int = 50,
+                                            opt_probs: Optional[np.ndarray] = None,
+                                            opt_y: Optional[np.ndarray] = None,
+                                            opt_rets: Optional[np.ndarray] = None,
+                                            direction: str = "",
+                                            granularity: str = ""):
     """Risk-coverage plot that visualizes the Stage-A optimization problem.
 
     Adds on top of `plot_temporal_risk_coverage_curve`:
@@ -1315,8 +1376,19 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     c_baseline = "#7D3C98"
     c_util     = "#B7950B"
 
-    fig_rc, ax_rc = plt.subplots(figsize=(11.8, 7.6), facecolor="white")
+    fig_rc, ax_rc = plt.subplots(figsize=(10.5, 6.8), facecolor="white")
     ax_rc.set_facecolor("#FAFAFA")
+    x1, y1 = cov_min, cov_min  # [0, C_min] uses natural 1:1 scale
+    x2 = cov_star
+    if x2 <= x1 + 1e-5: x2 = min(1.0, x1 + 0.1)
+    y2 = min(0.95, y1 + 0.3)  # [C_min, 2*C*] gets warped to take up 75%
+    
+    x_nodes, y_nodes = [0.0, x1], [0.0, y1]
+    if x2 < 1.0 - 1e-5:
+        x_nodes.append(x2); y_nodes.append(y2)
+    x_nodes.append(1.0); y_nodes.append(1.0)
+    
+    ax_rc.set_xscale('piecewise_linear', x_nodes=x_nodes, y_nodes=y_nodes)
 
     # Alphas per zone. Forbidden: curves are not drawn at all (handled via mask).
     # Penalty: curves drawn with medium alpha so hatches still show through.
@@ -1354,15 +1426,29 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
 
     def _plot_alpha_masked(ax, x, y, base_color, lw, ls, zorder):
         """Plot a line in two alpha tiers (penalty/OK). Forbidden zone is skipped."""
-        if len(x) < 2:
-            return
+        if len(x) < 2: return
         x = np.asarray(x); y = np.asarray(y)
-        for lo, hi, a in [(cov_min, cov_star, ALPHA_PEN),
-                          (cov_star, np.inf, ALPHA_OK)]:
-            m = (x >= lo) & (x <= hi)
-            if m.sum() >= 2:
-                ax.plot(x[m], y[m], color=base_color, linewidth=lw, linestyle=ls,
-                        alpha=a, zorder=zorder)
+        is_increasing = x[0] < x[-1]
+        
+        m_pen = (x >= cov_min) & (x <= cov_star)
+        idx_pen = np.where(m_pen)[0]
+        if len(idx_pen) > 0:
+            if is_increasing and idx_pen[-1] < len(x) - 1:
+                idx_pen = np.append(idx_pen, idx_pen[-1] + 1)
+            elif not is_increasing and idx_pen[0] > 0:
+                idx_pen = np.insert(idx_pen, 0, idx_pen[0] - 1)
+            if len(idx_pen) >= 2:
+                ax.plot(x[idx_pen], y[idx_pen], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_PEN, zorder=zorder)
+                
+        m_ok = (x >= cov_star)
+        idx_ok = np.where(m_ok)[0]
+        if len(idx_ok) > 0:
+            if is_increasing and idx_ok[0] > 0:
+                idx_ok = np.insert(idx_ok, 0, idx_ok[0] - 1)
+            elif not is_increasing and idx_ok[-1] < len(x) - 1:
+                idx_ok = np.append(idx_ok, idx_ok[-1] + 1)
+            if len(idx_ok) >= 2:
+                ax.plot(x[idx_ok], y[idx_ok], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_OK, zorder=zorder)
 
     _plot_alpha_masked(ax_rc, grid_cov, risk_smooth, c_risk, 2.2, "-", 4)
     ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=8)
@@ -1378,51 +1464,68 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     ax_rc.grid(True, which="major", color=c_grid, linewidth=0.6, alpha=0.7)
     ax_rc.set_axisbelow(True)
 
-    # Zone boundary labels: Mathtext ticks below X-axis at cov_min and cov_star
     xticks_cur = [t for t in ax_rc.get_xticks() if 0.0 <= t <= 1.0]
-    xticks_new = sorted(set(xticks_cur + [cov_min, cov_star]))
-    xticks_new = [t for t in xticks_new if 0.0 <= t <= 1.0]
-    ax_rc.set_xticks(xticks_new)
+    op_cov_tmp = op.get("coverage", None)
+    
+    special_ticks = []
+    special_labels = {}
+    special_colors = {}
+    
+    special_ticks.append(cov_min)
+    special_labels[cov_min] = r"$C_{min}$"
+    special_colors[cov_min] = c_forbid
+    
+    if abs(cov_star - cov_min) > 0.001:
+        special_ticks.append(cov_star)
+        special_labels[cov_star] = r"$C^{*}$"
+        special_colors[cov_star] = c_penalty
+    else:
+        special_labels[cov_min] = r"$C_{min}/C^{*}$"
+        
+    if op_cov_tmp is not None and 0.0 <= op_cov_tmp <= 1.0:
+        if abs(op_cov_tmp - cov_min) < 0.001:
+            special_labels[cov_min] += "\n" + r"$\hat{\tau}$" + f"({op_cov_tmp:.2f})"
+            special_colors[cov_min] = c_op
+        elif abs(op_cov_tmp - cov_star) < 0.001:
+            special_labels[cov_star] += "\n" + r"$\hat{\tau}$" + f"({op_cov_tmp:.2f})"
+            special_colors[cov_star] = c_op
+        else:
+            special_ticks.append(op_cov_tmp)
+            special_labels[op_cov_tmp] = rf"{op_cov_tmp:.2f}"
+            special_colors[op_cov_tmp] = c_op
+
+    final_ticks = list(special_ticks)
+    for t in xticks_cur:
+        clash_tol = 0.005 if cov_min <= t <= cov_star else 0.025
+        if not any(abs(t - st) < clash_tol for st in special_ticks):
+            final_ticks.append(t)
+            
+    final_ticks = sorted(set(final_ticks))
+    ax_rc.set_xticks(final_ticks)
+    
     xtick_labels = []
-    for t in xticks_new:
-        if abs(t - cov_min) < 1e-9:
-            xtick_labels.append(r"$C_{min}$")
-        elif abs(t - cov_star) < 1e-9:
-            xtick_labels.append(r"$C^{*}$")
+    for t in final_ticks:
+        if t in special_labels:
+            xtick_labels.append(special_labels[t])
         else:
             xtick_labels.append(f"{t:.1f}")
     ax_rc.set_xticklabels(xtick_labels)
-    for lbl, t in zip(ax_rc.get_xticklabels(), xticks_new):
-        if abs(t - cov_min) < 1e-9:
-            lbl.set_color(c_forbid); lbl.set_fontweight("bold")
-        elif abs(t - cov_star) < 1e-9:
-            lbl.set_color(c_penalty); lbl.set_fontweight("bold")
+    
+    for lbl, t in zip(ax_rc.get_xticklabels(), final_ticks):
+        if t in special_colors:
+            lbl.set_color(special_colors[t])
+            lbl.set_fontweight("bold")
+            if special_colors[t] == c_op:
+                lbl.set_fontsize(8)
     ax_rc.set_xlim(0.0, 1.0)
 
-    # ┏━━━━━━━━━━ Per-threshold mean returns (and Stage-A utility) ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Per-threshold mean returns (plotted-split dataset) ━━━━━━━━━━┓
     mean_rets = np.full_like(thrs, np.nan)
     mean_win_rets = np.full_like(thrs, np.nan)
     mean_lose_rets = np.full_like(thrs, np.nan)
-    utilities = np.full_like(thrs, np.nan)
 
     labels_int = np.asarray(y_true).astype(int)
     N_total = len(probs)
-    min_trades = max(50, int(cov_min * N_total))
-    all_net_base = split_rets[probs >= 0.50] - fee
-    base_var = float(np.nanvar(all_net_base, ddof=1)) if len(all_net_base) > 1 else 1.0
-    if base_var <= 0:
-        base_var = 1.0
-    sel_05 = probs >= 0.50
-    n_05 = int(sel_05.sum())
-    prec_argmax = float(labels_int[sel_05].mean()) if n_05 > 0 else 0.0
-
-    # Mirror the optimizer's grid logic from thresholds._find_best_utility_threshold:
-    # grid_lo = clamp(median(probs[probs>=0.5]), 0.50, 0.85), grid = linspace(grid_lo, 0.95, 200)
-    pos_probs = probs[probs >= 0.50]
-    if pos_probs.size >= max(min_trades * 2, 20):
-        grid_lo = min(max(float(np.median(pos_probs)), 0.50), 0.85)
-    else:
-        grid_lo = 0.50
 
     for i, thr in enumerate(thrs):
         sel = probs >= thr
@@ -1440,11 +1543,46 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
         if len(losers) >= 1:
             mean_lose_rets[i] = float(np.nanmean(losers))
 
-        cov = n / N_total if N_total > 0 else 0.0
-        # Match optimizer grid: only consider τ ∈ [grid_lo, 0.95]
-        if thr < grid_lo or thr > 0.95:
+    # ┏━━━━━━━━━━ Stage-A utility — use the optimizer's dataset when provided ━━━━━━━━━━┓
+    # For nocal mode, opt_probs/opt_y/opt_rets = merged Val-Cal+Val-Opt (same N as optimizer).
+    # For calibrated mode they are None, so we fall back to the plotted-split dataset.
+    _u_probs  = np.asarray(opt_probs)  if opt_probs  is not None else probs
+    _u_y      = np.asarray(opt_y).astype(int) if opt_y is not None else labels_int
+    _u_rets   = np.asarray(opt_rets)   if opt_rets   is not None else split_rets
+    _u_N      = len(_u_probs)
+
+    min_trades = max(50, int(cov_min * _u_N))
+    all_net_base = _u_rets[_u_probs >= 0.50] - fee
+    base_var = float(np.nanvar(all_net_base, ddof=1)) if len(all_net_base) > 1 else 1.0
+    if base_var <= 0:
+        base_var = 1.0
+    sel_05 = _u_probs >= 0.50
+    prec_argmax = float(_u_y[sel_05].mean()) if sel_05.sum() > 0 else 0.0
+
+    # Mirror optimizer grid: grid_lo = clamp(median(pos_probs), 0.50, 0.85)
+    pos_probs = _u_probs[_u_probs >= 0.50]
+    if pos_probs.size >= max(min_trades * 2, 20):
+        grid_lo = min(max(float(np.median(pos_probs)), 0.50), 0.85)
+    else:
+        grid_lo = 0.50
+
+    # Evaluate U(τ) on a fine grid (1000 pts) over the optimizer's dataset — smooth by construction.
+    _u_thr_grid = np.linspace(grid_lo, 0.95, 1000)
+    _u_covs     = np.full(len(_u_thr_grid), np.nan)
+    utilities   = np.full(len(_u_thr_grid), np.nan)
+
+    for i, thr in enumerate(_u_thr_grid):
+        sel = _u_probs >= thr
+        n = int(sel.sum())
+        if n < min_trades:
             continue
-        if n < min_trades or cov < cov_min or mu <= 0:
+        cov = n / _u_N
+        if cov < cov_min:
+            continue
+        net = _u_rets[sel] - fee
+        lab = _u_y[sel]
+        mu = float(np.nanmean(net))
+        if mu <= 0:
             continue
         prec_thr = float(lab.mean())
         if prec_thr < prec_argmax:
@@ -1460,18 +1598,21 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
             continue
         cov_factor = 1.0 if cov >= cov_star else (cov / cov_star) ** 2
         utilities[i] = t_reg * cov_factor
+        _u_covs[i] = cov
 
     # ┏━━━━━━━━━━ Return axis (right, primary) ━━━━━━━━━━┓
     ax_ret = ax_rc.twinx()
     valid = ~np.isnan(mean_rets) & (covs >= cov_min)
     valid_w = ~np.isnan(mean_win_rets) & (covs >= cov_min)
     valid_l = ~np.isnan(mean_lose_rets) & (covs >= cov_min)
-    both_valid = valid_w & valid_l
-    if both_valid.any():
-        ax_ret.fill_between(covs[both_valid],
-                            mean_win_rets[both_valid] * 100,
-                            mean_lose_rets[both_valid] * 100,
-                            alpha=0.06, color=c_win, zorder=1, label="_nolegend_")
+    # Profitability zone: shaded light-green band between Mean Win Return and
+    # Mean Net Return (the "above-average winners" region).
+    profit_band = valid & valid_w
+    if profit_band.any():
+        ax_ret.fill_between(covs[profit_band],
+                            mean_win_rets[profit_band] * 100,
+                            mean_rets[profit_band] * 100,
+                            alpha=0.13, color=c_win, zorder=1, label="_nolegend_")
 
     def _plot_dynamic_return(ax, x, y, lw, ls, base_alpha, label, zorder):
         if len(x) > 1:
@@ -1524,7 +1665,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     valid_u = ~np.isnan(utilities)
     star_xy = None
     if valid_u.any():
-        xu_raw = covs[valid_u]
+        xu_raw = _u_covs[valid_u]
         yu_raw = utilities[valid_u]
         order_u = np.argsort(xu_raw)
         xu_sorted = xu_raw[order_u]
@@ -1580,41 +1721,71 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     # ┏━━━━━━━━━━ Operating points (τ=0.5 and τ̂) ━━━━━━━━━━┓
     idx_05 = int(np.argmin(np.abs(thrs - 0.5)))
     cov_05 = covs[idx_05]
-    risk_05 = risks_raw[idx_05]
+    risk_05 = np.interp(cov_05, grid_cov, risk_smooth) if grid_cov.size >= 2 else risks_raw[idx_05]
     op_cov = op["coverage"]
-    op_risk = op.get("risk", 0)
+    op_risk = np.interp(op_cov, grid_cov, risk_smooth) if grid_cov.size >= 2 else op.get("risk", 0)
     thr_source = op.get("threshold_source") or ("OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
     show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
     if show_baseline:
-        a05 = _zone_alpha(cov_05)
-        ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7 * a05, linewidth=1.8)
-        ax_rc.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=40, alpha=a05,
+        ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)
+        ax_rc.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=40,
                       edgecolors="white", linewidths=1.0, zorder=5)
         ax_rc.annotate("τ=0.50", xy=(cov_05, risk_05), xytext=(3, 5), textcoords="offset points",
-                       fontsize=7, color=c_thr05, fontweight="bold", alpha=a05, zorder=10,
-                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_thr05, alpha=0.8 * a05, lw=0.6))
+                       fontsize=7, color=c_thr05, fontweight="bold", zorder=10,
+                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_thr05, alpha=0.9, lw=0.6))
 
-    aop = _zone_alpha(op_cov)
-    ax_rc.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7 * aop, linewidth=1.8)
-    ax_rc.scatter([op_cov], [op_risk], color=c_op, marker="D", s=50, alpha=aop,
+    aop = _zone_alpha(op_cov)  # kept for axvline only
+    ax_rc.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7, linewidth=1.8)
+    ax_rc.scatter([op_cov], [op_risk], color=c_op, marker="D", s=50,
                   edgecolors="white", linewidths=1.0, zorder=6)
     ax_rc.annotate(f"$\\hat{{\\tau}}$={op['threshold']:.3f}", xy=(op_cov, op_risk), xytext=(3, 6),
-                   textcoords="offset points", fontsize=7.5, color=c_op, fontweight="bold", alpha=aop, zorder=10,
-                   bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_op, alpha=0.85 * aop, lw=0.6))
+                   textcoords="offset points", fontsize=7.5, color=c_op, fontweight="bold", zorder=10,
+                   bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_op, alpha=0.9, lw=0.6))
 
     # Return annotations at τ̂
     mr_val = op["mean_ret"] * 100
-    sel_op = test_approved_ocp if split_name == "Test" and is_ocp and test_approved_ocp is not None else (probs >= op["threshold"])
+    # Use the optimizer's dataset (opt_probs/opt_rets/opt_y) when provided so that
+    # mr/mw/ml annotations match op["mean_ret"] exactly (same N, same population).
+    _ann_probs  = _u_probs   if opt_probs is not None else probs
+    _ann_rets   = _u_rets    if opt_rets  is not None else split_rets
+    _ann_labels = _u_y       if opt_y     is not None else labels_int
+    sel_op = test_approved_ocp if split_name == "Test" and is_ocp and test_approved_ocp is not None else (_ann_probs >= op["threshold"])
     n_op = int(sel_op.sum())
     if n_op >= 2:
-        net_op = split_rets[sel_op] - fee
-        lab_op = labels_int[sel_op]
+        net_op = _ann_rets[sel_op] - fee
+        lab_op = _ann_labels[sel_op]
         w_op = net_op[lab_op == 1]
         l_op = net_op[lab_op == 0]
         mw_val = float(np.nanmean(w_op)) * 100 if len(w_op) >= 1 else None
         ml_val = float(np.nanmean(l_op)) * 100 if len(l_op) >= 1 else None
     else:
         mw_val, ml_val = None, None
+
+    # Interpolate exact y-coordinates from the return curves at op_cov so markers
+    # land precisely on top of each line.
+    def _interp_on_curve(x_target, mask, values):
+        xs = covs[mask]
+        ys = values[mask]
+        if len(xs) < 2:
+            return None
+        order = np.argsort(xs)
+        xs, ys = xs[order], ys[order]
+        if x_target < xs[0] or x_target > xs[-1]:
+            return None
+        return float(np.interp(x_target, xs, ys))
+
+    # Dot y-positions: always interpolated from the plotted curves so dots sit exactly
+    # on top of the visible lines regardless of which dataset was used for labels.
+    # Label values: already set from the optimizer's dataset (mr_val/mw_val/ml_val)
+    # when opt_rets is provided; otherwise also use the curve interpolation.
+    mr_dot = _interp_on_curve(op_cov, valid,   mean_rets      * 100)
+    mw_dot = _interp_on_curve(op_cov, valid_w, mean_win_rets  * 100)
+    ml_dot = _interp_on_curve(op_cov, valid_l, mean_lose_rets * 100)
+    if opt_rets is None:
+        # Calibrated mode: labels and dots both come from the plotted curves.
+        if mr_dot is not None: mr_val = mr_dot
+        if mw_dot is not None: mw_val = mw_dot
+        if ml_dot is not None: ml_val = ml_dot
 
     def _get_staggered_offsets(val_dict):
         valid_vals = {k: v for k, v in val_dict.items() if v is not None}
@@ -1627,171 +1798,79 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
             return {s_keys[0]: (3, 0)}
         return {}
 
-    offs_op = _get_staggered_offsets({"mw": mw_val, "ml": ml_val, "mr": mr_val})
-    for key, value in {"mr": mr_val, "mw": mw_val, "ml": ml_val}.items():
-        if value is None:
+    _dot_positions = {"mr": mr_dot, "mw": mw_dot, "ml": ml_dot}
+    _label_values  = {"mr": mr_val, "mw": mw_val, "ml": ml_val}
+    offs_op = _get_staggered_offsets({k: v for k, v in _dot_positions.items() if v is not None})
+    for key in ("mr", "mw", "ml"):
+        dot_y   = _dot_positions[key]
+        label_v = _label_values[key]
+        if dot_y is None or label_v is None:
             continue
-        color = c_ret if value >= 0 else c_ret_neg
-        ax_ret.scatter([op_cov], [value], color=color, marker="D" if key == "mr" else "o",
-                       s=40 if key == "mr" else 30, alpha=aop,
+        color = c_ret if label_v >= 0 else c_ret_neg
+        ax_ret.scatter([op_cov], [dot_y], color=color, marker="D" if key == "mr" else "o",
+                       s=40 if key == "mr" else 30,
                        edgecolors="white", linewidths=1.0 if key == "mr" else 0.7,
                        zorder=7 if key == "mr" else 6)
-        ax_ret.annotate(f"{value:+.2f}%", xy=(op_cov, value), xytext=offs_op[key],
+        ax_ret.annotate(f"{label_v:+.2f}%", xy=(op_cov, dot_y), xytext=offs_op.get(key, (3, 0)),
                         textcoords="offset points", fontsize=7.5, color=color,
-                        fontweight="bold", alpha=aop, zorder=10)
+                        fontweight="bold", zorder=10)
 
-    # ┏━━━━━━━━━━ Zoomed inset on [C_min, 1.5·C*] (outside main, left side) ━━━━━━━━━━┓
-    x_inset_max = min(1.0, cov_star * 1.5)
-    # Positioned in figure coords to the left of the main axes.
-    ax_in = fig_rc.add_axes([0.03, 0.30, 0.14, 0.62])
-    ax_in.set_facecolor("#FAFAFA")
-    ax_in.axvspan(cov_min, cov_star, color=c_penalty, alpha=0.10, hatch="..",
-                  edgecolor=c_penalty, linewidth=0.0, zorder=0)
-    ax_in.axvline(x=cov_star, color=c_penalty, linestyle=":", linewidth=1.0, alpha=0.8)
-    # Risk curve (alpha by zone)
-    m_r = (grid_cov >= cov_min) & (grid_cov <= x_inset_max)
-    if m_r.sum() >= 2:
-        _in_m1 = m_r & (grid_cov < cov_star)
-        _in_m2 = m_r & (grid_cov >= cov_star)
-        if _in_m1.sum() >= 2:
-            ax_in.plot(grid_cov[_in_m1], risk_smooth[_in_m1], color=c_risk,
-                       linewidth=1.6, alpha=ALPHA_PEN)
-        if _in_m2.sum() >= 2:
-            ax_in.plot(grid_cov[_in_m2], risk_smooth[_in_m2], color=c_risk,
-                       linewidth=1.6, alpha=ALPHA_OK)
-    # Baseline risk floor
-    ax_in.plot([cov_min, x_inset_max], [risk_floor, risk_floor],
-               color=c_baseline, linestyle="-.", linewidth=1.2, alpha=0.9)
-    # Returns (mean, win, loss) on a twin y axis (percent units) — alpha by zone
-    ax_in_ret = ax_in.twinx()
-    def _in_plot_ret(vmask, series_pct, color, lw, ls):
-        m = vmask & (covs >= cov_min) & (covs <= x_inset_max)
-        if m.sum() < 2:
-            return
-        order_m = np.argsort(covs[m])
-        xs = covs[m][order_m]; ys = (series_pct)[m][order_m]
-        _pen = (xs < cov_star)
-        _ok = (xs >= cov_star)
-        if _pen.sum() >= 2:
-            ax_in_ret.plot(xs[_pen], ys[_pen], color=color, linewidth=lw,
-                           linestyle=ls, alpha=ALPHA_PEN, zorder=2)
-        if _ok.sum() >= 2:
-            ax_in_ret.plot(xs[_ok], ys[_ok], color=color, linewidth=lw,
-                           linestyle=ls, alpha=ALPHA_OK, zorder=2)
-    _in_plot_ret(valid, mean_rets * 100, c_ret, 1.6, "-")
-    _in_plot_ret(valid_w, mean_win_rets * 100, c_ret, 1.0, ":")
-    _in_plot_ret(valid_l, mean_lose_rets * 100, c_ret_neg, 1.0, ":")
-    # Hide the return axis's decorations (ticks, labels, spines) without hiding the lines.
-    ax_in_ret.patch.set_visible(False)
-    ax_in_ret.tick_params(axis="y", which="both", left=False, right=False,
-                           labelleft=False, labelright=False)
-    for sp in ax_in_ret.spines.values():
-        sp.set_visible(False)
-    # Utility (Risk-Profitability) on a third y axis (outward offset)
-    ax_in_util = ax_in.twinx()
-    ax_in_util.spines["right"].set_position(("outward", 0))
-    if valid_u.any() and xu.size >= 2:
-        for lo, hi in [(cov_min, cov_star), (cov_star, x_inset_max)]:
-            mm = (xu_plot >= lo) & (xu_plot <= hi)
-            if mm.sum() >= 2:
-                ax_in_util.plot(xu_plot[mm], yu_plot[mm], color=c_util,
-                                linestyle="--", linewidth=1.4, alpha=1.0)
-    # Gold star in the inset (same argmax U as main)
-    if valid_u.any() and xu.size >= 2:
-        _i = int(np.argmax(yu))
-        _sx, _sy = float(xu[_i]), float(yu[_i])
-        if cov_min <= _sx <= x_inset_max:
-            ax_in_util.scatter([_sx], [_sy], color=c_util, marker="*", s=140,
-                               edgecolors="white", linewidths=1.0, zorder=9)
-    ax_in_util.tick_params(axis="y", colors=c_util, labelcolor=c_util, labelsize=7)
-    for sp_name, sp in ax_in_util.spines.items():
-        sp.set_visible(sp_name == "right")
-        sp.set_color(c_util); sp.set_linewidth(0.8)
-    # τ̂ and τ=0.5 if visible in the inset range
-    if cov_min <= op_cov <= x_inset_max:
-        aop_in = _zone_alpha(op_cov)
-        ax_in.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7 * aop_in, linewidth=1.2)
-        ax_in.scatter([op_cov], [op_risk], color=c_op, marker="D", s=30, alpha=aop_in,
-                      edgecolors="white", linewidths=0.8, zorder=5)
-    if show_baseline and cov_min <= cov_05 <= x_inset_max:
-        a05_in = _zone_alpha(cov_05)
-        ax_in.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7 * a05_in, linewidth=1.2)
-        ax_in.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=25, alpha=a05_in,
-                      edgecolors="white", linewidths=0.8, zorder=5)
-    ax_in.set_xlim(cov_min, x_inset_max)
-    ax_in.set_title("Low-coverage zoom", fontsize=8, fontweight="bold",
-                    color="#2C3E50", pad=3)
-    # Mathtext ticks for C_min and C*
-    xt_in = sorted(set([cov_min, cov_star, x_inset_max]))
-    ax_in.set_xticks(xt_in)
-    ax_in.set_xticklabels([r"$C_{min}$" if abs(t - cov_min) < 1e-9
-                            else (r"$C^{*}$" if abs(t - cov_star) < 1e-9 else f"{t:.2f}")
-                            for t in xt_in])
-    for lbl, t in zip(ax_in.get_xticklabels(), xt_in):
-        if abs(t - cov_min) < 1e-9:
-            lbl.set_color(c_forbid); lbl.set_fontweight("bold")
-        elif abs(t - cov_star) < 1e-9:
-            lbl.set_color(c_penalty); lbl.set_fontweight("bold")
-    ax_in.tick_params(axis="x", labelsize=7)
-    ax_in.tick_params(axis="y", labelsize=7)
-    ax_in.set_ylabel("Risk", fontsize=8, fontweight="bold")
-    ax_in.grid(True, color=c_grid, linewidth=0.4, alpha=0.6)
-    for spine in ax_in.spines.values():
-        spine.set_color("#7F8C8D"); spine.set_linewidth(0.8)
-    # Indicator rectangle on main axes showing what the inset covers
-    from matplotlib.patches import Rectangle
-    y0, y1 = ax_rc.get_ylim()
-    ax_rc.add_patch(Rectangle((cov_min, y0), x_inset_max - cov_min, y1 - y0,
-                              fill=False, edgecolor="#7F8C8D", linewidth=0.8,
-                              linestyle=":", alpha=0.7, zorder=1))
+
 
     # ┏━━━━━━━━━━ Title ━━━━━━━━━━┓
     _model_display = {"RF": "Random Forest", "rf": "Random Forest"}.get(model_label, model_label)
-    ax_rc.set_title(f"Coverage-Risk  |  {split_name}  |  {_model_display}",
+    _split_display = {"Val": "Validation", "val": "Validation"}.get(split_name, split_name)
+    _dir_gran = f"  |  {direction.upper()}  {granularity}" if direction or granularity else ""
+    ax_rc.set_title(f"Profitability-Risk  |  {_split_display}  |  {_model_display}{_dir_gran}",
                     fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
 
     # ┏━━━━━━━━━━ Single legend: 3 rows × 4 columns ━━━━━━━━━━┓
+    # Stats (Prec, Cov, μ/t) are embedded as multi-line text in col-4 entries
+    # so no phantom handle-space is wasted on invisible patches.
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
-    # Row-major fill with ncol=4 → rows read left-to-right.
+    _prec_str = rf"Prec$_{{\hat{{τ}}}}$={op.get('precision', float('nan'))*100:.1f}%"
+    _cov_str  = rf"Cov$_{{\hat{{τ}}}}$={op['coverage']*100:.1f}% (N={op.get('selected_count', 0)})"
+    _mut_str  = rf"$\mu$={op['mean_ret']*100:+.2f}%, t={op.get('t_stat', 0):.2f}"
     handles = [
-        # row 1
-        Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
+        # ── Column 1: Returns ─────────────────────────────────────────
         Line2D([], [], color=c_ret, linewidth=2.0, label="Mean Net Return"),
-        Patch(facecolor=c_forbid, alpha=0.25, hatch="//", edgecolor=c_forbid,
-              label=r"Forbidden: $\mathrm{Coverage} < C_{min}$"),
-        Line2D([], [], color=c_op, marker="D", markersize=7, linestyle="--",
-               markeredgecolor="white", markeredgewidth=0.8,
-               label=rf"$\hat{{\tau}}={op['threshold']:.3f}$  ({thr_source})"),
-        # row 2
-        Line2D([], [], color=c_util, linewidth=1.8, linestyle="--",
-               label=r"Risk-Profitability Score"),
         Line2D([], [], color=c_ret, linewidth=1.0, linestyle=":", label="Mean Win Return"),
+        Line2D([], [], color=c_ret_neg, linewidth=1.0, linestyle=":", label="Mean Loss Return"),
+        # ── Column 2: Risk / Utility curves ───────────────────────────
+        Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
+        Line2D([], [], color=c_util, linewidth=1.8, linestyle="--", label="Risk-Profitability Score"),
+        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"Risk Floor: $Risk_{M2@0.5}$"),
+        # ── Column 3: Zones ───────────────────────────────────────────
+        Patch(facecolor=c_forbid, alpha=0.30, hatch="//", edgecolor=c_forbid,
+              label=r"Forbidden: $\mathrm{Cov} < C_{min}$"),
         Patch(facecolor=c_penalty, alpha=0.20, hatch="..", edgecolor=c_penalty,
-              label=r"Quadratic penalty: $\mathrm{Coverage} < C^{*}$"),
-        Line2D([], [], color="none",
-               label=rf"$\mathrm{{Coverage}}_{{\hat{{\tau}}}}={op['coverage']*100:.1f}\%,\ \mathrm{{Risk}}_{{\hat{{\tau}}}}={op.get('risk', 0)*100:.1f}\%$"),
-        # row 3
+              label=r"Quadratic Penalty: $\mathrm{Cov} < C^{*}$"),
+        Patch(facecolor=c_win, alpha=0.20, edgecolor="none", label="Profitability Zone"),
+        # ── Column 4: Operating points + stats inline ─────────────────
         Line2D([], [], color=c_util, marker="*", markersize=13, linestyle="None",
                markeredgecolor="white", markeredgewidth=1.0,
-               label=r"$\arg\max U(\tau)$"),
-        Line2D([], [], color=c_ret_neg, linewidth=1.0, linestyle=":", label="Mean Loss Return"),
-        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.",
-               label=r"Risk floor = $Risk_{M2@0.5}$"),
-        Line2D([], [], color="none",
-               label=rf"$\mathrm{{Precision}}_{{\hat{{\tau}}}}={op.get('precision', float('nan'))*100:.1f}\%,\ (\mu,t)=({op['mean_ret']*100:+.2f}\%,{op.get('t_stat', 0):.2f})$"),
+               label=rf"Max Risk-Prof Score       {_prec_str}"),
+        Line2D([], [], color=c_op, marker="D", markersize=7, linestyle="--",
+               markeredgecolor="white", markeredgewidth=0.8,
+               label=rf"$\hat{{\tau}}$={op['threshold']:.3f} ({thr_source})     {_cov_str}"),
+        Line2D([], [], color=c_thr05, marker="o", markersize=6, linestyle="--",
+               markeredgecolor="white", markeredgewidth=0.8,
+               label=rf"$\tau$=0.5 (Baseline)            {_mut_str}"),
     ]
+    # Center the legend on the main axes span [left=0.08, right=0.92].
+    _leg_cx = (0.08 + 0.92) / 2
     leg = fig_rc.legend(handles=handles, loc="lower center",
-                        bbox_to_anchor=(0.55, 0.015), ncol=4,
-                        prop={"size": 9}, frameon=True, framealpha=0.95,
+                        bbox_to_anchor=(_leg_cx, 0.01), ncol=4,
+                        prop={"size": 8.5}, frameon=True, framealpha=0.95,
                         edgecolor="#BDC3C7", fancybox=True,
-                        handlelength=2.4, handletextpad=0.7,
-                        columnspacing=1.6, borderpad=0.7)
+                        handlelength=2.2, handletextpad=0.6,
+                        columnspacing=1.2, borderpad=0.6)
     leg.set_zorder(20)
     fig_rc.tight_layout()
-    fig_rc.subplots_adjust(left=0.24, bottom=0.26, right=0.90, top=0.92)
+    fig_rc.subplots_adjust(left=0.08, bottom=0.22, right=0.92, top=0.93)
 
-    fig_rc.savefig(str(save_path), dpi=200, facecolor="white")
+    fig_rc.savefig(str(save_path), dpi=500, facecolor="white")
     plt.close(fig_rc)
 
 

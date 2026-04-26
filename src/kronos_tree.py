@@ -314,6 +314,11 @@ def temporal_eval(dataset: dict,
         _cal_opt_probs  = _raw_opt_probs
         _raw_test_probs = model.predict_proba(X_test)[:, 1]
         _cal_test_probs = _raw_test_probs
+        
+        # ┏━━━━━━━━━━ Store merged dataset so the Val plot can compute U(τ) on the same N the optimizer used ━━━━━━━━━━┓
+        _opt_plot_probs   = _merged_probs
+        _opt_plot_y       = _merged_y
+        _opt_plot_returns = _merged_returns
 
         print(f"    [utility_nocal] Calibration skipped — Val-Cal + Val-Opt merged "
               f"(n={len(_merged_y)}) for threshold sweep on raw probs.")
@@ -340,6 +345,11 @@ def temporal_eval(dataset: dict,
         print(
             f"      Test range [{_raw_test_probs.min():.3f}, {_raw_test_probs.max():.3f}] → [{_cal_test_probs.min():.3f}, {_cal_test_probs.max():.3f}]")
         print(f"    Threshold τ={op['threshold']:.3f} (swept on calibrated Opt, n={len(y_opt)})")
+        
+        # ┏━━━━━━━━━━ Calibrated mode: optimizer dataset = Val-Opt = the plotted Val split → no separate dataset needed ━━━━━━━━━━┓
+        _opt_plot_probs   = None
+        _opt_plot_y       = None
+        _opt_plot_returns = None
 
     # ┏━━━━━━━━━━ Export Raw & Calibrated Probs (mirroring HPO Phase 0) ━━━━━━━━━━┓
     probs_path = save_dir / "best_probs.npz"
@@ -527,38 +537,47 @@ def temporal_eval(dataset: dict,
         # ┏━━━━━━━━━━ Plot risk-coverage with return overlay (business-level) ━━━━━━━━━━┓
         rc_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage.png"
         rc_final_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage_final.png"
-        plot_temporal_risk_coverage_curve_final(save_path=rc_final_path,
-                                                curve=curve,
-                                                probs=score_probs,
-                                                y_true=y_split,
-                                                split_rets=split_rets,
-                                                fee=fee,
-                                                op=op,
-                                                split_name=split_name,
-                                                model_label=mlabel,
-                                                thres_mode=thres_mode,
-                                                ocp_alpha=ocp_alpha,
-                                                val_threshold=val_thresholds.get("thr"),
-                                                val_op=val_op,
-                                                is_ocp=_is_ocp,
-                                                test_approved_ocp=test_approved_ocp if (
-                                                        split_name == "Test" and _is_ocp) else None)
-        plot_temporal_risk_coverage_curve(save_path=rc_path,
-                                          curve=curve,
-                                          probs=score_probs,
-                                          y_true=y_split,
-                                          split_rets=split_rets,
-                                          fee=fee,
-                                          op=op,
-                                          split_name=split_name,
-                                          model_label=mlabel,
-                                          thres_mode=thres_mode,
-                                          ocp_alpha=ocp_alpha,
-                                          val_threshold=val_thresholds.get("thr"),
-                                          val_op=val_op,
-                                          is_ocp=_is_ocp,
-                                          test_approved_ocp=test_approved_ocp if (
-                                                  split_name == "Test" and _is_ocp) else None)
+        
+        # ┏━━━━━━━━━━ Plot risk-coverage (paper-level) ━━━━━━━━━━┓
+        plot_temporal_risk_coverage_curve_final(save_path         = rc_final_path,
+                                                curve             = curve,
+                                                probs             = score_probs,
+                                                y_true            = y_split,
+                                                split_rets        = split_rets,
+                                                fee               = fee,
+                                                op                = op,
+                                                split_name        = split_name,
+                                                model_label       = mlabel,
+                                                thres_mode        = thres_mode,
+                                                ocp_alpha         = ocp_alpha,
+                                                val_threshold     = val_thresholds.get("thr"),
+                                                val_op            = val_op,
+                                                is_ocp            = _is_ocp,
+                                                test_approved_ocp = test_approved_ocp if (split_name == "Test" and _is_ocp) else None,
+                                                opt_probs         = _opt_plot_probs if split_name == "Val" else None,
+                                                opt_y             = _opt_plot_y if split_name == "Val" else None,
+                                                opt_rets          = _opt_plot_returns if split_name == "Val" else None,
+                                                direction         = direction,
+                                                granularity       = granularity)
+
+        # ┏━━━━━━━━━━ Plot temporal risk coverage curve (basic) ━━━━━━━━━━┓
+        plot_temporal_risk_coverage_curve(save_path         = rc_path,
+                                          curve             = curve,
+                                          probs             = score_probs,
+                                          y_true            = y_split,
+                                          split_rets        = split_rets,
+                                          fee               = fee,
+                                          op                = op,
+                                          split_name        = split_name,
+                                          model_label       = mlabel,
+                                          thres_mode        = thres_mode,
+                                          ocp_alpha         = ocp_alpha,
+                                          val_threshold     = val_thresholds.get("thr"),
+                                          val_op            = val_op,
+                                          is_ocp            = _is_ocp,
+                                          test_approved_ocp = test_approved_ocp if (split_name == "Test" and _is_ocp) else None,
+                                          direction         = direction,
+                                          granularity       = granularity)
         
         # ┏━━━━━━━━━━ OCP threshold evolution plot (test only) ━━━━━━━━━━┓
         if split_name == "Test" and _is_ocp:

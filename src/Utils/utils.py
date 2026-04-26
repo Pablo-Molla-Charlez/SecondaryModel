@@ -169,8 +169,15 @@ def _expand_env_vars(obj):
 
 
 def _load_config(cfg_path: str = "config.yaml") -> dict:
-    with open(cfg_path, "r") as f:
-        cfg = yaml.safe_load(f)
+    # Accept either a file path or an inline JSON string (used by experiments.py
+    # when passing the mutated config dict directly via json.dumps).
+    import json as _json
+    stripped = cfg_path.strip()
+    if stripped.startswith("{"):
+        cfg = _json.loads(stripped)
+    else:
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f)
 
     cfg = _expand_env_vars(cfg)
         

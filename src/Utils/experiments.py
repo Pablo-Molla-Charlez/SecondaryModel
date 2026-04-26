@@ -296,20 +296,19 @@ def run_experiments(config: dict, config_path: str):
         
         for m2 in config['experiment']['m2']:
             for granularity in config['experiment']['granularity']:
-                # TODO this is not required here!?
-                # cache_path = _find_cache(config["paths"]["output_root"], direction, m1=config['experiment']['m1'])
-                # if cache_path is None:
-                #     print(f"  [SKIP] No cache found for M1={config['experiment']['m1']} and direction={direction}")
-                #     continue
+                # ┏━━━━━━━━━━ Set combined backtest paths ━━━━━━━━━━┓
+                _combined_thres_folder = "Utility_Score_NoCal" if config["runtime"]["training"].get("thres") == "utility_nocal" else "Utility_Score"
+                config["runtime"]["combined"]["combined_backtest"][0] = str(output_root / m2 / "UP" / _combined_thres_folder)
+                config["runtime"]["combined"]["combined_backtest"][1] = str(output_root / m2 / "DOWN" / _combined_thres_folder)
                 
-                config["runtime"]["combined"]["combined_backtest"][0] = str(output_root / m2 / "UP" / "Utility_Score")
-                config["runtime"]["combined"]["combined_backtest"][1] = str(output_root / m2 / "DOWN" / "Utility_Score")
+                # ┏━━━━━━━━━━ Check if combined backtest is already done ━━━━━━━━━━┓
                 if not os.path.exists(config["runtime"]["combined"]["combined_backtest"][0]) or not \
                     os.path.exists(config["runtime"]["combined"]["combined_backtest"][1]):
                     up_path  = config["runtime"]["combined"]["combined_backtest"][0]
                     dn_path  = config["runtime"]["combined"]["combined_backtest"][1]
                     print(f"  [SKIP] Missing UP or DOWN results for {m2}: {up_path}, {dn_path}")
                     continue
+                
                 # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"
                 cmd = [python, "kronos_tree.py",
@@ -319,6 +318,7 @@ def run_experiments(config: dict, config_path: str):
                        "--m2", m2,
                        "--direction", "not_needed_here",
                        "--granularity", granularity]
+                
                 # "--combined-backtest", str(up_dir), str(dn_dir)]
                 ok = _run(cmd, label)
                 results[label] = ok
@@ -372,17 +372,18 @@ def main():
     
     # ┏━━━━━━━━━━ Arguments ━━━━━━━━━━┓
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
-    
     args = parser.parse_args()
-    
+
+    # ┏━━━━━━━━━━ Config validation ━━━━━━━━━━┓
     config_path = Path(args.config)
-    
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
     
+    # ┏━━━━━━━━━━ Load config ━━━━━━━━━━┓
     with config_path.open("r") as f:
         cfg = yaml.safe_load(f) or {}
     
+    # ┏━━━━━━━━━━ Print config ━━━━━━━━━━┓
     print(f"\n{'=' * 70}")
     print(f"EXPERIMENT CONFIG")
     print(yaml.dump(cfg, sort_keys=False))

@@ -661,7 +661,7 @@ def run_combined_backtest(up_dir: str | Path,
     #     return
 
     print(f"\n{'='*60}")
-    print(f"[combined_backtest] Merging UP+DOWN trades for: {', '.join(granularity)}")
+    print(f"[combined_backtest] Merging UP+DOWN trades for: {granularity}")
     print(f"[combined_backtest] Output: {save_dir}")
     print(f"{'='*60}\n")
 
