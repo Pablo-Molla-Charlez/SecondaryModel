@@ -241,7 +241,8 @@ def _build_cache_from_config(config: dict, direction: str) -> tuple[Path, object
 
     # ┏━━━━━━━━━━ Build from CSVs ━━━━━━━━━━┓
     print("[utils] Cache not found — compiling dataset from CSVs...\n")
-    raw_df = load_dataset_from_config(config)
+    cfg_for_load = {**config, "data": {**config["data"], "load": {**config["data"]["load"], "direction": direction}}}
+    raw_df = load_dataset_from_config(cfg_for_load)
     column_features = config["data"]["features"]["input"]
 
     # ┏━━━━━━━━━━ Prepare dataset ━━━━━━━━━━┓
