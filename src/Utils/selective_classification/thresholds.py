@@ -88,7 +88,8 @@ def _find_best_utility_threshold(probs: np.ndarray,
                                  cov_min: float = 0.05,
                                  cov_star: float = 0.15,
                                  t_min: float = 1.0,
-                                 baseline_override_cov_ratio: float = 10.0) -> dict:
+                                 baseline_override_cov_ratio: float = 10.0,
+                                 m1_precision: float = None) -> dict:
     """Pick a validation threshold via a five-stage cascade (see module docstring).
 
     Parameters
@@ -108,6 +109,9 @@ def _find_best_utility_threshold(probs: np.ndarray,
     baseline_override_cov_ratio
         Stage E triggers when the raw τ=0.50 baseline has precision ≥ op.precision
         AND coverage ≥ this ratio x op.coverage.
+    m1_precision
+        M1 precision on the same dataset used for optimization. If provided, the
+        Stage-A precision floor becomes max(M2@τ=0.5 precision, M1 precision).
     """
     # ┏━━━━━━━━━━ Format Change ━━━━━━━━━━┓
     probs = np.asarray(probs, dtype=float)
@@ -133,6 +137,11 @@ def _find_best_utility_threshold(probs: np.ndarray,
         prec_argmax = 0.0
         cov_argmax = 0.0
         n_argmax = 0
+
+    # ┏━━━━━━━━━━ Stage-A Precision Floor (max of M2@τ=0.5 and M1 precision) ━━━━━━━━━━┓
+    prec_floor_A = prec_argmax
+    if m1_precision is not None and not np.isnan(m1_precision):
+        prec_floor_A = max(prec_floor_A, float(m1_precision))
 
     # ┏━━━━━━━━━━ Helper: build op dict from a threshold ━━━━━━━━━━┓
     def _op_from_threshold(thr: float, source: str, constraint: bool, utility_val: float = 0.0):
@@ -167,13 +176,12 @@ def _find_best_utility_threshold(probs: np.ndarray,
                 "precision":            prec}
 
     # ┏━━━━━━━━━━ Grid Initialization ━━━━━━━━━━┓
+    # Hybrid grid: union of (a) unique probabilities >= 0.50 actually emitted
+    # by M2 and (b) a dense linspace from 0.50 to 0.95. Sorted and deduplicated.
     pos_probs = probs[probs >= 0.50]
-    if pos_probs.size >= max(min_trades * 2, 20):
-        grid_lo = float(np.median(pos_probs))
-        grid_lo = min(max(grid_lo, 0.50), 0.85)
-    else:
-        grid_lo = 0.50
-    thr_grid = np.linspace(grid_lo, 0.95, 200)
+    linspace_grid = np.linspace(0.50, 0.95, 200)
+    thr_grid = np.unique(np.concatenate([pos_probs, linspace_grid]))
+    thr_grid = thr_grid[(thr_grid >= 0.50) & (thr_grid <= 0.95)]
 
     best = {"threshold": 0.50, "utility": -np.inf}
 
@@ -192,7 +200,7 @@ def _find_best_utility_threshold(probs: np.ndarray,
             continue
         if labels is not None:
             prec_thr = float(labels[sel].mean())
-            if prec_thr < prec_argmax:
+            if prec_thr < prec_floor_A:
                 continue
         sample_var = float(np.nanvar(net_rets, ddof=1))
         shrinkage = n_prior / (n + n_prior)

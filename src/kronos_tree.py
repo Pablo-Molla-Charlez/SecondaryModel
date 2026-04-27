@@ -178,19 +178,21 @@ def temporal_eval(dataset: dict,
     # ┏━━━━━━━━━━ M1 Metrics ━━━━━━━━━━┓
     m1_acc_val, m1_prec_val = None, None
     m1_acc_test, m1_prec_test = None, None
-    
+    m1_pred_all = None
+    m1_true_all = None
+
     # ┏━━━━━━━━━━ M1 Predictions and True Labels ━━━━━━━━━━┓
     if split_indices_raw is not None:
         from sklearn.metrics import accuracy_score, precision_score
         idx_train_raw, idx_val_raw, idx_test_raw = split_indices_raw
-        
+
         m1_pred_all = dataset.m1_pred_labels if hasattr(dataset, 'm1_pred_labels') else dataset.get('m1_pred_labels')
         m1_true_all = dataset.m1_true_labels if hasattr(dataset, 'm1_true_labels') else dataset.get('m1_true_labels')
-        
+
         if m1_pred_all is not None and m1_true_all is not None:
             if isinstance(m1_pred_all, torch.Tensor): m1_pred_all = m1_pred_all.numpy()
             if isinstance(m1_true_all, torch.Tensor): m1_true_all = m1_true_all.numpy()
-            
+
             # ┏━━━━━━━━━━ Calculate M1 Precision and Accuracy ━━━━━━━━━━┓
             def _calc_m1(idx_raw):
                 p, t = m1_pred_all[idx_raw], m1_true_all[idx_raw]
@@ -199,9 +201,10 @@ def temporal_eval(dataset: dict,
                     v_idx = list(valid)
                     return accuracy_score(t[v_idx], p[v_idx]), precision_score(t[v_idx], p[v_idx], zero_division=0)
                 return None, None
-            
+
             m1_acc_val, m1_prec_val = _calc_m1(idx_val_raw)
             m1_acc_test, m1_prec_test = _calc_m1(idx_test_raw)
+
     
     # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
     all_names = resolve_feature_names(eng.shape[1])
@@ -306,7 +309,10 @@ def temporal_eval(dataset: dict,
         _merged_returns = np.concatenate([_cal_returns, opt_returns])
 
         # ┏━━━━━━━━━━ Sweeps threshold on raw probabilities over the merged Val-Cal + Val-Opt window ━━━━━━━━━━┓
-        op = _find_best_utility_threshold(_merged_probs, _merged_returns, fee=fee, labels=_merged_y)
+        # M1 precision floor: m1_prec_val is computed on idx_val_raw (full val =
+        # Val-Cal + Val-Opt), which exactly matches the optimizer window in nocal mode.
+        op = _find_best_utility_threshold(_merged_probs, _merged_returns, fee=fee,
+                                          labels=_merged_y, m1_precision=m1_prec_val)
         val_op = op
         val_thresholds["thr"] = op["threshold"]
 
@@ -332,7 +338,11 @@ def temporal_eval(dataset: dict,
         # ┏━━━━━━━━━━ Sweep threshold on calibrated Val-Opt ━━━━━━━━━━┓
         _raw_opt_probs = model.predict_proba(X_opt)[:, 1]
         _cal_opt_probs = _calibrator.predict(_raw_opt_probs)
-        op = _find_best_utility_threshold(_cal_opt_probs, opt_returns, fee=fee, labels=y_opt)
+        # M1 precision floor: m1_prec_val is computed on the full val window
+        # (Val-Cal + Val-Opt). Optimizer here runs on Val-Opt only — using the
+        # full-val M1 precision is a close, well-defined proxy.
+        op = _find_best_utility_threshold(_cal_opt_probs, opt_returns, fee=fee,
+                                          labels=y_opt, m1_precision=m1_prec_val)
         val_op = op
         val_thresholds["thr"] = op["threshold"]
 
@@ -558,7 +568,8 @@ def temporal_eval(dataset: dict,
                                                 opt_y             = _opt_plot_y if split_name == "Val" else None,
                                                 opt_rets          = _opt_plot_returns if split_name == "Val" else None,
                                                 direction         = direction,
-                                                granularity       = granularity)
+                                                granularity       = granularity,
+                                                m1_precision      = m1_prec_val if split_name == "Val" else m1_prec_test)
 
         # ┏━━━━━━━━━━ Plot temporal risk coverage curve (basic) ━━━━━━━━━━┓
         plot_temporal_risk_coverage_curve(save_path         = rc_path,
@@ -1142,6 +1153,12 @@ def run_unified_analysis(cache_path: Path,
         all_y_train.append(y_tr)
         all_w_train.append(w_tr)
         
+        # ┏━━━━━━━━━━ Per-gran M1 labels (for Stage-A precision floor) ━━━━━━━━━━┓
+        _m1p = sub.get("m1_pred_labels", None)
+        _m1t = sub.get("m1_true_labels", None)
+        if isinstance(_m1p, torch.Tensor): _m1p = _m1p.numpy()
+        if isinstance(_m1t, torch.Tensor): _m1t = _m1t.numpy()
+
         # ┏━━━━━━━━━━ Store per-gran splits for evaluation ━━━━━━━━━━┓
         per_gran_data[gran] = {"X_full": X_full,
                                "labels": labels,
@@ -1152,7 +1169,9 @@ def run_unified_analysis(cache_path: Path,
                                "idx_train": idx_train,
                                "idx_val": idx_val,
                                "idx_test": idx_test,
-                               "n_train": n_gran_train}
+                               "n_train": n_gran_train,
+                               "m1_pred_labels": _m1p,
+                               "m1_true_labels": _m1t}
         
         print(f"  {gran}: Train={n_gran_train}  Val={len(idx_val)}  Test={len(idx_test)}")
     
@@ -1285,8 +1304,25 @@ def run_unified_analysis(cache_path: Path,
                                           "baseline": round(int((y_split == 1).sum()) / len(y_split), 4) if len(
                                               y_split) > 0 else 0}
         
+        # ┏━━━━━━━━━━ M1 Precision Floor on Val (per-gran) ━━━━━━━━━━┓
+        _m1p_g = gd.get("m1_pred_labels")
+        _m1t_g = gd.get("m1_true_labels")
+        _m1_prec_val = None
+        if _m1p_g is not None and _m1t_g is not None:
+            try:
+                p_v = _m1p_g[gd["idx_val"]]
+                t_v = _m1t_g[gd["idx_val"]]
+                _valid_v = ~np.isnan(p_v) & ~np.isnan(t_v)
+                if _valid_v.any():
+                    _m1_prec_val = float(precision_score(t_v[_valid_v].astype(int),
+                                                         p_v[_valid_v].astype(int),
+                                                         zero_division=0))
+            except Exception:
+                _m1_prec_val = None
+
         # ┏━━━━━━━━━━ Threshold optimization on val (standard utility) ━━━━━━━━━━┓
-        val_op = _find_best_utility_threshold(val_probs, val_returns, fee=fee, labels=y_val)
+        val_op = _find_best_utility_threshold(val_probs, val_returns, fee=fee, labels=y_val,
+                                              m1_precision=_m1_prec_val)
         sel_val = val_probs >= val_op["threshold"]
         n_sel_val = int(sel_val.sum())
         err_val = int((y_val[sel_val] == 0).sum()) if n_sel_val > 0 else 0
