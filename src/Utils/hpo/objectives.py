@@ -44,7 +44,7 @@ def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str):
     """Prepare 4-way embargo splits and extract feature/label/return arrays.
 
     Returns:
-        X_train, y_train, X_cal, y_cal, X_opt, y_opt, opt_returns, feature_names
+        X_train, y_train, X_cal, y_cal, X_opt, y_opt, opt_returns, feature_names, fee, m1_prec_opt
     """
     # ┏━━━━━━━━━━ Config ━━━━━━━━━━┓
     split_cfg = cfg.get("data", {}).get("split", {})
@@ -87,10 +87,12 @@ def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str):
     X_opt   = eng[idx_opt]
     y_opt   = labels[idx_opt].astype(int)
     opt_returns = returns_all[idx_opt].copy()
+    cal_returns = returns_all[idx_cal].copy()
 
     # ┏━━━━━━━━━━ Direction-aware returns ━━━━━━━━━━┓
     if direction.lower() == "down":
         opt_returns = -opt_returns
+        cal_returns = -cal_returns
 
     # ┏━━━━━━━━━━ Drop NaN returns from Val-Opt ━━━━━━━━━━┓
     valid_opt = ~np.isnan(opt_returns)
@@ -99,7 +101,31 @@ def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str):
         y_opt       = y_opt[valid_opt]
         opt_returns = opt_returns[valid_opt]
 
-    return X_train, y_train, X_cal, y_cal, X_opt, y_opt, opt_returns, feature_names, fee
+    # ┏━━━━━━━━━━ M1 precision on Val-Opt (or merged Val for nocal) ━━━━━━━━━━┓
+    # Computed on both windows here; caller picks the right one based on nocal flag.
+    m1_prec_opt = None
+    m1_prec_merged = None
+    try:
+        m1_pred = dataset.get("m1_pred_labels") if isinstance(dataset, dict) else getattr(dataset, "m1_pred_labels", None)
+        m1_true = dataset.get("m1_true_labels") if isinstance(dataset, dict) else getattr(dataset, "m1_true_labels", None)
+        if m1_pred is not None and m1_true is not None:
+            if isinstance(m1_pred, torch.Tensor): m1_pred = m1_pred.numpy()
+            if isinstance(m1_true, torch.Tensor): m1_true = m1_true.numpy()
+            from sklearn.metrics import precision_score
+            for idx_slice, attr_name in [(idx_opt, "m1_prec_opt"),
+                                          (np.concatenate([idx_cal, idx_opt]), "m1_prec_merged")]:
+                p = m1_pred[idx_slice]; t = m1_true[idx_slice]
+                ok = ~np.isnan(p) & ~np.isnan(t)
+                if ok.sum() > 0:
+                    val = float(precision_score(t[ok].astype(int), p[ok].astype(int), zero_division=0))
+                    if attr_name == "m1_prec_opt":
+                        m1_prec_opt = val
+                    else:
+                        m1_prec_merged = val
+    except Exception:
+        pass
+
+    return X_train, y_train, X_cal, y_cal, X_opt, y_opt, opt_returns, cal_returns, feature_names, fee, m1_prec_opt, m1_prec_merged
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -115,13 +141,22 @@ def _create_objective(model_name: str,
                       y_opt: np.ndarray,
                       opt_returns: np.ndarray,
                       fee: float,
-                      seed: int = 42):
+                      seed: int = 42,
+                      m1_precision: float = None,
+                      nocal: bool = False,
+                      cal_returns: np.ndarray = None):
     """Create an Optuna objective closure.
 
-    The objective mirrors the kronos_tree.py calibration-first pipeline:
+    Standard (nocal=False):
       1. Fit model on Train
       2. Calibrate on Val-Cal (isotonic regression)
-      3. Optimize threshold on Val-Opt (utility function)
+      3. Optimize threshold on calibrated Val-Opt
+      4. Return utility score as the objective
+
+    NoCal (nocal=True):
+      1. Fit model on Train
+      2. Skip calibration — use raw probs directly
+      3. Optimize threshold on merged Val-Cal + Val-Opt (same as kronos_tree nocal)
       4. Return utility score as the objective
     """
     suggest_fn = _SUGGEST_FN[model_name]
@@ -138,6 +173,14 @@ def _create_objective(model_name: str,
         X_cal_s   = X_cal
         X_opt_s   = X_opt
 
+    # ┏━━━━━━━━━━ Precompute merged Val window for nocal ━━━━━━━━━━┓
+    if nocal and cal_returns is not None:
+        _merged_y       = np.concatenate([y_cal,       y_opt])
+        _merged_returns = np.concatenate([cal_returns,  opt_returns])
+    else:
+        _merged_y       = None
+        _merged_returns = None
+
     def objective(trial: optuna.Trial) -> float:
         # ┏━━━━━━━━━━ Suggest hyperparameters ━━━━━━━━━━┓
         params = suggest_fn(trial)
@@ -152,23 +195,30 @@ def _create_objective(model_name: str,
             print(f"  [Trial {trial.number}] Model fit failed: {e}")
             return float("-inf")
 
-        # ┏━━━━━━━━━━ Calibrate on Val-Cal ━━━━━━━━━━┓
+        # ┏━━━━━━━━━━ Threshold optimization ━━━━━━━━━━┓
         try:
-            raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
-            calib = calibrate_probabilities(raw_cal_probs, y_cal)
-            calibrator = calib["calibrator"]
-        except Exception as e:
-            print(f"  [Trial {trial.number}] Calibration failed: {e}")
-            return float("-inf")
-
-        # ┏━━━━━━━━━━ Threshold optimization on Val-Opt ━━━━━━━━━━┓
-        try:
-            raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
-            cal_opt_probs = calibrator.predict(raw_opt_probs)
-            op = _find_best_utility_threshold(cal_opt_probs,
-                                              opt_returns,
-                                              fee    = fee,
-                                              labels = y_opt)
+            if nocal and _merged_y is not None:
+                # NoCal: raw probs on merged Val-Cal + Val-Opt (mirrors kronos_tree nocal)
+                raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
+                raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
+                merged_probs  = np.concatenate([raw_cal_probs, raw_opt_probs])
+                op = _find_best_utility_threshold(merged_probs,
+                                                  _merged_returns,
+                                                  fee          = fee,
+                                                  labels       = _merged_y,
+                                                  m1_precision = m1_precision)
+            else:
+                # Standard: calibrate on Val-Cal, sweep on calibrated Val-Opt
+                raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
+                calib = calibrate_probabilities(raw_cal_probs, y_cal)
+                calibrator = calib["calibrator"]
+                raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
+                cal_opt_probs = calibrator.predict(raw_opt_probs)
+                op = _find_best_utility_threshold(cal_opt_probs,
+                                                  opt_returns,
+                                                  fee          = fee,
+                                                  labels       = y_opt,
+                                                  m1_precision = m1_precision)
         except Exception as e:
             print(f"  [Trial {trial.number}] Threshold optimization failed: {e}")
             return float("-inf")
@@ -180,10 +230,12 @@ def _create_objective(model_name: str,
         sel_mean        = op.get("mean_ret", 0.0)
         threshold_source = op.get("threshold_source", "unknown")
 
-        # ┏━━━━━━━━━━ Compute selective precision on Val-Opt ━━━━━━━━━━┓
-        sel_mask = cal_opt_probs >= threshold
+        # ┏━━━━━━━━━━ Compute selective precision on eval window ━━━━━━━━━━┓
+        _eval_probs  = merged_probs   if (nocal and _merged_y is not None) else cal_opt_probs
+        _eval_labels = _merged_y      if (nocal and _merged_y is not None) else y_opt
+        sel_mask = _eval_probs >= threshold
         n_sel = int(sel_mask.sum())
-        sel_prec = float(y_opt[sel_mask].mean()) if n_sel > 0 else 0.0
+        sel_prec = float(_eval_labels[sel_mask].mean()) if n_sel > 0 else 0.0
 
         # ┏━━━━━━━━━━ Store trial attributes ━━━━━━━━━━┓
         trial.set_user_attr("threshold", float(threshold))
@@ -192,7 +244,7 @@ def _create_objective(model_name: str,
         trial.set_user_attr("sel_precision", float(sel_prec))
         trial.set_user_attr("sel_mean_return", float(sel_mean))
         trial.set_user_attr("n_selected", int(n_sel))
-        trial.set_user_attr("n_opt_total", int(len(y_opt)))
+        trial.set_user_attr("n_opt_total", int(len(_eval_labels)))
 
         return utility
 

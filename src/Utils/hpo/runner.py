@@ -43,7 +43,9 @@ def run_hpo_single(model_name: str,
     """Run HPO for a single (model, direction, granularity) configuration."""
     # ┏━━━━━━━━━━ Output directory ━━━━━━━━━━┓
     m1_bucket = m1_output_bucket(cfg)
-    out_dir = output_root / m1_bucket / "HPO" / model_name / direction.upper() / granularity
+    _thres = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")
+    _hpo_folder = "HPO_NoCal" if _thres == "utility_nocal" else "HPO"
+    out_dir = output_root / m1_bucket / _hpo_folder / model_name / direction.upper() / granularity
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ┏━━━━━━━━━━ Skip if already completed ━━━━━━━━━━┓
@@ -58,9 +60,10 @@ def run_hpo_single(model_name: str,
                 (X_train, y_train,
                  X_cal, y_cal,
                  X_opt, y_opt,
-                 _, _, _) = _prepare_splits(
+                 _, _, _, _, _, _) = _prepare_splits(
                     _load_dataset_for_gran(multi_cache, granularity),
                     cfg, granularity, direction)
+                _nocal_bf = cfg.get("runtime", {}).get("training", {}).get("thres", "utility") == "utility_nocal"
                 _save_best_trial_probs(out_dir     = out_dir,
                                        model_name  = model_name,
                                        best_params = result.get("best_params", {}),
@@ -70,7 +73,8 @@ def run_hpo_single(model_name: str,
                                        y_cal       = y_cal,
                                        X_opt       = X_opt,
                                        y_opt       = y_opt,
-                                       seed        = seed)
+                                       seed        = seed,
+                                       nocal       = _nocal_bf)
             except Exception as e:
                 import traceback
                 print(f"  [WARN] Backfill best-trial probs failed: {e}")
@@ -95,8 +99,11 @@ def run_hpo_single(model_name: str,
          X_cal, y_cal,
          X_opt, y_opt,
          opt_returns,
+         cal_returns,
          feature_names,
-         fee) = _prepare_splits(dataset, cfg, granularity, direction)
+         fee,
+         m1_prec_opt,
+         m1_prec_merged) = _prepare_splits(dataset, cfg, granularity, direction)
     except Exception as e:
         print(f"  [SKIP] Split preparation failed: {e}")
         return None
@@ -120,17 +127,24 @@ def run_hpo_single(model_name: str,
                                 sampler        = optuna.samplers.TPESampler(seed=seed),
                                 pruner         = optuna.pruners.NopPruner())
 
+    # ┏━━━━━━━━━━ NoCal flag from config ━━━━━━━━━━┓
+    _nocal = cfg.get("runtime", {}).get("training", {}).get("thres", "utility") == "utility_nocal"
+    _m1_prec = m1_prec_merged if _nocal else m1_prec_opt
+
     # ┏━━━━━━━━━━ Create objective ━━━━━━━━━━┓
-    objective = _create_objective(model_name  = model_name,
-                                  X_train     = X_train,
-                                  y_train     = y_train,
-                                  X_cal       = X_cal,
-                                  y_cal       = y_cal,
-                                  X_opt       = X_opt,
-                                  y_opt       = y_opt,
-                                  opt_returns = opt_returns,
-                                  fee         = fee,
-                                  seed        = seed)
+    objective = _create_objective(model_name   = model_name,
+                                  X_train      = X_train,
+                                  y_train      = y_train,
+                                  X_cal        = X_cal,
+                                  y_cal        = y_cal,
+                                  X_opt        = X_opt,
+                                  y_opt        = y_opt,
+                                  opt_returns  = opt_returns,
+                                  cal_returns  = cal_returns,
+                                  fee          = fee,
+                                  seed         = seed,
+                                  m1_precision = _m1_prec,
+                                  nocal        = _nocal)
 
     # ┏━━━━━━━━━━ Remaining trials ━━━━━━━━━━┓
     completed = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
@@ -170,16 +184,17 @@ def run_hpo_single(model_name: str,
 
     # ┏━━━━━━━━━━ Persist raw+cal probs for the best trial ━━━━━━━━━━┓
     try:
-        _save_best_trial_probs(out_dir   = out_dir,
-                               model_name = model_name,
+        _save_best_trial_probs(out_dir    = out_dir,
+                               model_name  = model_name,
                                best_params = best.params,
-                               X_train   = X_train,
-                               y_train   = y_train,
-                               X_cal     = X_cal,
-                               y_cal     = y_cal,
-                               X_opt     = X_opt,
-                               y_opt     = y_opt,
-                               seed      = seed)
+                               X_train     = X_train,
+                               y_train     = y_train,
+                               X_cal       = X_cal,
+                               y_cal       = y_cal,
+                               X_opt       = X_opt,
+                               y_opt       = y_opt,
+                               seed        = seed,
+                               nocal       = _nocal)
     except Exception as e:
         import traceback
         print(f"  [WARN] Failed to persist best-trial probs: {e}")
@@ -200,12 +215,14 @@ def _save_best_trial_probs(out_dir: Path,
                            y_cal: np.ndarray,
                            X_opt: np.ndarray,
                            y_opt: np.ndarray,
-                           seed: int = 42) -> None:
+                           seed: int = 42,
+                           nocal: bool = False) -> None:
     """Refit best-params model and persist raw+calibrated probs for Cal / Opt.
 
     Writes `best_probs.npz` under `out_dir` with keys:
       cal_probs_raw, cal_probs_cal, y_cal,
       opt_probs_raw, opt_probs_cal, y_opt.
+    In nocal mode, cal_probs_cal and opt_probs_cal are identical to raw probs.
     """
     needs_scaling = model_name not in MODELS_NO_SCALING
     scaler = StandardScaler()
@@ -222,12 +239,16 @@ def _save_best_trial_probs(out_dir: Path,
         model.fit(X_train_s, y_train)
 
     cal_probs_raw = model.predict_proba(X_cal_s)[:, 1]
-    calib = calibrate_probabilities(cal_probs_raw, y_cal)
-    calibrator = calib["calibrator"]
-    cal_probs_cal = calibrator.predict(cal_probs_raw)
-
     opt_probs_raw = model.predict_proba(X_opt_s)[:, 1]
-    opt_probs_cal = calibrator.predict(opt_probs_raw)
+
+    if nocal:
+        cal_probs_cal = cal_probs_raw
+        opt_probs_cal = opt_probs_raw
+    else:
+        calib = calibrate_probabilities(cal_probs_raw, y_cal)
+        calibrator = calib["calibrator"]
+        cal_probs_cal = calibrator.predict(cal_probs_raw)
+        opt_probs_cal = calibrator.predict(opt_probs_raw)
 
     probs_path = out_dir / "best_probs.npz"
     np.savez(probs_path,
@@ -355,7 +376,9 @@ def run_hpo(config: str,
 
     # ┏━━━━━━━━━━ Save global summary (upsert) ━━━━━━━━━━┓
     m1_bucket = m1_output_bucket(cfg)
-    summary_path = output_root / m1_bucket / "HPO" / "hpo_summary.json"
+    _thres_s = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")
+    _hpo_folder_s = "HPO_NoCal" if _thres_s == "utility_nocal" else "HPO"
+    summary_path = output_root / m1_bucket / _hpo_folder_s / "hpo_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     existing = []
     if summary_path.exists():

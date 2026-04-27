@@ -60,8 +60,10 @@ def _load_best_params(cfg: dict,
         return None
     
     # ┏━━━━━━━━━━ Build best-params path ━━━━━━━━━━┓
+    _thres = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")
+    _hpo_folder = "HPO_NoCal" if _thres == "utility_nocal" else "HPO"
     best_path = (Path(cfg["paths"]["output_root"])
-                 / m1_output_bucket(cfg) / "HPO"
+                 / m1_output_bucket(cfg) / _hpo_folder
                  / m2 / direction.upper() / granularity / "best_params.json")
     
     # ┏━━━━━━━━━━ Load best-params file ━━━━━━━━━━┓
