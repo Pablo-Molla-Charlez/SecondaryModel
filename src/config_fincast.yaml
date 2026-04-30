@@ -1,0 +1,99 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Secondary-Model — Unified Configuration
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Single source of truth for the M2 pipeline. Switch M1 backbone by editing
+# BOTH `experiment.m1` and `data.load.m1`, then update `paths.csv_dir`
+# to the matching dataset root (e.g. .../Data_MLA/Fincast/Crypto/TP/horizon_7).
+
+# ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
+paths:
+  csv_dir: "/home/till/PycharmProjects/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
+  output_root: "/home/till/PycharmProjects/Secondary-Model/src/Output"
+
+# ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
+data:
+  load:
+    symbol: null              # or null for multi-asset or ["BTC", "ETH", "XRP", ...]
+    m1: "fincast"              # MUST match experiment.m1 above
+    target_col: "meta_label"  # "meta_label" or "close" or "ground_truth"
+    meta_label_mode: "tp"     # "fp" or "tp" or "og"
+    direction: "up"           # "up" or "down"
+    granularity: "all"        # "1d", "4h", etc. or "all" for multi-granularity
+    forecast_horizon: 7
+
+  # ┏━━━━━━━━━━ Data Splits ━━━━━━━━━━┓
+  split:
+    start_date: "2024-07-01"
+    train_end:  "2025-05-30"
+    val_end:    "2025-10-01"
+    end_date:   "2026-01-25"
+
+  # ┏━━━━━━━━━━ Features ━━━━━━━━━━┓
+  features:
+    input: [ "open", "high", "low", "close", "volume" ]
+
+    # ┏━━━━━━━━━━ Feature Selection (MDA / SHAP / LIME) ━━━━━━━━━━┓
+    feature_selection:
+      enabled: false                     # Set to false to skip MDA/SHAP/LIME
+      methods: [ "mda", "shap", "lime" ] # Any subset of: mda, shap, lime
+      top_k: null                        # null = rank only (no pruning), int = keep top-k
+
+# ┏━━━━━━━━━━ Evaluation ━━━━━━━━━━┓
+evaluation:
+  fee_per_trade: 0.002
+
+# ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
+experiment:
+  m1: "fincast"                                                      # choice:  ["chronos2", "fincast", "tirex", "kronos"]
+  m2: [ "rf", "tabpfn", "tabicl", "autogluon"]                                                      # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl"]
+  direction: [ "up", "down" ]                                       # choices: ["up", "down"]
+  granularity: [ "1d", "12h", "8h", "6h", "4h", "2h", "1h" ]  # choices: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+
+
+# ┏━━━━━━━━━━ Runtime / Experiment Configuration ━━━━━━━━━━┓
+runtime:
+  skip:
+    hpo: false                # choice: ["true" or "false"] — Phase 0: hyperparameter search (rf / tabpfn / tabicl only)
+    training: false           # choice: ["true" or "false"]
+    edge: false               # choice: ["true" or "false"]
+    combined: false           # choice: ["true" or "false"]
+    feature_selection: true   # choice: ["true" or "false"]
+
+  hpo:
+    n_trials: 100  # Optuna trials per (m2, direction, granularity)
+    seed:     42   # TPE sampler seed
+
+  training:
+    ocp_costs: [ 0, 10 ,2 ]    # Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')
+    ocp_alpha: 0.10            # OCP target miscoverage rate (default: 0.10 → 90%% coverage target)
+    ocp_window_days: 25        # Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)
+    paradigm_comparison: null  # "Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees rf_7_fees rf_OCP)
+    combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs (e.g. Output/Kronos/rf/UP/Utility_Score Output/Kronos/rf/DOWN/Utility_Score
+    comparison: null           # [str, str]; Build comparison table from existing per-gran and unified result dirs
+    all_grans: false           # Unified model trained on all granularities, evaluated per-gran
+    top5: false                # TODO check how to use this properly; Whether to run top-5 feature analysis/backtest
+    run_features: false        # TODO check how to use this properly; Whether to run feature importance analysis (MDA/SHAP/LIME) on top-k features (if top_k is set) or all features (if top_k is null)
+    thres: "utility_nocal"           # "Threshold selection: 'utility' (financial utility on val), "
+                               # 'OCP' (SAOCP, unbounded history), "
+                               # 'OCP-W' (SAOCP, windowed calibration), "
+                               # 'OCP-cost' (cost-aware deferral, vanilla), "
+                               # 'OCP-cost-mondrian' (cost-aware deferral, volatility-regime-conditional)"
+    
+  edge:
+    n_trials: 100
+    n_blocks: 6
+    k_test: 2
+
+  combined:
+    combined_backtest: [ "place_holder_up", "place_holder_down" ]
+    ocp_costs: [ 0, 10, 2 ] # Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')
+
+  feature_selection:
+    cv_strategy: "cpcv"           # choices: ["cpcv", "tscv", "pecv"]
+    n_blocks: 6                   # Number of blocks for CPCV
+    k_test: 2                     # Number of blocks for testing
+    method: "sfs+"                # choices: ["sfs+"]
+    scoring: "accuracy"           # choices: ["accuracy", "precision", "roc_auc"]
+    min_features: 1               # Minimum number of features to select
+    max_features: 33              # Maximum number of features to select
+    take_n_best_combinations: 10  # maybe set to 10

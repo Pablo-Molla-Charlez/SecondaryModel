@@ -1,1 +1,1 @@
-python Utils/experiments.py --config config.yaml
+python Utils/experiments.py --config config_fincast.yaml
