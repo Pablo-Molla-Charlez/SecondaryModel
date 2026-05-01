@@ -381,7 +381,18 @@ def temporal_eval(dataset: dict,
     _test_dates_ocp = _test_dates if _is_ocp else None
     
     # ┏━━━━━━━━━━ Loop through evaluation splits ━━━━━━━━━━┓
-    for split_name, X_split, y_split, split_rets in [("Val", X_opt, y_opt, opt_returns),
+    # In nocal mode, Val plot evaluates on the same merged Val-Cal+Val-Opt window
+    # the optimizer used, so all annotations (op fields, curves, dots) match.
+    if _nocal:
+        _val_X       = np.vstack([X_cal, X_opt])
+        _val_y       = np.concatenate([y_cal, y_opt])
+        _val_returns = _merged_returns
+    else:
+        _val_X       = X_opt
+        _val_y       = y_opt
+        _val_returns = opt_returns
+
+    for split_name, X_split, y_split, split_rets in [("Val", _val_X, _val_y, _val_returns),
                                                      ("Test", X_test, y_test, test_returns)]:
         
         # ┏━━━━━━━━━━ Predictions and Probabilities ━━━━━━━━━━┓
@@ -427,19 +438,30 @@ def temporal_eval(dataset: dict,
         if split_name == "Test" and not _is_ocp:
             score_probs = _cal_test_probs
         elif split_name == "Val" and not _is_ocp:
-            score_probs = _cal_opt_probs
+            # Nocal: use merged Val probs (matches optimizer window). Cal mode: Val-Opt only.
+            score_probs = _merged_probs if _nocal else _cal_opt_probs
         else:
             score_probs = probs
-        
+
         # ┏━━━━━━━━━━ Collect Risk-Coverage Curve ━━━━━━━━━━┓
         curve = collect_risk_coverage_curve(y_true=y_split, y_score=score_probs)
-        
+
         # ┏━━━━━━━━━━ Val: threshold already computed above, just record metrics ━━━━━━━━━━┓
         if split_name == "Val":
-            sel_val = _cal_opt_probs >= op["threshold"]
+            sel_val = score_probs >= op["threshold"]
             n_sel_val = int(sel_val.sum())
             err_val = int((y_split[sel_val] == 0).sum()) if n_sel_val > 0 else 0
             op["risk"] = err_val / max(n_sel_val, 1)
+            # Keep all op fields consistent with the dataset being plotted.
+            op["precision"]      = (1.0 - op["risk"]) if n_sel_val > 0 else 0.0
+            op["coverage"]       = n_sel_val / max(len(y_split), 1)
+            op["selected_count"] = n_sel_val
+            if n_sel_val > 0:
+                _sel_rets = split_rets[sel_val] - fee
+                _mu = float(np.nanmean(_sel_rets))
+                _sd = float(np.nanstd(_sel_rets, ddof=1)) if n_sel_val > 1 else 0.0
+                op["mean_ret"] = _mu
+                op["t_stat"]   = (_mu / _sd * np.sqrt(n_sel_val)) if _sd > 0 else 0.0
         else:
             if _is_ocp:
                 # ┏━━━━━━━━━━ OCP dispatch: choose variant ━━━━━━━━━━┓
