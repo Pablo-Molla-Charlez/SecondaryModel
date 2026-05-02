@@ -8,49 +8,58 @@ class.
 """
 from Utils.classifier._classifier import BaseClassifier
 
+# ┏━━━━━━━━━━ Random Forest Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.random_forest_classifier import RFClassifier
 except Exception:
-    RFClassifier = None  # type: ignore
+    RFClassifier = None
 
+# ┏━━━━━━━━━━ TabPFN Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.tabpfn_classifier import TabPFN
 except Exception:
-    TabPFN = None  # type: ignore
+    TabPFN = None
 
+# ┏━━━━━━━━━━ TabICL Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.tabicl_classifier import TabICL
 except Exception:
-    TabICL = None  # type: ignore
+    TabICL = None
 
-# Optional — only importable when the fine-tuning extra is installed.
+# ┏━━━━━━━━━━ TabM Classifier ━━━━━━━━━━┓
+try:
+    from Utils.classifier.tabm_classifier import TabMClassifier
+except Exception:
+    TabMClassifier = None
+
+# ┏━━━━━━━━━━ TabPFN Fine-Tuned Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.tabpfn_finetuned_classifier import TabPFNFineTuned
-except Exception:  # pragma: no cover — degraded gracefully when TabPFN-FT deps are absent
-    TabPFNFineTuned = None  # type: ignore
+except Exception:
+    TabPFNFineTuned = None
 
+# ┏━━━━━━━━━━ AutoGluon Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.autogluon_classifier import AutoGluon, AutogluonClassifier
-except Exception:  # pragma: no cover
-    AutoGluon = None  # type: ignore
-    AutogluonClassifier = None  # type: ignore
+except Exception:
+    AutoGluon = None
+    AutogluonClassifier = None
 
-# Factory — never fails on import (xgboost + sklearn are hard deps).
-from Utils.classifier.factory import (
-    _build_tree_model,
-    _save_final_model,
-    MODEL_CHOICES,
-    MODELS_NO_SCALING,
-    _TABPFN_MAX_ROWS,
-    _AG_TIME_LIMIT,
-    _AG_PRESETS,
-)
+# ┏━━━━━━━━━━ Factory ━━━━━━━━━━┓
+from Utils.classifier.factory import (_build_tree_model,
+                                      _save_final_model,
+                                      MODEL_CHOICES,
+                                      MODELS_NO_SCALING,
+                                      _TABPFN_MAX_ROWS,
+                                      _AG_TIME_LIMIT,
+                                      _AG_PRESETS)
 
 __all__ = [
     "BaseClassifier",
     "RFClassifier",
     "TabPFN",
     "TabICL",
+    "TabMClassifier",
     "TabPFNFineTuned",
     "AutoGluon",
     "AutogluonClassifier",

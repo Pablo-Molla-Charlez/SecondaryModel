@@ -2,7 +2,7 @@
 
 Iterates over the (m2 x direction x granularity) cross product defined in
 `experiment:` and dispatches subprocesses for each enabled phase in `runtime.skip`:
-  0. Hyperparameter optimization   → python -m Utils.hpo    (phase=hpo; rf/tabpfn/tabicl only)
+  0. Hyperparameter optimization   → python -m Utils.hpo    (phase=hpo; rf/tabpfn/tabicl/tabm only)
   1. Per-granularity training      → kronos_tree.py         (phase=training)
   2. Edge convergence protocol     → python -m Utils.edge   (phase=edge)
   3. Combined UP+DOWN backtest     → kronos_tree.py         (phase=combined)

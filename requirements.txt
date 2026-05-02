@@ -44,3 +44,7 @@ tabpfn-client
 
 # TabICL (tabular in-context learning)
 tabicl
+
+# TabM (tabular MLP-Mixer ensemble — deep-learning M2 baseline)
+tabm
+rtdl_num_embeddings

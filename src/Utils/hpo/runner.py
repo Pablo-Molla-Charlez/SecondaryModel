@@ -25,7 +25,7 @@ from Utils.hpo.search_spaces import _build_model_from_params
 # ┏━━━━━━━━━━ Constants ━━━━━━━━━━┓
 ALL_GRANS  = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
 DIRECTIONS = ["up", "down"]
-HPO_MODELS = ["rf", "tabpfn", "tabicl"]
+HPO_MODELS = ["rf", "tabpfn", "tabicl", "tabm"]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -41,6 +41,7 @@ def run_hpo_single(model_name: str,
                    n_trials: int = 100,
                    seed: int = 42) -> dict | None:
     """Run HPO for a single (model, direction, granularity) configuration."""
+    
     # ┏━━━━━━━━━━ Output directory ━━━━━━━━━━┓
     m1_bucket = m1_output_bucket(cfg)
     _thres = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")

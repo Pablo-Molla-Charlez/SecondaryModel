@@ -3349,8 +3349,8 @@ def plot_performance_over_n_features(base_dir:         str = "/home/till/Pycharm
                                      scoring:          str = "accuracy",
                                      cv_strategy:      str = "CombinatorialPurgedEmbargoCV",
                                      n_splits:         int = 10) -> None:
-    # 1_features_accuracy_CombinatorialPurgedEmbargoCV_10_cached.csv
 
+    # ┏━━━━━━━━━━ Set up search directory and file mask ━━━━━━━━━━┓
     search_dir = (f"{base_dir}/"
                   f"{m1.capitalize()}/"
                   f"{m2}/"
@@ -3358,56 +3358,563 @@ def plot_performance_over_n_features(base_dir:         str = "/home/till/Pycharm
                   f"interpretability/"
                   f"feature_selection/"
                   f"{granularity}_{meta_label_mode}")
-    file_mask = f"*_features_{scoring}_{cv_strategy}_{n_splits}_cached.csv"
-    # print(search_dir)
-    # files = os.listdir(search_dir)
-    # for file in files:
-    #     print(file)
-    # print(file_mask)
-    files = sorted(
-        glob.glob(f"{search_dir}/{file_mask}"),
-        key=lambda x: int(re.search(r"^(\d+)_features", os.path.basename(x)).group(1))
-    )
 
+    # ┏━━━━━━━━━━ File mask ━━━━━━━━━━┓
+    file_mask = f"*_features_{scoring}_{cv_strategy}_{n_splits}_cached.csv"
+
+    # ┏━━━━━━━━━━ Sorted files ━━━━━━━━━━┓
+    files = sorted(glob.glob(f"{search_dir}/{file_mask}"),
+                   key = lambda x: int(re.search(r"^(\d+)_features", os.path.basename(x)).group(1)))
+
+    # ┏━━━━━━━━━━ Lists to store performance metrics ━━━━━━━━━━┓
     n_features = []
     val_mean = []
     val_std = []
     test_mean = []
     test_std = []
 
+    # ┏━━━━━━━━━━ Extract performance metrics from each file ━━━━━━━━━━┓
     for file in files:
+        # ┏━━━━━━━━━━ Read the CSV file ━━━━━━━━━━┓
         df = pd.read_csv(file)
+
+        # ┏━━━━━━━━━━ Extract the number of features ━━━━━━━━━━┓
         file_name = os.path.basename(file)
         n_feature = int(file_name.split("_")[0])
 
+        # ┏━━━━━━━━━━ Find the best index ━━━━━━━━━━┓
         best_idx = df['mean_val_scoring'].argmax()
+
+        # ┏━━━━━━━━━━ Append the performance metrics ━━━━━━━━━━┓
         n_features.append(n_feature)
         val_mean.append(df['mean_val_scoring'].iloc[best_idx])
         val_std.append(df['std_val_scoring'].iloc[best_idx])
         test_mean.append(df['mean_test_scoring'].iloc[best_idx])
         test_std.append(df['std_test_scoring'].iloc[best_idx])
 
+    # ┏━━━━━━━━━━ Convert lists to numpy arrays ━━━━━━━━━━┓
     n_features = np.array(n_features)
     val_mean = np.array(val_mean)
     val_std = np.array(val_std)
     test_mean = np.array(test_mean)
     test_std = np.array(test_std)
 
-    # plot
+    # ┏━━━━━━━━━━ Plotting ━━━━━━━━━━┓
     fig, ax = plt.subplots(figsize=(12, 5))
 
+    # ┏━━━━━━━━━━ Plot validation set ━━━━━━━━━━┓
     ax.plot(n_features, val_mean, label="Validation", marker="o")
     ax.fill_between(n_features, val_mean - val_std, val_mean + val_std, alpha=0.2)
 
+    # ┏━━━━━━━━━━ Plot test set ━━━━━━━━━━┓
     ax.plot(n_features, test_mean, label="Test", marker="o")
     ax.fill_between(n_features, test_mean - test_std, test_mean + test_std, alpha=0.2)
 
+    # ┏━━━━━━━━━━ Set labels and title ━━━━━━━━━━┓
     ax.set_xlabel("Number of Features")
     ax.set_ylabel("Scoring")
     ax.set_title(f"M1={m1} | M2={m2} | time frame={granularity} | direction={direction} | meta label mode={meta_label_mode}")
     ax.legend()
     ax.grid(True)
     plt.tight_layout()
-    # plt.show()
+
+    # ┏━━━━━━━━━━ Save plot ━━━━━━━━━━┓
     plt.savefig(f"{search_dir}/strategy={cv_strategy}_scoring={scoring}_n_splits={n_splits}_min_max={1}_{len(files)}_summary_plot.pdf")
     plt.close()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CPCV Edge Convergence — data loading helper
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _load_cpcv_records(edge_root: str,
+                       output_root: str | None = None) -> list[dict]:
+    """Pair every edge_summary_*.json with its analysis_summary.json.
+
+    Returns a list of records with the three filter inputs:
+        - frac_profitable    (C1: regime-sensitivity, fraction of CPCV paths > 0)
+        - median_path_sharpe (C2: median Sharpe across the 5 paths)
+        - val_mean_ret       (C3: chronological Val_selective.mean_ret)
+    plus the two outcome ground-truths used by the heatmaps:
+        - val_mean_ret  (outcome on Val)
+        - test_mean_ret (outcome on Test)
+    """
+    import json
+    import os
+    import glob
+    import numpy as np
+
+    # ┏━━━━━━━━━━ Convert edge_root and output_root to absolute paths ━━━━━━━━━━┓
+    edge_root = os.path.abspath(edge_root)
+
+    # ┏━━━━━━━━━━ If output_root is not provided, derive it from edge_root ━━━━━━━━━━┓
+    if output_root is None:
+        output_root = os.path.dirname(edge_root.rstrip(os.sep))
+        output_root = os.path.dirname(output_root)  # …/Output
+    output_root = os.path.abspath(output_root)
+
+    # ┏━━━━━━━━━━ Dictionary mapping model names to their respective keys ━━━━━━━━━━┓
+    M2_KEY = {"rf": "rf_temporal_all_features",
+              "autogluon": "autogluon_temporal_all_features",
+              "tabpfn": "tabpfn_temporal_all_features",
+              "tabicl": "tabicl_temporal_all_features",
+              "tabm": "tabm_temporal_all_features",}
+
+    # ┏━━━━━━━━━━ Initialize the records list ━━━━━━━━━━┓
+    records = []
+
+    # ┏━━━━━━━━━━ Pattern to find all edge_summary_*.json files ━━━━━━━━━━┓
+    pattern = os.path.join(edge_root, "**", "edge_summary_*.json")
+    
+    # ┏━━━━━━━━━━ Iterate over all edge_summary_*.json files ━━━━━━━━━━┓
+    for fpath in glob.glob(pattern, recursive=True):
+        # ┏━━━━━━━━━━ Load the edge_summary_*.json file ━━━━━━━━━━┓
+        try:
+            with open(fpath) as f:
+                edge_data = json.load(f)
+        except Exception:
+            continue
+
+        # ┏━━━━━━━━━━ Extract the relative path ━━━━━━━━━━┓
+        rel   = os.path.relpath(fpath, edge_root)
+        parts = rel.split(os.sep)
+        if len(parts) < 4:
+            continue
+        m1, m2, direction = parts[0], parts[1], parts[2]
+
+        # ┏━━━━━━━━━━ Iterate over all granularities ━━━━━━━━━━┓
+        for gran, entry in edge_data.items():
+            sharpes = entry.get("path_sharpes")
+            frac_p  = entry.get("frac_profitable")
+            med_sr  = entry.get("median_path_sharpe")
+            if sharpes is None or frac_p is None or med_sr is None:
+                continue
+            sharpes = np.asarray(sharpes, dtype=float)
+            sharpes = sharpes[~np.isnan(sharpes)]
+            if sharpes.size == 0:
+                continue
+
+            # ┏━━━━━━━━━━ Pair with analysis_summary.json ━━━━━━━━━━┓
+            ana_path = os.path.join(output_root, m1, m2, direction,
+                                    "Utility_Score_NoCal", f"{gran}_tp", "analysis_summary.json")
+            val_mean_ret  = None
+            test_mean_ret = None
+
+            # ┏━━━━━━━━━━ If analysis_summary.json exists, extract the performance metrics ━━━━━━━━━━┓
+            if os.path.exists(ana_path):
+                try:
+                    with open(ana_path) as f:
+                        ana = json.load(f)
+                    block = ana.get(M2_KEY.get(m2, ""), {})
+                    val_sel  = block.get("Val_selective",  {}) or {}
+                    test_sel = block.get("Test_selective", {}) or {}
+                    val_mean_ret  = val_sel.get("mean_ret")
+                    test_mean_ret = test_sel.get("mean_ret")
+                except Exception:
+                    pass
+
+            # ┏━━━━━━━━━━ Append the performance metrics to the records list ━━━━━━━━━━┓
+            records.append({"m1":              m1,
+                            "m2":              m2,
+                            "direction":       direction,
+                            "gran":            gran,
+                            "frac_profitable": float(frac_p),
+                            "median_sharpe":   float(med_sr),
+                            "val_mean_ret":    None if val_mean_ret is None else float(val_mean_ret),
+                            "test_mean_ret":   None if test_mean_ret is None else float(test_mean_ret),
+                            "path_sharpes":    sharpes.tolist()})
+    return records
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CPCV Edge — Constraint-trigger bar plot
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def plot_cpcv_constraint_bars(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Edge_NoCal",
+                              output_dir: str | None = None,
+                              tau_fp: float = 0.6,
+                              tau_sr: float = 0.0) -> str:
+    """Bar plot: how often each constraint (and combination) triggers.
+
+        C1 := frac_profitable    >= tau_fp   (default 0.6)
+        C2 := median_path_sharpe >= tau_sr   (default 0.0)
+        C3 := val_mean_ret       >  0
+
+    7 bars (inclusive counts — each config can contribute to multiple bars):
+        C1, C2, C3, C1∧C2, C1∧C3, C2∧C3, C1∧C2∧C3
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # ┏━━━━━━━━━━ Convert edge_root and output_dir to absolute paths ━━━━━━━━━━┓
+    edge_root = os.path.abspath(edge_root)
+    if output_dir is None:
+        output_dir = edge_root
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Load CPCV records ━━━━━━━━━━┓
+    records = _load_cpcv_records(edge_root)
+    
+    # ┏━━━━━━━━━━ Filter records with val_mean_ret ━━━━━━━━━━┓
+    records = [r for r in records if r["val_mean_ret"] is not None]
+    N = len(records)
+    if N == 0:
+        print(f"[plot_cpcv_constraint_bars] No records with val_mean_ret found")
+        return ""
+
+    # ┏━━━━━━━━━━ Extract feature arrays ━━━━━━━━━━┓
+    fp = np.array([r["frac_profitable"] for r in records])
+    sr = np.array([r["median_sharpe"]   for r in records])
+    mr = np.array([r["val_mean_ret"]    for r in records])
+
+    # ┏━━━━━━━━━━ Define constraints ━━━━━━━━━━┓
+    c1 = fp >= tau_fp
+    c2 = sr >= tau_sr
+    c3 = mr >  0.0
+
+    # ┏━━━━━━━━━━ Define bars, labels, include counts and percentages, for plot ━━━━━━━━━━┓
+    bars = [("C1\n(frac_prof≥{:.1f})".format(tau_fp), int(c1.sum())),
+            ("C2\n(med_SR≥{:.1f})".format(tau_sr),    int(c2.sum())),
+            ("C3\n(val_mean_ret>0)",                  int(c3.sum())),
+            ("C1∧C2",                                 int((c1 & c2).sum())),
+            ("C1∧C3",                                 int((c1 & c3).sum())),
+            ("C2∧C3",                                 int((c2 & c3).sum())),
+            ("C1∧C2∧C3",                              int((c1 & c2 & c3).sum()))]
+    
+    labels  = [b[0] for b in bars]
+    counts  = [b[1] for b in bars]
+    pcts    = [100.0 * c / N for c in counts]
+
+    # ┏━━━━━━━━━━ Set colors for bars (single-constraint bars: blue;  pairs: orange;  triple: green) ━━━━━━━━━━┓
+    colours = ["#3182bd"] * 3 + ["#fd8d3c"] * 3 + ["#31a354"]
+
+    # ┏━━━━━━━━━━ Create figure and axes, and draw bars ━━━━━━━━━━┓
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    fig.patch.set_facecolor("white")
+    bars_obj = ax.bar(labels, counts, color=colours, edgecolor="black", linewidth=0.7)
+
+    # ┏━━━━━━━━━━ Set text labels (counts + percentages) on top of each bar ━━━━━━━━━━┓
+    for rect, c, p in zip(bars_obj, counts, pcts):
+        ax.text(rect.get_x() + rect.get_width() / 2,
+                rect.get_height() + max(counts) * 0.012,
+                f"{c}\n({p:.1f}%)",
+                ha="center", va="bottom", fontsize=9, fontweight="bold")
+
+    # ┏━━━━━━━━━━ Set y-axis label, title, and limits ━━━━━━━━━━┓
+    ax.set_ylabel(f"# configurations (out of {N})", fontsize=11, fontweight="bold")
+    ax.set_title(f"CPCV constraint-trigger frequency  |  {N} configurations\n"
+                 f"C1: frac_profitable ≥ {tau_fp:.2f}    "
+                 f"C2: median_path_sharpe ≥ {tau_sr:.2f}    "
+                 f"C3: val_mean_ret > 0",
+                 fontsize   = 12, 
+                 fontweight = "bold", 
+                 pad        = 10)
+    
+    ax.set_ylim(0, max(counts) * 1.18)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    ax.set_axisbelow(True)
+    plt.xticks(fontsize=9)
+    plt.tight_layout()
+
+    # ┏━━━━━━━━━━ Save figure ━━━━━━━━━━┓
+    out_path = os.path.join(output_dir, "cpcv_constraint_bars.png")
+    plt.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"[plot_cpcv_constraint_bars] {N} configs -> {out_path}")
+    return out_path
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CPCV Edge Convergence Heatmap (Val + Test)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Edge_NoCal",
+                            output_dir=None) -> str:
+    """Informed-accuracy heatmap for the 3-constraint CPCV filtering logic.
+
+    Three filter constraints (all evaluated on validation data — no leakage):
+        C1 := frac_profitable        >= tau_fp   (regime sensitivity)
+        C2 := median_path_sharpe     >= tau_sr   (median CPCV Sharpe)
+        C3 := Val_selective.mean_ret >  0        (chronological-val signal)
+
+    For every (tau_sr, tau_fp) pair on the heatmap, each config is classified
+    against an actual outcome (Val.mean_ret>0 or Test.mean_ret>0) into one of
+    four mutually-exclusive categories:
+
+        TP : C1 and C2 and C3 all pass AND outcome > 0  (filter trusted, was right)
+        TN : at least one of {C1,C2,C3} fails AND outcome <= 0 (filter rejected, avoided loss)
+        FN : at least one fails AND outcome > 0 (missed profit)
+        FP : all three pass  AND  outcome <= 0 (worst case: deployed a loser)
+
+    Accuracy = (TP + TN) / (TP + TN + FN + FP) = (TP + TN) / N_total.
+
+    Two heatmaps are produced (same filter, different outcome labels):
+        cpcv_edge_heatmap_val.png   (outcome = Val_selective.mean_ret > 0)
+        cpcv_edge_heatmap_test.png  (outcome = Test_selective.mean_ret > 0)
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # ┏━━━━━━━━━━ Convert edge_root and output_dir to absolute paths ━━━━━━━━━━┓
+    edge_root = os.path.abspath(edge_root)
+    if output_dir is None:
+        output_dir = edge_root
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Load CPCV records ━━━━━━━━━━┓
+    records = _load_cpcv_records(edge_root)
+    records = [r for r in records if r["val_mean_ret"] is not None]
+    if not records:
+        print(f"[plot_cpcv_edge_heatmap] No records with val_mean_ret found under {edge_root}")
+        return ""
+
+    # ┏━━━━━━━━━━ Extract feature arrays ━━━━━━━━━━┓
+    fp = np.array([r["frac_profitable"] for r in records], dtype=float)
+    sr = np.array([r["median_sharpe"]   for r in records], dtype=float)
+    vmr = np.array([r["val_mean_ret"]   for r in records], dtype=float)
+    tmr = np.array([(r["test_mean_ret"] if r["test_mean_ret"] is not None else np.nan) for r in records], dtype=float)
+
+    # ┏━━━━━━━━━━ Define thresholds for the heatmap grid ━━━━━━━━━━┓
+    sr_step = 0.5
+    sr_hi   = max(sr_step, float(np.ceil(sr.max() / sr_step) * sr_step))
+    x_thresholds = np.arange(0.0, sr_hi + sr_step * 0.5, sr_step)
+    y_thresholds = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    n_x, n_y = len(x_thresholds), len(y_thresholds)
+
+    # ┏━━━━━━━━━━ Print summary statistics ━━━━━━━━━━┓
+    print(f"[plot_cpcv_edge_heatmap] {len(records)} configs loaded (val_mean_ret available)")
+    print(f"  median_sharpe  : [{sr.min():.2f}, {sr.max():.2f}]")
+    print(f"  frac_profitable: [{fp.min():.2f}, {fp.max():.2f}]")
+    print(f"  val_mean_ret   : [{vmr.min():.4f}, {vmr.max():.4f}]")
+    if np.isfinite(tmr).any():
+        print(f"  test_mean_ret  : [{np.nanmin(tmr):.4f}, {np.nanmax(tmr):.4f}]  (N={int(np.isfinite(tmr).sum())})")
+
+    # ┏━━━━━━━━━━ Define color map ━━━━━━━━━━┓
+    cmap = LinearSegmentedColormap.from_list(
+        "acc_cmap",
+        ["#67000d", "#a50f15", "#cb181d", "#fb6a4a", "#fcae91", "#fee5d9",
+         "#ffffff",
+         "#e5f5e0", "#a1d99b", "#41ab5d", "#238b45", "#005a32", "#00441b"],
+        N=256)
+
+    # ┏━━━━━━━━━━ Iterate over splits (val and test) ━━━━━━━━━━┓
+    out_paths = {}
+    for split_name, outcome_arr in (("val", vmr), ("test", tmr)):
+        valid = np.isfinite(outcome_arr)
+        N = int(valid.sum())
+        
+        # ┏━━━━━━━━━━ Skip if no valid outcomes ━━━━━━━━━━┓
+        if N == 0:
+            print(f"[plot_cpcv_edge_heatmap] No valid {split_name} outcomes - skipping")
+            continue
+
+        # ┏━━━━━━━━━━ Filter records for current split ━━━━━━━━━━┓
+        fp_v   = fp[valid]
+        sr_v   = sr[valid]
+        c3_v   = vmr[valid] > 0.0
+        out_v  = outcome_arr[valid] > 0.0
+
+        # ┏━━━━━━━━━━ Initialize grids ━━━━━━━━━━┓
+        accuracy  = np.zeros((n_y, n_x), dtype=float)
+        precision = np.full((n_y, n_x), np.nan, dtype=float)
+        tp_grid   = np.zeros((n_y, n_x), dtype=int)
+        tn_grid   = np.zeros((n_y, n_x), dtype=int)
+        fp_grid   = np.zeros((n_y, n_x), dtype=int)
+        fn_grid   = np.zeros((n_y, n_x), dtype=int)
+
+        # ┏━━━━━━━━━━ Compute TP, TN, FP, FN for each grid cell ━━━━━━━━━━┓
+        for yi, tau_fp in enumerate(y_thresholds):
+            for xi, tau_sr in enumerate(x_thresholds):
+                # ┏━━━━━━━━━━ Apply Filters ━━━━━━━━━━┓
+                c1 = fp_v >= tau_fp
+                c2 = sr_v >= tau_sr
+                all_pass = c1 & c2 & c3_v
+
+                # ┏━━━━━━━━━━ Compute counts ━━━━━━━━━━┓
+                tp = int(np.sum( all_pass &  out_v))
+                fp_ = int(np.sum( all_pass & ~out_v))
+                fn = int(np.sum(~all_pass &  out_v))
+                tn = int(np.sum(~all_pass & ~out_v))
+
+                # ┏━━━━━━━━━━ Store counts and metrics ━━━━━━━━━━┓
+                tp_grid[yi, xi] = tp
+                fp_grid[yi, xi] = fp_
+                fn_grid[yi, xi] = fn
+                tn_grid[yi, xi] = tn
+                accuracy[yi, xi] = (tp + tn) / N
+                precision[yi, xi] = (tp / (tp + fp_)) if (tp + fp_) > 0 else np.nan
+
+        # ┏━━━━━━━━━━ Two side-by-side subplots ━━━━━━━━━━┓
+        fig, (ax_acc, ax_prec) = plt.subplots(1, 2, figsize=(max(20, 1.9 * n_x + 6), max(6, 0.85 * n_y + 2)))
+        fig.patch.set_facecolor("white")
+
+        # ┏━━━━━━━━━━ Set suptitle ━━━━━━━━━━┓
+        outcome_lbl = "Val_selective.mean_ret > 0" if split_name == "val" else "Test_selective.mean_ret > 0"
+        fig.suptitle(f"CPCV 3-Constraint Filter — {split_name.upper()} outcome\n"
+                     f"C1: frac_prof≥τ_FP   C2: med_SR≥τ_SR   C3: val_mean_ret>0    "
+                     f"|   outcome = {outcome_lbl}   |   N = {N} configs",
+                     fontsize   = 12, 
+                     fontweight = "bold", 
+                     y          = 0.99)
+
+        # ┏━━━━━━━━━━ Extent ━━━━━━━━━━┓
+        extent = [x_thresholds[0]  - sr_step / 2,
+                  x_thresholds[-1] + sr_step / 2,
+                  y_thresholds[0]  - 0.1,
+                  y_thresholds[-1] + 0.1]
+
+        # ┏━━━━━━━━━━ Per-grid color limits anchored to actual min/max for visual contrast. ━━━━━━━━━━┓
+        def _clim(arr):
+            vals = arr[np.isfinite(arr)]
+            if vals.size == 0:
+                return 0.0, 1.0
+            lo, hi = float(vals.min()), float(vals.max())
+            if hi - lo < 1e-9:
+                lo = max(0.0, lo - 0.05); hi = min(1.0, hi + 0.05)
+            return lo, hi
+
+        acc_lo,  acc_hi  = _clim(accuracy)
+        prec_lo, prec_hi = _clim(precision)
+
+        # ┏━━━━━━━━━━ Subplot 1 — Accuracy ━━━━━━━━━━┓
+        im_a = ax_acc.imshow(accuracy,
+                             origin  = "lower",
+                             cmap    = cmap,
+                             vmin    = acc_lo,
+                             vmax    = acc_hi,
+                             aspect  = "auto",
+                             extent  = extent)
+        
+        # ┏━━━━━━━━━━ Iterate over grid cells ━━━━━━━━━━┓
+        for yi in range(n_y):
+            for xi in range(n_x):
+                acc = accuracy[yi, xi]
+                tp, tn = tp_grid[yi, xi], tn_grid[yi, xi]
+                fp_, fn = fp_grid[yi, xi], fn_grid[yi, xi]
+                cx, cy  = x_thresholds[xi], y_thresholds[yi]
+                rel = (acc - acc_lo) / max(1e-9, acc_hi - acc_lo)
+                text_col = "white" if (rel < 0.30 or rel > 0.85) else "black"
+                ax_acc.text(cx, cy + 0.035, f"{acc*100:.0f}%",
+                            ha="center", va="center",
+                            fontsize=10, color=text_col, fontweight="bold")
+                ax_acc.text(cx, cy - 0.035,
+                            f"TP={tp} TN={tn}\nFP={fp_} FN={fn}",
+                            ha="center", va="center",
+                            fontsize=6.8, color=text_col, alpha=0.85)
+
+        # ┏━━━━━━━━━━ Set ticks and labels for the accuracy subplot ━━━━━━━━━━┓
+        ax_acc.set_xticks(x_thresholds)
+        ax_acc.set_xticklabels([f"{v:.1f}" for v in x_thresholds], fontsize=9)
+        ax_acc.set_yticks(y_thresholds)
+        ax_acc.set_yticklabels([f"{v:.1f}" for v in y_thresholds], fontsize=10)
+        ax_acc.set_xlabel("τ_SR  (median path Sharpe threshold, C2)", fontsize=11, fontweight="bold", labelpad=8)
+        ax_acc.set_ylabel("τ_FP  (frac. profitable paths threshold, C1)", fontsize=11, fontweight="bold", labelpad=8)
+        ax_acc.set_title(f"Accuracy = (TP+TN) / N [{acc_lo*100:.0f}% - {acc_hi*100:.0f}%]", fontsize=11, fontweight="bold", pad=8)
+        
+        # ┏━━━━━━━━━━ Draw grid lines ━━━━━━━━━━┓
+        for xv in x_thresholds - sr_step / 2:
+            ax_acc.axvline(xv, color="white", lw=0.8, alpha=0.6)
+        ax_acc.axvline(x_thresholds[-1] + sr_step / 2, color="white", lw=0.8, alpha=0.6)
+        for yv in y_thresholds:
+            ax_acc.axhline(yv - 0.1, color="white", lw=0.8, alpha=0.6)
+        ax_acc.axhline(y_thresholds[-1] + 0.1, color="white", lw=0.8, alpha=0.6)
+
+        # ┏━━━━━━━━━━ Add colorbar ━━━━━━━━━━┓
+        cbar_a = fig.colorbar(im_a, ax=ax_acc, fraction=0.038, pad=0.02)
+        cbar_a.set_label("Accuracy", fontsize=9)
+        cbar_a.ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=0))
+        cbar_a.ax.tick_params(labelsize=8)
+
+        # ┏━━━━━━━━━━ Highlight best accuracy cell ━━━━━━━━━━┓
+        best_yi_a, best_xi_a = np.unravel_index(np.argmax(accuracy), accuracy.shape)
+        ax_acc.add_patch(plt.Rectangle((x_thresholds[best_xi_a] - sr_step / 2, y_thresholds[best_yi_a] - 0.1),
+                                        sr_step, 0.2, fill=False, edgecolor="black", lw=2.2))
+
+        # ┏━━━━━━━━━━ Subplot 2 — Precision ━━━━━━━━━━┓
+        # Precision = TP / (TP + FP):  among configs the filter accepts, how
+        # many actually deliver a positive outcome?  This is the "deployment
+        # trust" signal — it directly answers "if I deploy when the filter
+        # fires, what fraction will be winners?".
+        im_p = ax_prec.imshow(precision,
+                              origin = "lower",
+                              cmap   = cmap,
+                              vmin   = prec_lo,
+                              vmax   = prec_hi,
+                              aspect = "auto",
+                              extent = extent)
+
+        # ┏━━━━━━━━━━ Iterate over grid cells ━━━━━━━━━━┓
+        for yi in range(n_y):
+            for xi in range(n_x):
+                prec = precision[yi, xi]
+                tp, fp_ = tp_grid[yi, xi], fp_grid[yi, xi]
+                cx, cy  = x_thresholds[xi], y_thresholds[yi]
+                if not np.isfinite(prec):
+                    ax_prec.text(cx, cy, "n/a", ha="center", va="center", fontsize=8, color="#999999")
+                    continue
+                rel = (prec - prec_lo) / max(1e-9, prec_hi - prec_lo)
+                text_col = "white" if (rel < 0.30 or rel > 0.85) else "black"
+                ax_prec.text(cx, cy + 0.035, f"{prec*100:.0f}%",
+                             ha="center", va="center",
+                             fontsize=10, color=text_col, fontweight="bold")
+                ax_prec.text(cx, cy - 0.035,
+                             f"TP={tp} FP={fp_}",
+                             ha="center", va="center",
+                             fontsize=6.8, color=text_col, alpha=0.85)
+
+        # ┏━━━━━━━━━━ Set ticks and labels for the precision subplot ━━━━━━━━━━┓
+        ax_prec.set_xticks(x_thresholds)
+        ax_prec.set_xticklabels([f"{v:.1f}" for v in x_thresholds], fontsize=9)
+        ax_prec.set_yticks(y_thresholds)
+        ax_prec.set_yticklabels([f"{v:.1f}" for v in y_thresholds], fontsize=10)
+        ax_prec.set_xlabel("τ_SR  (median path Sharpe threshold, C2)", fontsize=11, fontweight="bold", labelpad=8)
+        ax_prec.set_ylabel("τ_FP  (frac. profitable paths threshold, C1)", fontsize=11, fontweight="bold", labelpad=8)
+        ax_prec.set_title(f"Precision = TP / (TP+FP) [{prec_lo*100:.0f}% - {prec_hi*100:.0f}%]", fontsize=11, fontweight="bold", pad=8)
+
+        # ┏━━━━━━━━━━ Draw grid lines ━━━━━━━━━━┓
+        for xv in x_thresholds - sr_step / 2:
+            ax_prec.axvline(xv, color="white", lw=0.8, alpha=0.6)
+        ax_prec.axvline(x_thresholds[-1] + sr_step / 2, color="white", lw=0.8, alpha=0.6)
+        for yv in y_thresholds:
+            ax_prec.axhline(yv - 0.1, color="white", lw=0.8, alpha=0.6)
+        ax_prec.axhline(y_thresholds[-1] + 0.1, color="white", lw=0.8, alpha=0.6)
+
+        # ┏━━━━━━━━━━ Add colorbar ━━━━━━━━━━┓
+        cbar_p = fig.colorbar(im_p, ax=ax_prec, fraction=0.038, pad=0.02)
+        cbar_p.set_label("Precision", fontsize=9)
+        cbar_p.ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=0))
+        cbar_p.ax.tick_params(labelsize=8)
+
+        # ┏━━━━━━━━━━ Highlight best precision cell ━━━━━━━━━━┓
+        prec_for_best = np.where(np.isfinite(precision), precision, -np.inf)
+        best_yi_p, best_xi_p = np.unravel_index(np.argmax(prec_for_best), precision.shape)
+        if np.isfinite(precision[best_yi_p, best_xi_p]):
+            ax_prec.add_patch(plt.Rectangle((x_thresholds[best_xi_p] - sr_step / 2, y_thresholds[best_yi_p] - 0.1),
+                                             sr_step, 0.2, fill=False, edgecolor="black", lw=2.2))
+
+        # ┏━━━━━━━━━━ Adjust layout and save figure ━━━━━━━━━━┓
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        out_path = os.path.join(output_dir, f"cpcv_edge_heatmap_{split_name}.png")
+        plt.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="white")
+        plt.close()
+        
+        # ┏━━━━━━━━━━ Summary message ━━━━━━━━━━┓
+        bx_a, by_a = x_thresholds[best_xi_a], y_thresholds[best_yi_a]
+        msg = (f"[plot_cpcv_edge_heatmap] {split_name.upper()}: "
+               f"best acc = {accuracy[best_yi_a, best_xi_a]*100:.1f}% "
+               f"@(τ_SR={bx_a:.1f}, τ_FP={by_a:.1f})")
+        if np.isfinite(precision[best_yi_p, best_xi_p]):
+            bx_p, by_p = x_thresholds[best_xi_p], y_thresholds[best_yi_p]
+            msg += (f"   |   best prec = {precision[best_yi_p, best_xi_p]*100:.1f}% "
+                    f"@(τ_SR={bx_p:.1f}, τ_FP={by_p:.1f})")
+        msg += f"  -> {out_path}"
+        print(msg)
+        out_paths[split_name] = out_path
+
+    return output_dir
+
+
+if __name__ == "__main__":
+    plot_cpcv_constraint_bars()
+    plot_cpcv_edge_heatmap()

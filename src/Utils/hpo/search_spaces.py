@@ -85,9 +85,50 @@ def _suggest_tabicl(trial: optuna.Trial) -> dict:
             "softmax_temperature": trial.suggest_float("softmax_temperature", 0.3, 1.5, step=0.1)}
 
 
+# ┏━━━━━━━━━━ TabM ━━━━━━━━━━┓
+def _suggest_tabm(trial: optuna.Trial) -> dict:
+    """Suggest TabM hyperparameters.
+
+    Mirrors the search space in the official TabM repository
+    (https://github.com/yandex-research/tabm). When the optional
+    PiecewiseLinearEmbeddings module is enabled (``use_plr = True``), n_blocks
+    is restricted to [1, 4] and the n_bins / d_embedding axes are sampled.
+    Otherwise the plain TabM space (n_blocks ∈ [1, 5]) is used.
+    """
+    # ┏━━━━━━━━━━ Piecewise Linear Embeddings (PLE) ━━━━━━━━━━┓
+    use_plr = trial.suggest_categorical("use_plr", [False, True])
+
+    # ┏━━━━━━━━━━ k is fixed at 32 in the paper (not tuned) ━━━━━━━━━━┓
+    params = {"k":            32,
+              "d_block":      trial.suggest_int("d_block", 64, 1024, step=16),
+              "lr":           trial.suggest_float("lr", 1e-4, 5e-3, log=True),
+              "use_plr":      use_plr,
+              "arch_type":    "tabm"}
+              
+    # ┏━━━━━━━━━━ weight_decay is sampled from {0} ∪ LogUniform[1e-4, 1e-1] ━━━━━━━━━━┓
+    # Store the resolved float directly so best_params.json always has "weight_decay".
+    if trial.suggest_categorical("weight_decay_zero", [True, False]):
+        params["weight_decay"] = 0.0
+    else:
+        params["weight_decay"] = trial.suggest_float("weight_decay_val", 1e-4, 1e-1, log=True)
+
+    # ┏━━━━━━━━━━ n_blocks, n_bins, d_embedding ━━━━━━━━━━┓
+    if use_plr:
+        params["n_blocks"]    = trial.suggest_int("n_blocks_plr", 1, 4)
+        params["n_bins"]      = trial.suggest_int("n_bins", 2, 128)
+        params["d_embedding"] = trial.suggest_int("d_embedding", 8, 32, step=4)
+    else:
+        params["n_blocks"]    = trial.suggest_int("n_blocks", 1, 5)
+        params["n_bins"]      = None
+        params["d_embedding"] = None
+    
+    return params
+
+
 _SUGGEST_FN = {"rf":     _suggest_rf,
                "tabpfn": _suggest_tabpfn,
-               "tabicl": _suggest_tabicl}
+               "tabicl": _suggest_tabicl,
+               "tabm":   _suggest_tabm}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -124,6 +165,23 @@ def _build_model_from_params(model_name: str, params: dict, seed: int = 42):
         return TabICL(n_estimators        = params["n_estimators"],
                       softmax_temperature = params["softmax_temperature"],
                       random_state        = seed)
+
+    # ┏━━━━━━━━━━ TabM ━━━━━━━━━━┓
+    elif model_name == "tabm":
+        from Utils.classifier import TabMClassifier
+        # weight_decay is always stored as a resolved float in best_params.json;
+        # fall back to 0 for backward-compat with old JSONs that only have weight_decay_zero.
+        wd = params.get("weight_decay", 0.0 if params.get("weight_decay_zero", True) else 3e-4)
+        return TabMClassifier(k             = params.get("k", 32),
+                              n_blocks      = params["n_blocks"],
+                              d_block       = params["d_block"],
+                              lr            = params["lr"],
+                              weight_decay  = wd,
+                              dropout       = params.get("dropout", 0.1),
+                              arch_type     = params.get("arch_type", "tabm"),
+                              n_bins        = params.get("n_bins"),
+                              d_embedding   = params.get("d_embedding"),
+                              random_state  = seed)
 
     else:
         raise ValueError(f"HPO not supported for model: {model_name}")

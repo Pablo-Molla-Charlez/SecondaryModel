@@ -11,9 +11,10 @@ import pickle
 from pathlib import Path
 
 # ┏━━━━━━━━━━ Model registry ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl")
+MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm")
 
 # ┏━━━━━━━━━━ Models that must NOT receive StandardScaler-transformed data ━━━━━━━━━━┓
+# TabM benefits from standardised inputs (it's an MLP), so it stays out of this set.
 MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl"}
 
 # ┏━━━━━━━━━━ TabPFN soft row limit ━━━━━━━━━━┓
@@ -21,16 +22,16 @@ _TABPFN_MAX_ROWS = 50_000
 
 # ┏━━━━━━━━━━ AutoGluon defaults ━━━━━━━━━━┓
 _AG_TIME_LIMIT = 3600          # overridden by --ag-time-limit
-_AG_PRESETS = "best_quality"  # overridden by --ag-presets
+_AG_PRESETS = "best_quality"   # overridden by --ag-presets
 
 
-def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc we also use it for tabpfn etc.
-                      n_samples: int,  # TODO never used?!
+def _build_tree_model(model_name:         str,
+                      n_samples:          int,
                       class_weight_ratio: float = 1.0,
-                      feature_names=None,
-                      time_limit=None,
-                      presets: str = "best_quality",
-                      params: dict | None = None):
+                      feature_names=      None,
+                      time_limit=         None,
+                      presets:            str = "best_quality",
+                      params:             dict | None = None):
     """Return a ``BaseClassifier``-compatible instance for the requested model.
 
     Parameters
@@ -116,6 +117,22 @@ def _build_tree_model(model_name: str,  # TODO probabaly needs to be renamed bc 
                           softmax_temperature = params.get("softmax_temperature", 0.9),
                           random_state        = 42)
         return TabICL()
+
+    # ┏━━━━━━━━━━ TabM (deep tabular MLP-Mixer ensemble) ━━━━━━━━━━┓
+    elif model_name == "tabm":
+        from Utils.classifier.tabm_classifier import TabMClassifier
+        if params:
+            return TabMClassifier(k            = params.get("k", 32),
+                                  n_blocks     = params.get("n_blocks", 2),
+                                  d_block      = params.get("d_block", 256),
+                                  lr           = params.get("lr", 2e-3),
+                                  weight_decay = params.get("weight_decay", 3e-4),
+                                  dropout      = params.get("dropout", 0.1),
+                                  arch_type    = params.get("arch_type", "tabm"),
+                                  n_bins       = params.get("n_bins"),
+                                  d_embedding  = params.get("d_embedding"),
+                                  random_state = 42)
+        return TabMClassifier(random_state=42)
 
     else:
         raise ValueError(f"Unknown model: {model_name!r}. Choose from {MODEL_CHOICES}")

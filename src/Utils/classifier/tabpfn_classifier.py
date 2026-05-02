@@ -59,7 +59,7 @@ class TabPFN(BaseClassifier):
         self._clf                   = None
         self.classes_               = None
 
-    # ┏━━━━━━━━━━ fit ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, sample_weight=None):
         import warnings
         from tabpfn import TabPFNClassifier
@@ -111,30 +111,31 @@ class TabPFN(BaseClassifier):
         n_feat = getattr(self, "n_features_in_", 1)
         return np.ones(n_feat) / n_feat
 
+    # ┏━━━━━━━━━━ Get Params ━━━━━━━━━━┓
     def get_params(self, deep: bool = True) -> dict:
-        return {
-            "device":                 self.device,
-            "n_estimators":           self.n_estimators,
-            "softmax_temperature":    self.softmax_temperature,
-            "balance_probabilities":  self.balance_probabilities,
-            "average_before_softmax": self.average_before_softmax,
-            "fit_mode":               self.fit_mode,
-            "inference_config":       self.inference_config,
-            "random_state":           self.random_state,
-        }
+        return {"device":                 self.device,
+                "n_estimators":           self.n_estimators,
+                "softmax_temperature":    self.softmax_temperature,
+                "balance_probabilities":  self.balance_probabilities,
+                "average_before_softmax": self.average_before_softmax,
+                "fit_mode":               self.fit_mode,
+                "inference_config":       self.inference_config,
+                "random_state":           self.random_state}
 
+    # ┏━━━━━━━━━━ Save Model ━━━━━━━━━━┓
     def save_model(self, model_path: str) -> None:
         if self._clf is None:
             raise AttributeError("The model has not been fitted yet.")
         try:
             from tabpfn.model_loading import save_fitted_tabpfn_model
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             raise ImportError("save_fitted_tabpfn_model unavailable") from e
         save_fitted_tabpfn_model(self._clf, f"{model_path}.tabpfn_fit")
 
+    # ┏━━━━━━━━━━ Load Model ━━━━━━━━━━┓
     def load_model(self, model_path: str, device: str = "cpu") -> None:
         try:
             from tabpfn.model_loading import load_fitted_tabpfn_model
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             raise ImportError("load_fitted_tabpfn_model unavailable") from e
         self._clf = load_fitted_tabpfn_model(f"{model_path}.tabpfn_fit", device=device)

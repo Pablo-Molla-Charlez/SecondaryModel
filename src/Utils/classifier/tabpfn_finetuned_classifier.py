@@ -52,7 +52,7 @@ class TabPFNFineTuned(BaseClassifier):
         self.classes_                = None
         self._output_dir             = None
 
-    # ┏━━━━━━━━━━ fit ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, sample_weight=None):
         import warnings
         import tempfile
@@ -114,22 +114,22 @@ class TabPFNFineTuned(BaseClassifier):
         n_feat = getattr(self, "n_features_in_", 1)
         return np.ones(n_feat) / n_feat
 
+    # ┏━━━━━━━━━━ Get Params ━━━━━━━━━━┓
     def get_params(self, deep: bool = True) -> dict:
-        return {
-            "device":                  self.device,
-            "epochs":                  self.epochs,
-            "learning_rate":           self.learning_rate,
-            "weight_decay":            self.weight_decay,
-            "grad_clip_value":         self.grad_clip_value,
-            "validation_split_ratio":  self.validation_split_ratio,
-            "early_stopping":          self.early_stopping,
-            "early_stopping_patience": self.early_stopping_patience,
-            "min_delta":               self.min_delta,
-            "use_lr_scheduler":        self.use_lr_scheduler,
-            "n_estimators":            self.n_estimators,
-            "random_state":            self.random_state,
-        }
+        return {"device":                  self.device,
+                "epochs":                  self.epochs,
+                "learning_rate":           self.learning_rate,
+                "weight_decay":            self.weight_decay,
+                "grad_clip_value":         self.grad_clip_value,
+                "validation_split_ratio":  self.validation_split_ratio,
+                "early_stopping":          self.early_stopping,
+                "early_stopping_patience": self.early_stopping_patience,
+                "min_delta":               self.min_delta,
+                "use_lr_scheduler":        self.use_lr_scheduler,
+                "n_estimators":            self.n_estimators,
+                "random_state":            self.random_state}
 
+    # ┏━━━━━━━━━━ Save Model ━━━━━━━━━━┓
     def save_model(self, model_path: str) -> None:
         if self._clf is None:
             raise AttributeError("The model has not been fitted yet.")
@@ -138,5 +138,6 @@ class TabPFNFineTuned(BaseClassifier):
         else:
             raise NotImplementedError("save_model not supported for TabPFNFineTuned")
 
+    # ┏━━━━━━━━━━ Load Model ━━━━━━━━━━┓
     def load_model(self, model_path: str) -> None:
         raise NotImplementedError("load_model not supported for TabPFNFineTuned")

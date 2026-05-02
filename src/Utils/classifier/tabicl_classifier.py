@@ -34,7 +34,7 @@ class TabICL(BaseClassifier):
         self._clf                = None
         self.classes_            = None
 
-    # ┏━━━━━━━━━━ fit ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, sample_weight=None):
         from tabicl import TabICLClassifier
 
@@ -69,12 +69,14 @@ class TabICL(BaseClassifier):
         n_feat = getattr(self, "n_features_in_", 1)
         return np.ones(n_feat) / n_feat
 
+    # ┏━━━━━━━━━━ Get Parameters ━━━━━━━━━━┓
     def get_params(self, deep: bool = True) -> dict:
         return {"n_estimators":        self.n_estimators,
                 "softmax_temperature": self.softmax_temperature,
                 "random_state":        self.random_state,
                 "device":              self.device}
 
+    # ┏━━━━━━━━━━ Save Model ━━━━━━━━━━┓
     def save_model(self, model_path: str) -> None:
         if self._clf is None:
             raise AttributeError("The model has not been fitted yet.")
@@ -83,6 +85,7 @@ class TabICL(BaseClassifier):
                        save_training_data = True,
                        save_kv_cache      = True)
 
+    # ┏━━━━━━━━━━ Load Model ━━━━━━━━━━┓
     def load_model(self, model_path: str) -> None:
         from tabicl import TabICLClassifier
         self._clf = TabICLClassifier.load(f"{model_path}.pkl")

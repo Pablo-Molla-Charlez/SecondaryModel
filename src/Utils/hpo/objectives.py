@@ -188,9 +188,20 @@ def _create_objective(model_name: str,
         # ┏━━━━━━━━━━ Build and fit model ━━━━━━━━━━┓
         try:
             model = _build_model_from_params(model_name, params, seed=seed)
+            # ┏━━━━━━━━━━ TabM gets the merged Val window for early stopping ━━━━━━━━━━┓
+            # Same chronological tail used downstream by the threshold
+            # optimiser; matches the protocol applied to AutoGluon.
+            fit_kwargs = {}
+            if model_name == "tabm":
+                if nocal and _merged_y is not None:
+                    fit_kwargs["X_eval"] = np.concatenate([X_cal_s, X_opt_s])
+                    fit_kwargs["y_eval"] = _merged_y
+                else:
+                    fit_kwargs["X_eval"] = X_opt_s
+                    fit_kwargs["y_eval"] = y_opt
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model.fit(X_train_s, y_train)
+                model.fit(X_train_s, y_train, **fit_kwargs)
         except Exception as e:
             print(f"  [Trial {trial.number}] Model fit failed: {e}")
             return float("-inf")
@@ -198,7 +209,7 @@ def _create_objective(model_name: str,
         # ┏━━━━━━━━━━ Threshold optimization ━━━━━━━━━━┓
         try:
             if nocal and _merged_y is not None:
-                # NoCal: raw probs on merged Val-Cal + Val-Opt (mirrors kronos_tree nocal)
+                # ┏━━━━━━━━━━ NoCal: raw probs on merged Val-Cal + Val-Opt (mirrors kronos_tree nocal) ━━━━━━━━━━┓
                 raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
                 raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
                 merged_probs  = np.concatenate([raw_cal_probs, raw_opt_probs])
@@ -208,7 +219,7 @@ def _create_objective(model_name: str,
                                                   labels       = _merged_y,
                                                   m1_precision = m1_precision)
             else:
-                # Standard: calibrate on Val-Cal, sweep on calibrated Val-Opt
+                # ┏━━━━━━━━━━ Standard: calibrate on Val-Cal, sweep on calibrated Val-Opt ━━━━━━━━━━┓
                 raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
                 calib = calibrate_probabilities(raw_cal_probs, y_cal)
                 calibrator = calib["calibrator"]

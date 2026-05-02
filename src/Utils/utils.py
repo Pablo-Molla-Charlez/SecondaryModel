@@ -17,7 +17,12 @@ from Utils.data import (load_dataset_from_config,
 # ┏━━━━━━━━━━ Model Label ━━━━━━━━━━┓
 def model_label(model_name: str) -> str:
     """Canonical short label for a model name."""
-    return {"rf": "RF", "xgboost": "XGB", "autogluon": "AG", "tabicl": "TabICL"}.get(model_name, model_name.upper())
+    return {"rf":        "RF",
+            "xgboost":   "XGB",
+            "autogluon": "AG",
+            "tabicl":    "TabICL",
+            "tabpfn":    "TabPFN",
+            "tabm":      "TabM"}.get(model_name, model_name.upper())
 
 # ┏━━━━━━━━━━ M1 Model Name retrieval ━━━━━━━━━━┓
 def m1_model_name(cfg: dict | None) -> str:
@@ -28,13 +33,17 @@ def m1_model_name(cfg: dict | None) -> str:
 # ┏━━━━━━━━━━ M1 Output Bucket ━━━━━━━━━━┓
 def m1_output_bucket(cfg: dict | None) -> str:
     """Folder name under Output/ for the configured M1 model."""
-    # TODO missing m1 models
+    _BUCKET = {"kronos":   "Kronos",
+               "fincast":  "Fincast",
+               "tirex":    "Tirex",
+               "chronos2": "Chronos2"}
     name = m1_model_name(cfg)
-    if name == "kronos":
-        return "Kronos"
-    if name == "fincast":
-        return "Fincast"
-    return "".join(part.capitalize() for part in name.replace("-", "_").split("_") if part)
+    if name in _BUCKET:
+        return _BUCKET[name]
+    
+    # ┏━━━━━━━━━━ Fallback for future M1 models ━━━━━━━━━━┓
+    else:
+        return "".join(part.capitalize() for part in name.replace("-", "_").split("_") if part)
 
 # ┏━━━━━━━━━━ M1 Display Label ━━━━━━━━━━┓
 def m1_display_label(cfg: dict | None) -> str:
@@ -44,7 +53,7 @@ def m1_display_label(cfg: dict | None) -> str:
 
 # ┏━━━━━━━━━━ HPO best-params loader ━━━━━━━━━━┓
 # Models whose hyperparameters are currently tunable via Utils.hpo.
-HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}
+HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm"}
 
 def _load_best_params(cfg: dict,
                       m2: str,

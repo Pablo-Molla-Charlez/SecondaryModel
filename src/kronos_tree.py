@@ -268,10 +268,17 @@ def temporal_eval(dataset: dict,
     model = _build_tree_model(model_name,
                               len(y_train),
                               cw_ratio,
-                              feature_names=feature_cols,
-                              presets=_AG_PRESETS,
-                              params=best_params)
-    model.fit(X_train, y_train)
+                              feature_names = feature_cols,
+                              presets       = _AG_PRESETS,
+                              params        = best_params)
+    
+    # ┏━━━━━━━━━━ TabM gets the merged Val window as early-stopping signal ━━━━━━━━━━┓
+    if model_name == "tabm":
+        _tabm_X_eval = np.vstack([X_cal, X_opt])
+        _tabm_y_eval = np.concatenate([y_cal, y_opt])
+        model.fit(X_train, y_train, X_eval=_tabm_X_eval, y_eval=_tabm_y_eval)
+    else:
+        model.fit(X_train, y_train)
     
     # ┏━━━━━━━━━━ Autogluon Leaderboard and Model Info ━━━━━━━━━━┓
     if model_name == "autogluon":

@@ -66,17 +66,13 @@ from Utils.ts_cross_validation import (_gran_to_timedelta,
                                        compute_seeds_embargo_splits as _compute_seeds_embargo_splits,
                                        CAL_SPLIT_RATIO)
 
-from Utils.edge.plots import (_plot_split_matrix,
-                              _plot_path_boxplots,
-                              _plot_cross_gran_cpcv)
-from .plots import (
-    _plot_edge_curves,
-    _plot_summary_boxplots,
-    _plot_cross_gran_seeds,
-    _plot_split_matrix,
-    _plot_path_boxplots,
-    _plot_cross_gran_cpcv,
-)
+# ┏━━━━━━━━━━ Imports from Edge Plots ━━━━━━━━━━┓
+from .plots import (_plot_edge_curves,
+                    _plot_summary_boxplots,
+                    _plot_cross_gran_seeds,
+                    _plot_split_matrix,
+                    _plot_path_boxplots,
+                    _plot_cross_gran_cpcv)
 
 
 # ┏━━━━━━━━━ Fixed seed for CPCV — variance measures regime sensitivity, not model noise ━━━━━━━━━━┓
@@ -796,8 +792,11 @@ def _run_cpcv_split(eng,
                                   class_weight_ratio=cw_ratio, best_params=best_params,
                                   feature_names=feature_names)
 
-        # ┏━━━━━━━━━━ Fit model ━━━━━━━━━━┓
-        model.fit(X_fit, y_fit)
+        # ┏━━━━━━━━━━ Fit model (TabM gets the opt slice for early stopping) ━━━━━━━━━━┓
+        if model_key == "tabm":
+            model.fit(X_fit, y_fit, X_eval=X_opt, y_eval=y_opt)
+        else:
+            model.fit(X_fit, y_fit)
 
         if nocal:
             # ┏━━━━━━━━━━ NoCal: identity calibrator ━━━━━━━━━━┓
@@ -1336,7 +1335,7 @@ def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
     parser = argparse.ArgumentParser(description="Edge Analysis — regime sensitivity via CPCV (seeds mode available for RF/XGBoost only)")
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
-    parser.add_argument("--config", type=json.loads, help="Experiment config", required=True)
+    parser.add_argument("--config", type=_load_config, help="Experiment config (path to .yaml or inline JSON string)", required=True)
     parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True,
                         help="'cpcv' = Combinatorial Purged CV (all models); "
                              "'seeds' = 100 seed trials (RF/XGBoost only, skipped for AutoGluon/TabPFN/TabICL); "
@@ -1350,6 +1349,25 @@ def main():
                              "sweeps τ* on raw probabilities. Outputs land under Edge_NoCal/.")
 
     args = parser.parse_args()
+
+    # ┏━━━━━━━━━━ Auto-resolve cache path from config if not provided ━━━━━━━━━━┓
+    if args.cache_path is None:
+        from Utils.utils import _resolve_caches, _infer_direction
+        try:
+            caches = _resolve_caches(args.config, explicit=None)
+            args.cache_path = caches.get(args.direction.lower())
+            if args.cache_path:
+                print(f"[edge] Auto-resolved cache ({args.direction}): {Path(args.cache_path).name}")
+            else:
+                print(f"[edge] WARNING: could not auto-resolve cache for direction={args.direction}")
+        except Exception as e:
+            print(f"[edge] WARNING: cache auto-resolution failed: {e}")
+
+    # ┏━━━━━━━━━━ Auto-set nocal from config if not explicitly passed ━━━━━━━━━━┓
+    if not args.nocal:
+        _thres = args.config.get("runtime", {}).get("training", {}).get("thres", "utility")
+        if _thres == "utility_nocal":
+            args.nocal = True
 
     # ┏━━━━━━━━━━ Output directory (includes model name) ━━━━━━━━━━┓
     # When --nocal is set, outputs go under Edge_NoCal/ so they don't collide with the
