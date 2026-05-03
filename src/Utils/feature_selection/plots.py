@@ -3500,15 +3500,21 @@ def _load_cpcv_records(edge_root: str,
             test_mean_ret = None
 
             # ┏━━━━━━━━━━ If analysis_summary.json exists, extract the performance metrics ━━━━━━━━━━┓
+            val_mean_ret = test_mean_ret = None
+            val_f1       = test_f1       = None
             if os.path.exists(ana_path):
                 try:
                     with open(ana_path) as f:
                         ana = json.load(f)
-                    block = ana.get(M2_KEY.get(m2, ""), {})
+                    block    = ana.get(M2_KEY.get(m2, ""), {})
                     val_sel  = block.get("Val_selective",  {}) or {}
                     test_sel = block.get("Test_selective", {}) or {}
+                    val_blk  = block.get("Val",  {}) or {}
+                    test_blk = block.get("Test", {}) or {}
                     val_mean_ret  = val_sel.get("mean_ret")
                     test_mean_ret = test_sel.get("mean_ret")
+                    val_f1        = val_blk.get("f1_score")
+                    test_f1       = test_blk.get("f1_score")
                 except Exception:
                     pass
 
@@ -3519,8 +3525,10 @@ def _load_cpcv_records(edge_root: str,
                             "gran":            gran,
                             "frac_profitable": float(frac_p),
                             "median_sharpe":   float(med_sr),
-                            "val_mean_ret":    None if val_mean_ret is None else float(val_mean_ret),
+                            "val_mean_ret":    None if val_mean_ret  is None else float(val_mean_ret),
                             "test_mean_ret":   None if test_mean_ret is None else float(test_mean_ret),
+                            "val_f1":          None if val_f1        is None else float(val_f1),
+                            "test_f1":         None if test_f1       is None else float(test_f1),
                             "path_sharpes":    sharpes.tolist()})
     return records
 
@@ -3532,94 +3540,169 @@ def plot_cpcv_constraint_bars(edge_root: str = "/home/pablo/M2_DS/Secondary-Mode
                               output_dir: str | None = None,
                               tau_fp: float = 0.6,
                               tau_sr: float = 0.0) -> str:
-    """Bar plot: how often each constraint (and combination) triggers.
+    """3-circle Venn diagram for the three CPCV constraints.
 
         C1 := frac_profitable    >= tau_fp   (default 0.6)
         C2 := median_path_sharpe >= tau_sr   (default 0.0)
         C3 := val_mean_ret       >  0
 
-    7 bars (inclusive counts — each config can contribute to multiple bars):
-        C1, C2, C3, C1∧C2, C1∧C3, C2∧C3, C1∧C2∧C3
+    Circles are drawn at fixed equal-size positions so every region is
+    clearly readable regardless of the actual subset counts. Annotated
+    counts point to each region with arrows.
     """
     import os
     import numpy as np
     import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.patches import Circle
+    from matplotlib.colors import to_rgba
 
-    # ┏━━━━━━━━━━ Convert edge_root and output_dir to absolute paths ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Setup the output directory ━━━━━━━━━━┓
     edge_root = os.path.abspath(edge_root)
     if output_dir is None:
         output_dir = edge_root
     os.makedirs(output_dir, exist_ok=True)
 
-    # ┏━━━━━━━━━━ Load CPCV records ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Load the CPCV records ━━━━━━━━━━┓
     records = _load_cpcv_records(edge_root)
-    
-    # ┏━━━━━━━━━━ Filter records with val_mean_ret ━━━━━━━━━━┓
     records = [r for r in records if r["val_mean_ret"] is not None]
     N = len(records)
     if N == 0:
-        print(f"[plot_cpcv_constraint_bars] No records with val_mean_ret found")
+        print(f"[plot_cpcv_constraint_venn] No records with val_mean_ret found")
         return ""
 
-    # ┏━━━━━━━━━━ Extract feature arrays ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Extract the performance metrics ━━━━━━━━━━┓
     fp = np.array([r["frac_profitable"] for r in records])
     sr = np.array([r["median_sharpe"]   for r in records])
     mr = np.array([r["val_mean_ret"]    for r in records])
 
-    # ┏━━━━━━━━━━ Define constraints ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Apply the constraints ━━━━━━━━━━┓
     c1 = fp >= tau_fp
     c2 = sr >= tau_sr
     c3 = mr >  0.0
 
-    # ┏━━━━━━━━━━ Define bars, labels, include counts and percentages, for plot ━━━━━━━━━━┓
-    bars = [("C1\n(frac_prof≥{:.1f})".format(tau_fp), int(c1.sum())),
-            ("C2\n(med_SR≥{:.1f})".format(tau_sr),    int(c2.sum())),
-            ("C3\n(val_mean_ret>0)",                  int(c3.sum())),
-            ("C1∧C2",                                 int((c1 & c2).sum())),
-            ("C1∧C3",                                 int((c1 & c3).sum())),
-            ("C2∧C3",                                 int((c2 & c3).sum())),
-            ("C1∧C2∧C3",                              int((c1 & c2 & c3).sum()))]
-    
-    labels  = [b[0] for b in bars]
-    counts  = [b[1] for b in bars]
-    pcts    = [100.0 * c / N for c in counts]
+    # ┏━━━━━━━━━━ Compute the 7 mutually-exclusive region counts ━━━━━━━━━━┓
+    Abc = int(( c1 & ~c2 & ~c3).sum())   # only C1
+    aBc = int((~c1 &  c2 & ~c3).sum())   # only C2
+    ABc = int(( c1 &  c2 & ~c3).sum())   # C1 ∧ C2, not C3
+    abC = int((~c1 & ~c2 &  c3).sum())   # only C3
+    AbC = int(( c1 & ~c2 &  c3).sum())   # C1 ∧ C3, not C2
+    aBC = int((~c1 &  c2 &  c3).sum())   # C2 ∧ C3, not C1
+    ABC = int(( c1 &  c2 &  c3).sum())   # all three
+    none = int((~c1 & ~c2 & ~c3).sum())  # outside all
+    assert Abc+aBc+ABc+abC+AbC+aBC+ABC+none == N
 
-    # ┏━━━━━━━━━━ Set colors for bars (single-constraint bars: blue;  pairs: orange;  triple: green) ━━━━━━━━━━┓
-    colours = ["#3182bd"] * 3 + ["#fd8d3c"] * 3 + ["#31a354"]
+    # ┏━━━━━━━━━━ Fixed circle geometry — equal radii, standard triangle layout ━━━━━━━━━━┓
+    R   = 1.0          # circle radius
+    sep = 0.75         # distance between circle centres (< R so they overlap)
+    # C1: top-left, C2: top-right, C3: bottom-centre
+    cx1, cy1 = -sep / 2,  sep * np.sqrt(3) / 4 + 0.1
+    cx2, cy2 =  sep / 2,  sep * np.sqrt(3) / 4 + 0.1
+    cx3, cy3 =  0.0,     -sep * np.sqrt(3) / 4 - 0.05
 
-    # ┏━━━━━━━━━━ Create figure and axes, and draw bars ━━━━━━━━━━┓
-    fig, ax = plt.subplots(figsize=(11, 5.5))
+    COLORS = {"c1": "#6baed6", "c2": "#74c476", "c3": "#fd8d3c"}
+    ALPHA  = 0.38
+
+    fig, ax = plt.subplots(figsize=(10, 9))
     fig.patch.set_facecolor("white")
-    bars_obj = ax.bar(labels, counts, color=colours, edgecolor="black", linewidth=0.7)
+    ax.set_facecolor("white")
+    ax.set_aspect("equal")
+    ax.axis("off")
 
-    # ┏━━━━━━━━━━ Set text labels (counts + percentages) on top of each bar ━━━━━━━━━━┓
-    for rect, c, p in zip(bars_obj, counts, pcts):
-        ax.text(rect.get_x() + rect.get_width() / 2,
-                rect.get_height() + max(counts) * 0.012,
-                f"{c}\n({p:.1f}%)",
-                ha="center", va="bottom", fontsize=9, fontweight="bold")
+    # ┏━━━━━━━━━━ Draw the three circles ━━━━━━━━━━┓
+    for (cx, cy), col in [(( cx1, cy1), COLORS["c1"]),
+                           (( cx2, cy2), COLORS["c2"]),
+                           (( cx3, cy3), COLORS["c3"])]:
+        patch = Circle((cx, cy), R, color=col, alpha=ALPHA, zorder=1)
+        ax.add_patch(patch)
+        edge = Circle((cx, cy), R, fill=False, edgecolor=col,
+                      linewidth=2.5, zorder=2)
+        ax.add_patch(edge)
 
-    # ┏━━━━━━━━━━ Set y-axis label, title, and limits ━━━━━━━━━━┓
-    ax.set_ylabel(f"# configurations (out of {N})", fontsize=11, fontweight="bold")
-    ax.set_title(f"CPCV constraint-trigger frequency  |  {N} configurations\n"
-                 f"C1: frac_profitable ≥ {tau_fp:.2f}    "
-                 f"C2: median_path_sharpe ≥ {tau_sr:.2f}    "
+    # ┏━━━━━━━━━━ Circle title labels outside the diagram ━━━━━━━━━━┓
+    set_labels = [(f"C1\nfrac_prof ≥ {tau_fp:.1f}", cx1 - 0.85, cy1 + 0.80, COLORS["c1"]),
+                  (f"C2\nmed_SR ≥ {tau_sr:.1f}",    cx2 + 0.85, cy2 + 0.80, COLORS["c2"]),
+                  (f"C3\nval_mean_ret > 0",          cx3,        cy3 - 1.05, COLORS["c3"])]
+
+    # ┏━━━━━━━━━━ Label text styling ━━━━━━━━━━┓
+    for text, tx, ty, col in set_labels:
+        ax.text(tx, ty, text, ha="center", va="center", fontsize=12,
+                fontweight="bold", color=col,
+                bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                          ec=col, lw=1.8, alpha=0.95), zorder=5)
+
+    # ┏━━━━━━━━━━ Region label positions + arrow targets ━━━━━━━━━━┓
+    # Each entry: (count, label_x, label_y, arrow_target_x, arrow_target_y, colour)
+    # Arrow targets are approximate centroids of each Venn region.
+    ARROWPROPS = dict(arrowstyle="-|>", color="#555555", lw=1.4)
+
+    def _fmt(n):
+        return f"{n}\n({100*n/N:.1f}%)"
+
+    # ┏━━━━━━━━━━ Analytically-computed region centroids ━━━━━━━━━━┓
+    def _excl(cx, cy, o1, o2, push=0.55):
+        """Centre of exclusive region: push away from the other two circles."""
+        ox, oy = (o1[0]+o2[0])/2, (o1[1]+o2[1])/2
+        dx, dy = cx-ox, cy-oy
+        n = np.sqrt(dx**2+dy**2) or 1.0
+        return cx+push*dx/n, cy+push*dy/n
+
+    def _pair(ca, cb, o, push=0.18):
+        """Centre of pairwise intersection: midpoint pushed away from third circle."""
+        mx, my = (ca[0]+cb[0])/2, (ca[1]+cb[1])/2
+        dx, dy = mx-o[0], my-o[1]
+        n = np.sqrt(dx**2+dy**2) or 1.0
+        return mx+push*dx/n, my+push*dy/n
+
+    t_c1  = _excl(cx1, cy1, (cx2,cy2), (cx3,cy3))
+    t_c2  = _excl(cx2, cy2, (cx1,cy1), (cx3,cy3))
+    t_c3  = _excl(cx3, cy3, (cx1,cy1), (cx2,cy2))
+    t_c12 = _pair((cx1,cy1), (cx2,cy2), (cx3,cy3))
+    t_c13 = _pair((cx1,cy1), (cx3,cy3), (cx2,cy2))
+    t_c23 = _pair((cx2,cy2), (cx3,cy3), (cx1,cy1))
+    t_all = ((cx1+cx2+cx3)/3, (cy1+cy2+cy3)/3)
+
+    regions = [
+        # count  label_x  label_y   arrow_x      arrow_y      colour
+        (Abc, -2.30,  1.40,  t_c1[0],  t_c1[1],  COLORS["c1"]),   # only C1
+        (aBc,  2.30,  1.40,  t_c2[0],  t_c2[1],  COLORS["c2"]),   # only C2
+        (abC,  0.00, -2.30,  t_c3[0],  t_c3[1],  COLORS["c3"]),   # only C3
+        (ABc,  0.00,  2.20,  t_c12[0], t_c12[1], "#2171b5"),       # C1∧C2 only
+        (AbC, -2.30, -1.40,  t_c13[0], t_c13[1], "#d94801"),       # C1∧C3 only
+        (aBC,  2.30, -1.40,  t_c23[0], t_c23[1], "#238b45"),       # C2∧C3 only
+        (ABC, -2.30,  0.00,  t_all[0], t_all[1], "#006d2c"),       # C1∧C2∧C3
+    ]
+
+    region_labels = ["only C1", "only C2", "only C3", "C1∧C2", "C1∧C3", "C2∧C3", "C1∧C2∧C3"]
+
+    # ┏━━━━━━━━━━ Region labels and arrows ━━━━━━━━━━┓
+    for (cnt, lx, ly, ax_, ay_, col), rlbl in zip(regions, region_labels):
+        ax.annotate(_fmt(cnt), xy=(ax_, ay_), xytext=(lx, ly),
+                    ha="center", va="center", fontsize=10.5, fontweight="bold",
+                    color="black", bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                    ec=col, lw=1.8, alpha=0.97), arrowprops=ARROWPROPS, zorder=6)
+
+    # ┏━━━━━━━━━━ "None" box — bottom right, no arrow needed ━━━━━━━━━━┓
+    ax.text(2.2, -1.8, f"None\n{none} ({100*none/N:.1f}%)",
+            ha="center", va="center", fontsize=10.5, fontweight="bold",
+            color="#666666",
+            bbox=dict(boxstyle="round,pad=0.35", fc="#f5f5f5",
+                      ec="#aaaaaa", lw=1.6, alpha=0.97), zorder=6)
+
+    ax.set_xlim(-3.0, 3.0)
+    ax.set_ylim(-2.8, 2.8)
+
+    ax.set_title(f"CPCV 3-constraint Venn diagram  |  N = {N} configurations | "
+                 f"C1: frac_profitable ≥ {tau_fp:.2f} | "
+                 f"C2: median_path_sharpe ≥ {tau_sr:.2f} | "
                  f"C3: val_mean_ret > 0",
-                 fontsize   = 12, 
-                 fontweight = "bold", 
-                 pad        = 10)
-    
-    ax.set_ylim(0, max(counts) * 1.18)
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    ax.set_axisbelow(True)
-    plt.xticks(fontsize=9)
-    plt.tight_layout()
+                 fontsize=12, fontweight="bold", pad=14)
 
-    # ┏━━━━━━━━━━ Save figure ━━━━━━━━━━┓
-    out_path = os.path.join(output_dir, "cpcv_constraint_bars.png")
+    plt.tight_layout()
+    out_path = os.path.join(output_dir, "cpcv_constraint_venn.png")
     plt.savefig(out_path, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close()
-    print(f"[plot_cpcv_constraint_bars] {N} configs -> {out_path}")
+    print(f"[plot_cpcv_constraint_venn] {N} configs -> {out_path}")
     return out_path
 
 
@@ -3745,8 +3828,22 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
                 accuracy[yi, xi] = (tp + tn) / N
                 precision[yi, xi] = (tp / (tp + fp_)) if (tp + fp_) > 0 else np.nan
 
-        # ┏━━━━━━━━━━ Two side-by-side subplots ━━━━━━━━━━┓
-        fig, (ax_acc, ax_prec) = plt.subplots(1, 2, figsize=(max(20, 1.9 * n_x + 6), max(6, 0.85 * n_y + 2)))
+        # ┏━━━━━━━━━━ F1 grid — F1 of the triggering logic (same TP/FP/FN as above) ━━━━━━━━━━┓
+        # F1 = 2*TP / (2*TP + FP + FN)  — harmonic mean of precision and recall
+        # of the filter itself, treating "outcome > 0" as the positive class.
+        f1_grid = np.full((n_y, n_x), np.nan, dtype=float)
+        for yi in range(n_y):
+            for xi in range(n_x):
+                tp = tp_grid[yi, xi]
+                fp_ = fp_grid[yi, xi]
+                fn = fn_grid[yi, xi]
+                denom = 2 * tp + fp_ + fn
+                if denom > 0:
+                    f1_grid[yi, xi] = (2 * tp) / denom
+
+        # ┏━━━━━━━━━━ Three side-by-side subplots ━━━━━━━━━━┓
+        fig, (ax_acc, ax_prec, ax_f1) = plt.subplots(
+            1, 3, figsize=(max(30, 2.85 * n_x + 9), max(6, 0.85 * n_y + 2)))
         fig.patch.set_facecolor("white")
 
         # ┏━━━━━━━━━━ Set suptitle ━━━━━━━━━━┓
@@ -3754,8 +3851,8 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
         fig.suptitle(f"CPCV 3-Constraint Filter — {split_name.upper()} outcome\n"
                      f"C1: frac_prof≥τ_FP   C2: med_SR≥τ_SR   C3: val_mean_ret>0    "
                      f"|   outcome = {outcome_lbl}   |   N = {N} configs",
-                     fontsize   = 12, 
-                     fontweight = "bold", 
+                     fontsize   = 12,
+                     fontweight = "bold",
                      y          = 0.99)
 
         # ┏━━━━━━━━━━ Extent ━━━━━━━━━━┓
@@ -3892,6 +3989,64 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
         if np.isfinite(precision[best_yi_p, best_xi_p]):
             ax_prec.add_patch(plt.Rectangle((x_thresholds[best_xi_p] - sr_step / 2, y_thresholds[best_yi_p] - 0.1),
                                              sr_step, 0.2, fill=False, edgecolor="black", lw=2.2))
+
+        # ┏━━━━━━━━━━ Subplot 3 — Mean F1 of passing configs ━━━━━━━━━━┓
+        # Each cell shows the mean F1 score (at τ=0.5) averaged over all
+        # configs that pass C1∧C2∧C3 at that threshold pair. This answers:
+        # "among the configs the filter selects for deployment, how good
+        # is their raw discriminative ability?"
+        f1_lo, f1_hi = _clim(f1_grid)
+        f1_cmap = LinearSegmentedColormap.from_list(
+            "f1_cmap",
+            ["#fcfbfd", "#dadaeb", "#9e9ac8", "#6a51a3", "#3f007d"], N=256)
+
+        im_f1 = ax_f1.imshow(f1_grid, origin="lower", cmap=f1_cmap,
+                             vmin=f1_lo, vmax=f1_hi, aspect="auto", extent=extent)
+
+        for yi in range(n_y):
+            for xi in range(n_x):
+                f1v = f1_grid[yi, xi]
+                cx, cy = x_thresholds[xi], y_thresholds[yi]
+                if not np.isfinite(f1v):
+                    ax_f1.text(cx, cy, "n/a", ha="center", va="center",
+                               fontsize=8, color="#999999")
+                    continue
+                rel = (f1v - f1_lo) / max(1e-9, f1_hi - f1_lo)
+                text_col = "white" if rel > 0.55 else "black"
+                ax_f1.text(cx, cy, f"{f1v:.3f}",
+                           ha="center", va="center",
+                           fontsize=10, color=text_col, fontweight="bold")
+
+        ax_f1.set_xticks(x_thresholds)
+        ax_f1.set_xticklabels([f"{v:.1f}" for v in x_thresholds], fontsize=9)
+        ax_f1.set_yticks(y_thresholds)
+        ax_f1.set_yticklabels([f"{v:.1f}" for v in y_thresholds], fontsize=10)
+        ax_f1.set_xlabel("τ_SR  (median path Sharpe threshold, C2)",
+                         fontsize=11, fontweight="bold", labelpad=8)
+        ax_f1.set_ylabel("τ_FP  (frac. profitable paths threshold, C1)",
+                         fontsize=11, fontweight="bold", labelpad=8)
+        f1_split_lbl = "Val" if split_name == "val" else "Test"
+        ax_f1.set_title(f"F1 = 2·TP / (2·TP+FP+FN)  [{f1_lo:.3f} – {f1_hi:.3f}]",
+                        fontsize=11, fontweight="bold", pad=8)
+
+        for xv in x_thresholds - sr_step / 2:
+            ax_f1.axvline(xv, color="white", lw=0.8, alpha=0.6)
+        ax_f1.axvline(x_thresholds[-1] + sr_step / 2, color="white", lw=0.8, alpha=0.6)
+        for yv in y_thresholds:
+            ax_f1.axhline(yv - 0.1, color="white", lw=0.8, alpha=0.6)
+        ax_f1.axhline(y_thresholds[-1] + 0.1, color="white", lw=0.8, alpha=0.6)
+
+        cbar_f1 = fig.colorbar(im_f1, ax=ax_f1, fraction=0.038, pad=0.02)
+        cbar_f1.set_label("F1 score (filter logic)", fontsize=9)
+        cbar_f1.ax.tick_params(labelsize=8)
+
+        # Best F1 cell highlight
+        f1_for_best = np.where(np.isfinite(f1_grid), f1_grid, -np.inf)
+        best_yi_f, best_xi_f = np.unravel_index(np.argmax(f1_for_best), f1_grid.shape)
+        if np.isfinite(f1_grid[best_yi_f, best_xi_f]):
+            ax_f1.add_patch(plt.Rectangle(
+                (x_thresholds[best_xi_f] - sr_step / 2, y_thresholds[best_yi_f] - 0.1),
+                sr_step, 0.2, fill=False, edgecolor="black", lw=2.2))
 
         # ┏━━━━━━━━━━ Adjust layout and save figure ━━━━━━━━━━┓
         plt.tight_layout(rect=[0, 0, 1, 0.95])
