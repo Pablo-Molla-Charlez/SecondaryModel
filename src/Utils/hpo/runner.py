@@ -164,14 +164,21 @@ def run_hpo_single(model_name: str,
 
     # ┏━━━━━━━━━━ Extract best ━━━━━━━━━━┓
     best = study.best_trial
-    result = {"model":       model_name,
-              "direction":   direction,
-              "granularity": granularity,
-              "best_trial":  best.number,
+    _saved_params = dict(best.params)
+    
+    if model_name == "ctts" and "cnn_c1" in _saved_params:
+        _saved_params["cnn_embed_dim"] = [_saved_params.pop("cnn_c1"), _saved_params.pop("cnn_c2")]
+        _saved_params["cnn_kernel"]    = [_saved_params.pop("cnn_k1"), _saved_params.pop("cnn_k2")]
+        _saved_params.setdefault("cnn_stride", [2, 1])
+
+    result = {"model":        model_name,
+              "direction":    direction,
+              "granularity":  granularity,
+              "best_trial":   best.number,
               "best_utility": best.value,
-              "best_params": best.params,
+              "best_params":  _saved_params,
               "best_metrics": {k: v for k, v in best.user_attrs.items()},
-              "n_trials":    len(study.trials)}
+              "n_trials":     len(study.trials)}
 
     # ┏━━━━━━━━━━ Save best params ━━━━━━━━━━┓
     with open(best_path, "w") as f:
@@ -189,7 +196,7 @@ def run_hpo_single(model_name: str,
     try:
         _save_best_trial_probs(out_dir    = out_dir,
                                model_name  = model_name,
-                               best_params = best.params,
+                               best_params = _saved_params,
                                X_train     = X_train,
                                y_train     = y_train,
                                X_cal       = X_cal,
