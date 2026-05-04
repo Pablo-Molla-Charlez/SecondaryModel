@@ -96,9 +96,10 @@ class TabMClassifier(BaseClassifier):
         self.random_state  = random_state
         self.device        = _resolve_device(device)
 
-        self._model        = None
-        self._n_features   = None
-        self._n_classes    = None
+        self._model         = None
+        self._n_features    = None
+        self._n_classes     = None
+        self._constant_cols = np.array([], dtype=int)
         self.classes_      = None
         self._best_state   = None  # state_dict at best val epoch
 
@@ -144,18 +145,31 @@ class TabMClassifier(BaseClassifier):
 
         # ┏━━━━━━━━━━ Optional PiecewiseLinearEmbeddings ━━━━━━━━━━┓
         num_embeddings = None
+        self._constant_cols: np.ndarray = np.array([], dtype=int)  # columns dropped before PLR
         if self.n_bins is not None and self.d_embedding is not None:
             from rtdl_num_embeddings import (PiecewiseLinearEmbeddings, compute_bins)
-        
+
+            # Drop constant columns — compute_bins requires ≥2 distinct values per column
+            n_distinct = np.array([len(np.unique(X[:, j])) for j in range(X.shape[1])])
+            self._constant_cols = np.where(n_distinct < 2)[0]
+            if len(self._constant_cols):
+                print(f"  [TabM PLR] Dropping {len(self._constant_cols)} constant column(s) before bin computation.")
+            X_plr = np.delete(X, self._constant_cols, axis=1)
+
             # ┏━━━━━━━━━━ Compute bins ━━━━━━━━━━┓
-            X_t = torch.from_numpy(X)
+            X_t = torch.from_numpy(X_plr)
             bins = compute_bins(X_t, n_bins=int(self.n_bins))
-            
+
             # ┏━━━━━━━━━━ Compute embeddings ━━━━━━━━━━┓
             num_embeddings = PiecewiseLinearEmbeddings(bins,
                                                        d_embedding = int(self.d_embedding),
                                                        activation  = False,
                                                        version     = "B")
+
+        # Apply constant-column drop to X before building the model
+        if len(self._constant_cols):
+            X = np.delete(X, self._constant_cols, axis=1)
+            self._n_features = int(X.shape[1])
 
         # ┏━━━━━━━━━━ Build TabM ━━━━━━━━━━┓
         torch.manual_seed(self.random_state)
@@ -271,6 +285,8 @@ class TabMClassifier(BaseClassifier):
             raise AttributeError("The model has not been fitted yet.")
         import torch
         X = np.asarray(X_test, dtype=np.float32)
+        if len(self._constant_cols):
+            X = np.delete(X, self._constant_cols, axis=1)
         x = torch.from_numpy(X).to(self.device)
         self._model.eval()
         bs = max(1024, int(self.batch_size))
@@ -321,11 +337,12 @@ class TabMClassifier(BaseClassifier):
             raise AttributeError("The model has not been fitted yet.")
         import torch
         path = f"{model_path}.pt"
-        torch.save({"state_dict":   self._model.state_dict(),
-                    "params":       self.get_params(),
-                    "n_features":   self._n_features,
-                    "n_classes":    self._n_classes,
-                    "classes_":     None if self.classes_ is None else self.classes_.tolist(),}, path)
+        torch.save({"state_dict":    self._model.state_dict(),
+                    "params":        self.get_params(),
+                    "n_features":    self._n_features,
+                    "n_classes":     self._n_classes,
+                    "classes_":      None if self.classes_ is None else self.classes_.tolist(),
+                    "constant_cols": self._constant_cols.tolist()}, path)
 
     # ┏━━━━━━━━━━ Load Model ━━━━━━━━━━┓
     def load_model(self, model_path: str) -> None:
@@ -335,9 +352,10 @@ class TabMClassifier(BaseClassifier):
         payload = torch.load(path, map_location=self.device, weights_only=False)
         params = payload["params"]
         for k_, v_ in params.items(): setattr(self, k_, v_)
-        self._n_features = payload["n_features"]
-        self._n_classes  = payload["n_classes"]
-        self.classes_    = (np.array(payload["classes_"])if payload.get("classes_") is not None else None)
+        self._n_features    = payload["n_features"]
+        self._n_classes     = payload["n_classes"]
+        self.classes_       = (np.array(payload["classes_"]) if payload.get("classes_") is not None else None)
+        self._constant_cols = np.array(payload.get("constant_cols", []), dtype=int)
 
         # ┏━━━━━━━━━━ Rebuild model skeleton ━━━━━━━━━━┓ 
         # embeddings are not persisted; on reload we disable them. 
