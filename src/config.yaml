@@ -8,8 +8,8 @@
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
   # /home/till/PycharmProjects/Secondary-Model
-  csv_dir: "/home/till/PycharmProjects/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
-  output_root: "/home/till/PycharmProjects/Secondary-Model/src/Output"
+  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
+  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
