@@ -917,6 +917,14 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     if not isinstance(asset_map, dict) and hasattr(sub, "asset_map"): asset_map = sub.asset_map
     dates_all_raw = sub["dates"]
 
+    # ┏━━━━━━━━━━ CTTS branch: replace eng with raw close windows ━━━━━━━━━━┓
+    if m2_name == "ctts":
+        from Utils.classifier.ctts.ctts_features import extract_close_windows
+        from Utils.data import GRAN_SEQ_LEN
+        _ctts_seq = min(90, GRAN_SEQ_LEN.get(granularity, 90))
+        eng = extract_close_windows(sub, seq_len=_ctts_seq)
+        print(f"  [CTTS] Using raw close windows: shape {eng.shape} (seq_len={_ctts_seq})")
+
     # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
     valid = ~np.isnan(labels)
     eng, labels, returns, asset_ids = eng[valid], labels[valid], returns[valid], asset_ids[valid]

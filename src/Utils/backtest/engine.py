@@ -168,32 +168,40 @@ def run_feature_backtest(dataset,
     threshold   = val_op["threshold"]
     
     # ┏━━━━━━━━━━ Load Engineered Features ━━━━━━━━━━┓
-    eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
-    if isinstance(eng, torch.Tensor):
-        eng = eng.numpy()
-    
+    if model_name == "ctts":
+        from Utils.classifier.ctts.ctts_features import extract_close_windows
+        _seq = artifacts.get("seq_len", 40)
+        eng = extract_close_windows(dataset, seq_len=_seq)
+    else:
+        eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
+        if isinstance(eng, torch.Tensor):
+            eng = eng.numpy()
+
     # ┏━━━━━━━━━━ Load Labels ━━━━━━━━━━┓
     labels_all = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
     if isinstance(labels_all, torch.Tensor):
         labels_all = labels_all.numpy()
-    
+
     # ┏━━━━━━━━━━ Load Returns ━━━━━━━━━━┓
     returns_all = dataset["returns"] if isinstance(dataset, dict) else dataset.returns
     if isinstance(returns_all, torch.Tensor):
         returns_all = returns_all.numpy()
-    
+
     # ┏━━━━━━━━━━ Load Asset IDs ━━━━━━━━━━┓
     asset_ids_all = dataset["asset_ids"] if isinstance(dataset, dict) else dataset.asset_ids
     if isinstance(asset_ids_all, torch.Tensor):
         asset_ids_all = asset_ids_all.numpy()
-    
+
     # ┏━━━━━━━━━━ Load Asset Map ━━━━━━━━━━┓
     asset_map = dataset.get("asset_map", {}) if isinstance(dataset, dict) else dataset.asset_map
     if not isinstance(asset_map, dict) and hasattr(dataset, "asset_map"):
         asset_map = dataset.asset_map
 
     # ┏━━━━━━━━━━ Prepare Test Data ━━━━━━━━━━┓
-    X_test = eng[idx_test][:, col_indices].copy()
+    if model_name == "ctts":
+        X_test = eng[idx_test].copy()
+    else:
+        X_test = eng[idx_test][:, col_indices].copy()
     y_test = labels_all[idx_test].astype(int)
     test_returns = returns_all[idx_test].copy()
     test_asset_ids = asset_ids_all[idx_test]

@@ -25,7 +25,7 @@ from Utils.hpo.search_spaces import _build_model_from_params
 # ┏━━━━━━━━━━ Constants ━━━━━━━━━━┓
 ALL_GRANS  = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
 DIRECTIONS = ["up", "down"]
-HPO_MODELS = ["rf", "tabpfn", "tabicl", "tabm"]
+HPO_MODELS = ["rf", "tabpfn", "tabicl", "tabm", "ctts"]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -61,9 +61,11 @@ def run_hpo_single(model_name: str,
                 (X_train, y_train,
                  X_cal, y_cal,
                  X_opt, y_opt,
-                 _, _, _, _, _, _) = _prepare_splits(
-                    _load_dataset_for_gran(multi_cache, granularity),
-                    cfg, granularity, direction)
+                 _, _, _, _, _, _) = _prepare_splits(_load_dataset_for_gran(multi_cache, granularity),
+                                                     cfg,
+                                                     granularity,
+                                                     direction,
+                                                     model_name = model_name)
                 _nocal_bf = cfg.get("runtime", {}).get("training", {}).get("thres", "utility") == "utility_nocal"
                 _save_best_trial_probs(out_dir     = out_dir,
                                        model_name  = model_name,
@@ -104,7 +106,7 @@ def run_hpo_single(model_name: str,
          feature_names,
          fee,
          m1_prec_opt,
-         m1_prec_merged) = _prepare_splits(dataset, cfg, granularity, direction)
+         m1_prec_merged) = _prepare_splits(dataset, cfg, granularity, direction, model_name = model_name)
     except Exception as e:
         print(f"  [SKIP] Split preparation failed: {e}")
         return None

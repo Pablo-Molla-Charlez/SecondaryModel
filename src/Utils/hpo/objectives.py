@@ -40,7 +40,7 @@ def _load_dataset_for_gran(multi_cache, granularity: str) -> dict:
         return multi_cache
 
 
-def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str):
+def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str, model_name: str = "rf"):
     """Prepare 4-way embargo splits and extract feature/label/return arrays.
 
     Returns:
@@ -54,9 +54,17 @@ def _prepare_splits(dataset: dict, cfg: dict, granularity: str, direction: str):
     fee       = cfg.get("evaluation", {}).get("fee_per_trade", 0.002)
 
     # ┏━━━━━━━━━━ Raw arrays to numpy ━━━━━━━━━━┓
-    eng = dataset["eng_features"]
-    if isinstance(eng, torch.Tensor):
-        eng = eng.numpy()
+    # CTTS branch: use raw close windows instead of engineered features
+    if model_name == "ctts":
+        from Utils.classifier.ctts.ctts_features import extract_close_windows
+        from Utils.data import GRAN_SEQ_LEN
+        _ctts_seq = min(90, GRAN_SEQ_LEN.get(granularity, 90))
+        eng = extract_close_windows(dataset, seq_len=_ctts_seq)
+    else:
+        # ┏━━━━━━━━━━ Non-CTTS: use engineered features ━━━━━━━━━━┓
+        eng = dataset["eng_features"]
+        if isinstance(eng, torch.Tensor):
+            eng = eng.numpy()
     labels = dataset["labels"]
     if isinstance(labels, torch.Tensor):
         labels = labels.numpy()
@@ -188,11 +196,11 @@ def _create_objective(model_name: str,
         # ┏━━━━━━━━━━ Build and fit model ━━━━━━━━━━┓
         try:
             model = _build_model_from_params(model_name, params, seed=seed)
-            # ┏━━━━━━━━━━ TabM gets the merged Val window for early stopping ━━━━━━━━━━┓
+            # ┏━━━━━━━━━━ TabM and CTTS get the merged Val window for early stopping ━━━━━━━━━━┓
             # Same chronological tail used downstream by the threshold
             # optimiser; matches the protocol applied to AutoGluon.
             fit_kwargs = {}
-            if model_name == "tabm":
+            if model_name in ["tabm", "ctts"]:
                 if nocal and _merged_y is not None:
                     fit_kwargs["X_eval"] = np.concatenate([X_cal_s, X_opt_s])
                     fit_kwargs["y_eval"] = _merged_y

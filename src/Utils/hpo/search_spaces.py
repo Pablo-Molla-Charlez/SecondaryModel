@@ -125,10 +125,36 @@ def _suggest_tabm(trial: optuna.Trial) -> dict:
     return params
 
 
+# ┏━━━━━━━━━━ CTTS ━━━━━━━━━━┓
+def _suggest_ctts(trial: optuna.Trial) -> dict:
+    """Suggest CTTS hyperparameters.
+
+    The architecture knobs (CNN channels, Transformer depth) are kept at
+    reasonable ranges.  The training regime (lr, weight_decay, batch_size)
+    has the most impact and is given the widest search ranges.
+    """
+    return {"cnn_embed_dim": [trial.suggest_categorical("cnn_c1", [32, 64]),
+                              trial.suggest_categorical("cnn_c2", [64, 128, 256])],
+            "cnn_kernel":    [trial.suggest_categorical("cnn_k1", [5, 7, 9]),
+                              trial.suggest_categorical("cnn_k2", [3, 5])],
+            "cnn_stride":    [2, 1],
+            "trans_heads":   trial.suggest_categorical("trans_heads", [2, 4, 8]),
+            "trans_layers":  trial.suggest_int("trans_layers", 1, 4),
+            "trans_ff":      trial.suggest_categorical("trans_ff", [128, 256, 512]),
+            "trans_dropout": trial.suggest_float("trans_dropout", 0.0, 0.3, step=0.05),
+            "mlp_hidden":    trial.suggest_categorical("mlp_hidden", [64, 128, 256]),
+            "mlp_dropout":   trial.suggest_float("mlp_dropout", 0.0, 0.4, step=0.05),
+            "mlp_pooling":   trial.suggest_categorical("mlp_pooling", ["attention", "meanmax"]),
+            "lr":            trial.suggest_float("lr", 1e-5, 5e-3, log=True),
+            "weight_decay":  trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
+            "batch_size":    trial.suggest_categorical("batch_size", [64, 128, 256])}
+
+
 _SUGGEST_FN = {"rf":     _suggest_rf,
                "tabpfn": _suggest_tabpfn,
                "tabicl": _suggest_tabicl,
-               "tabm":   _suggest_tabm}
+               "tabm":   _suggest_tabm,
+               "ctts":   _suggest_ctts}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -183,5 +209,25 @@ def _build_model_from_params(model_name: str, params: dict, seed: int = 42):
                               d_embedding   = params.get("d_embedding"),
                               random_state  = seed)
 
+    # ┏━━━━━━━━━━ CTTS ━━━━━━━━━━┓
+    elif model_name == "ctts":
+        from Utils.classifier.ctts_classifier import CTTSClassifier
+        return CTTSClassifier(
+            cnn_embed_dim = params.get("cnn_embed_dim", [64, 128]),
+            cnn_kernel    = params.get("cnn_kernel", [7, 5]),
+            cnn_stride    = params.get("cnn_stride", [2, 1]),
+            trans_heads   = params.get("trans_heads", 4),
+            trans_layers  = params.get("trans_layers", 2),
+            trans_ff      = params.get("trans_ff", 256),
+            trans_dropout = params.get("trans_dropout", 0.1),
+            mlp_hidden    = params.get("mlp_hidden", 128),
+            mlp_dropout   = params.get("mlp_dropout", 0.1),
+            mlp_pooling   = params.get("mlp_pooling", "attention"),
+            lr            = params.get("lr", 1e-4),
+            weight_decay  = params.get("weight_decay", 1e-4),
+            batch_size    = params.get("batch_size", 128),
+            random_state  = seed)
+
     else:
         raise ValueError(f"HPO not supported for model: {model_name}")
+

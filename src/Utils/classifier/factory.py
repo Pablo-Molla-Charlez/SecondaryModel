@@ -11,11 +11,11 @@ import pickle
 from pathlib import Path
 
 # ┏━━━━━━━━━━ Model registry ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm")
+MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm", "ctts")
 
 # ┏━━━━━━━━━━ Models that must NOT receive StandardScaler-transformed data ━━━━━━━━━━┓
 # TabM benefits from standardised inputs (it's an MLP), so it stays out of this set.
-MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl"}
+MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl", "ctts"}
 
 # ┏━━━━━━━━━━ TabPFN soft row limit ━━━━━━━━━━┓
 _TABPFN_MAX_ROWS = 50_000
@@ -133,6 +133,28 @@ def _build_tree_model(model_name:         str,
                                   d_embedding  = params.get("d_embedding"),
                                   random_state = 42)
         return TabMClassifier(random_state=42)
+
+    # ┏━━━━━━━━━━ CTTS (CNN-Transformer time-series classifier) ━━━━━━━━━━┓
+    elif model_name == "ctts":
+        from Utils.classifier.ctts_classifier import CTTSClassifier
+        if params:
+            return CTTSClassifier(seq_len       = params.get("seq_len", 90),
+                                  cnn_embed_dim = params.get("cnn_embed_dim", [64, 128]),
+                                  cnn_kernel    = params.get("cnn_kernel", [7, 5]),
+                                  cnn_stride    = params.get("cnn_stride", [2, 1]),
+                                  p_pos_drop    = params.get("p_pos_drop", 0.1),
+                                  trans_heads   = params.get("trans_heads", 4),
+                                  trans_layers  = params.get("trans_layers", 2),
+                                  trans_ff      = params.get("trans_ff", 256),
+                                  trans_dropout = params.get("trans_dropout", 0.1),
+                                  mlp_hidden    = params.get("mlp_hidden", 128),
+                                  mlp_dropout   = params.get("mlp_dropout", 0.1),
+                                  mlp_pooling   = params.get("mlp_pooling", "attention"),
+                                  lr            = params.get("lr", 1e-4),
+                                  weight_decay  = params.get("weight_decay", 1e-4),
+                                  batch_size    = params.get("batch_size", 128),
+                                  random_state  = 42)
+        return CTTSClassifier(random_state = 42)
 
     else:
         raise ValueError(f"Unknown model: {model_name!r}. Choose from {MODEL_CHOICES}")

@@ -162,9 +162,19 @@ def temporal_eval(dataset: dict,
     # ┏━━━━━━━━━━ Load Data ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
     _is_dict = isinstance(dataset, dict)
-    eng = dataset["eng_features"] if _is_dict else dataset.eng_features
-    if isinstance(eng, torch.Tensor):
-        eng = eng.numpy()
+
+    # ┏━━━━━━━━━━ CTTS branch: raw close windows instead of eng_features ━━━━━━━━━━┓
+    if model_name == "ctts":
+        from Utils.classifier.ctts.ctts_features import extract_close_windows
+        _ctts_seq = min(90, GRAN_SEQ_LEN.get(granularity, 90))
+        eng = extract_close_windows(dataset, seq_len=_ctts_seq)
+        print(f"  [CTTS] Using raw close windows: shape {eng.shape} (seq_len={_ctts_seq})")
+    else:
+        # ┏━━━━━━━━━━ Traditional branch: eng_features ━━━━━━━━━━┓
+        eng = dataset["eng_features"] if _is_dict else dataset.eng_features
+        if isinstance(eng, torch.Tensor):
+            eng = eng.numpy()
+
     labels = dataset["labels"] if _is_dict else dataset.labels
     if isinstance(labels, torch.Tensor):
         labels = labels.numpy()
@@ -206,9 +216,12 @@ def temporal_eval(dataset: dict,
             m1_acc_test, m1_prec_test = _calc_m1(idx_test_raw)
 
     
-    # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓
-    all_names = resolve_feature_names(eng.shape[1])
-    col_indices = [all_names.index(c) for c in feature_cols]
+    # ┏━━━━━━━━━━ Feature Selection (skip for CTTS — windows are the features) ━━━━━━━━━━┓
+    if model_name == "ctts":
+        col_indices = list(range(eng.shape[1]))
+    else:
+        all_names = resolve_feature_names(eng.shape[1])
+        col_indices = [all_names.index(c) for c in feature_cols]
     
     # ┏━━━━━━━━━━ Load Train, Val-Cal, Val-Opt, and Test data ━━━━━━━━━━┓
     X_train = eng[idx_train][:, col_indices]
@@ -272,11 +285,11 @@ def temporal_eval(dataset: dict,
                               presets       = _AG_PRESETS,
                               params        = best_params)
     
-    # ┏━━━━━━━━━━ TabM gets the merged Val window as early-stopping signal ━━━━━━━━━━┓
-    if model_name == "tabm":
-        _tabm_X_eval = np.vstack([X_cal, X_opt])
-        _tabm_y_eval = np.concatenate([y_cal, y_opt])
-        model.fit(X_train, y_train, X_eval=_tabm_X_eval, y_eval=_tabm_y_eval)
+    # ┏━━━━━━━━━━ TabM and CTTS get the merged Val window as early-stopping signal ━━━━━━━━━━┓
+    if model_name in ["tabm", "ctts"]:
+        _eval_X = np.vstack([X_cal, X_opt])
+        _eval_y = np.concatenate([y_cal, y_opt])
+        model.fit(X_train, y_train, X_eval=_eval_X, y_eval=_eval_y)
     else:
         model.fit(X_train, y_train)
     
@@ -716,7 +729,8 @@ def temporal_eval(dataset: dict,
                  "scaler": scaler,
                  "col_indices": col_indices,
                  "val_op": val_op,
-                 "calibrator": _calibrator}
+                 "calibrator": _calibrator,
+                 "seq_len": locals().get("_ctts_seq")}
     
     return results, artifacts
 

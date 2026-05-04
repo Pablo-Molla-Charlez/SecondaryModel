@@ -32,6 +32,12 @@ try:
 except Exception:
     TabMClassifier = None
 
+# ┏━━━━━━━━━━ CTTS Classifier ━━━━━━━━━━┓
+try:
+    from Utils.classifier.ctts_classifier import CTTSClassifier
+except Exception:
+    CTTSClassifier = None
+
 # ┏━━━━━━━━━━ TabPFN Fine-Tuned Classifier ━━━━━━━━━━┓
 try:
     from Utils.classifier.tabpfn_finetuned_classifier import TabPFNFineTuned
@@ -60,6 +66,7 @@ __all__ = [
     "TabPFN",
     "TabICL",
     "TabMClassifier",
+    "CTTSClassifier",
     "TabPFNFineTuned",
     "AutoGluon",
     "AutogluonClassifier",

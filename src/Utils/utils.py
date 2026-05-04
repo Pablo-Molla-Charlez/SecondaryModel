@@ -22,7 +22,8 @@ def model_label(model_name: str) -> str:
             "autogluon": "AG",
             "tabicl":    "TabICL",
             "tabpfn":    "TabPFN",
-            "tabm":      "TabM"}.get(model_name, model_name.upper())
+            "tabm":      "TabM",
+            "ctts":      "CTTS"}.get(model_name, model_name.upper())
 
 # ┏━━━━━━━━━━ M1 Model Name retrieval ━━━━━━━━━━┓
 def m1_model_name(cfg: dict | None) -> str:
@@ -53,7 +54,7 @@ def m1_display_label(cfg: dict | None) -> str:
 
 # ┏━━━━━━━━━━ HPO best-params loader ━━━━━━━━━━┓
 # Models whose hyperparameters are currently tunable via Utils.hpo.
-HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm"}
+HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm", "ctts"}
 
 def _load_best_params(cfg: dict,
                       m2: str,
@@ -360,8 +361,16 @@ def _filter_dataset_by_granularity(dataset, granularity: str) -> dict:
             return [arr[i] for i in range(len(arr)) if mask[i]]
         return np.asarray(arr)[mask]
 
+    # ohlcv is stored per-granularity in dataset.sub[gran], not as a flat attribute
+    _ohlcv_raw = None
+    if _is_dict and "ohlcv" in dataset:
+        _ohlcv_raw = dataset["ohlcv"]
+    elif not _is_dict and hasattr(dataset, "sub") and granularity in dataset.sub:
+        _ohlcv_raw = dataset.sub[granularity].get("ohlcv")
+
     # ┏━━━━━━━━━━ Filtered dataset ━━━━━━━━━━┓
     filtered = {"eng_features":    _subset(_get("eng_features")),
+                "ohlcv":           _ohlcv_raw,  # already granularity-specific, no mask needed
                 "labels":          _subset(_get("labels")),
                 "dates":           _subset(_get("dates")),
                 "returns":         _subset(_get("returns")),
