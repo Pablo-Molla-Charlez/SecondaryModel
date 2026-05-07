@@ -1353,10 +1353,10 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
       * Forbidden zone (Cov < cov_min) shaded red/hatched.
       * Quadratic-penalty zone (cov_min ≤ Cov < cov_star) shaded orange/hatched.
       * Baseline risk floor from M2 τ=0.5 precision: τ̂ must land below it.
-      * Stage-A utility curve U(τ) = t_reg × cov_factor on a third y-axis,
+      * Stage-A utility curve U(τ) = t_reg x cov_factor on a third y-axis,
         drawn only where Stage-A hard constraints hold (so the feasible region
         is reinforced visually). A gold star marks argmax U.
-      * Two reference utility curves: t_reg (no penalty) and t_reg × min(1, cov/cov*)
+      * Two reference utility curves: t_reg (no penalty) and t_reg x min(1, cov/cov*)
         (linear penalty), each with its own argmax star, for visual comparison.
     """
     thrs = curve["thresholds"]
@@ -1455,7 +1455,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                 ax.plot(x[idx_ok], y[idx_ok], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_OK, zorder=zorder)
 
     _plot_alpha_masked(ax_rc, grid_cov, risk_smooth, c_risk, 2.2, "-", 4)
-    ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=8)
+    ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=-2)
     ax_rc.set_ylabel("Risk", fontsize=11, fontweight="bold", color="black", labelpad=8)
     ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=9, width=1.5)
     ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
@@ -1500,6 +1500,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
         clash_tol = 0.005 if cov_min <= t <= cov_star else 0.025
         if not any(abs(t - st) < clash_tol for st in special_ticks):
             final_ticks.append(t)
+    final_ticks.append(1.0)
             
     final_ticks = sorted(set(final_ticks))
     ax_rc.set_xticks(final_ticks)
@@ -1708,7 +1709,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                color=c_baseline, linestyle="-.", linewidth=1.6, alpha=0.9, zorder=3)
     # Inline label at the right end of the line, just below it.
     ax_rc.annotate(r"$Risk_{Floor}$",
-                   xy=(1.0, risk_floor), xytext=(-4, 8), textcoords="offset points",
+                   xy=(1.0, risk_floor), xytext=(-4, 11), textcoords="offset points",
                    fontsize=9, color=c_baseline, fontweight="bold", ha="right", va="top",
                    zorder=11)
 
@@ -1791,51 +1792,49 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     _model_display = {"RF": "Random Forest", "rf": "Random Forest"}.get(model_label, model_label)
     _split_display = {"Val": "Validation", "val": "Validation"}.get(split_name, split_name)
     _dir_gran = f"  |  {direction.upper()}  {granularity}" if direction or granularity else ""
-    ax_rc.set_title(f"Profitability-Risk  |  {_split_display}  |  {_model_display}{_dir_gran}",
-                    fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
+    # title removed
 
     # ┏━━━━━━━━━━ Single legend: 3 rows × 4 columns ━━━━━━━━━━┓
     # Stats (Prec, Cov, μ/t) are embedded as multi-line text in col-4 entries
     # so no phantom handle-space is wasted on invisible patches.
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
+    import matplotlib.colors as mcolors
     _prec_str = rf"Prec$_{{\hat{{τ}}}}$={op.get('precision', float('nan'))*100:.1f}%"
     _cov_str  = rf"Cov$_{{\hat{{τ}}}}$={op['coverage']*100:.1f}% (N={op.get('selected_count', 0)})"
-    _mut_str  = rf"$\mu$={op['mean_ret']*100:+.2f}%, t={op.get('t_stat', 0):.2f}"
+    _mut_str  = rf"$t$-statistic: t={op.get('t_stat', 0):.2f}"
     handles = [
         # ── Column 1: Curves ──────────────────────────────────────────
-        Line2D([], [], color=c_util, linewidth=1.8, linestyle="--", label=r"Risk-Profitability Score"),
-        Line2D([], [], color=c_ret, linewidth=2.0, label="Mean Net Return"),
-        Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
-        # ── Column 2: Zones ───────────────────────────────────────────
-        Patch(facecolor=c_forbid, alpha=0.30, hatch="//", edgecolor=c_forbid,
-              label=r"Forbidden: $\mathrm{Cov} < C_{min}$"),
-        Patch(facecolor=c_penalty, alpha=0.20, hatch="..", edgecolor=c_penalty,
-              label=r"Quadratic Penalty: $\mathrm{Cov} < C^{*}$"),
-        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"Risk Floor: $Risk_{floor}$"),
-        # ── Column 3: Operating points + stats ────────────────────────
         Line2D([], [], color=c_util, marker="*", markersize=13, linestyle="None",
-               markeredgecolor="white", markeredgewidth=1.0,
-               label=rf"Risk-Profitability Score   {_prec_str}"),
+               markeredgecolor="white", markeredgewidth=1.0, label=rf"Risk-Profitability Score"),
+        Line2D([], [], color=c_util, linewidth=2.0, label=r"Risk-Profitability Curve"),
+        Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
+
+        # ── Column 2: Zones ───────────────────────────────────────────
+        Line2D([], [], color=c_ret, linewidth=1.8, linestyle="--", label=rf"Mean net return $\mu$={op['mean_ret']*100:+.2f}% (i)"),
         Line2D([], [], color=c_op, marker="D", markersize=7, linestyle="--",
                markeredgecolor="white", markeredgewidth=0.8,
-               label=rf"$\hat{{\tau}}$={op['threshold']:.3f}   ({thr_source})   {_cov_str}"),
-        Line2D([], [], color=c_thr05, marker="o", markersize=6, linestyle="--",
-               markeredgecolor="white", markeredgewidth=0.8,
-               label=rf"$\tau$=0.5 (Baseline)            {_mut_str}"),
+               label=rf"$\hat{{\tau}}$={op['threshold']:.3f}, {_mut_str} (ii)"),
+        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"$Risk_{floor}$ (iii)"),
+        
+        # ── Column 3: Operating points + stats ────────────────────────
+        Patch(facecolor=c_forbid, alpha=0.30, hatch="//", edgecolor=c_forbid,
+              label=r"Coverage: $\mathcal{C} < \mathcal{C}_{min}$ (iv)"),
+        Patch(facecolor=c_penalty, alpha=0.20, hatch="..", edgecolor=c_penalty,
+              label=r"$(\mathcal{C}/\mathcal{C}^{*})^{2} < 1$"),
     ]
 
     # Center the legend on the main axes span [left=0.08, right=0.92].
     _leg_cx = (0.08 + 0.92) / 2
     leg = fig_rc.legend(handles=handles, loc="lower center",
-                        bbox_to_anchor=(_leg_cx, 0.01), ncol=3,
-                        prop={"size": 8.5}, frameon=True, framealpha=0.95,
+                        bbox_to_anchor=(_leg_cx -0.005, -0.005), ncol=3,
+                        prop={"size": 14}, frameon=True, framealpha=0.95,
                         edgecolor="#BDC3C7", fancybox=True,
                         handlelength=2.2, handletextpad=0.6,
                         columnspacing=1.2, borderpad=0.6)
     leg.set_zorder(20)
     fig_rc.tight_layout()
-    fig_rc.subplots_adjust(left=0.08, bottom=0.22, right=0.92, top=0.93)
+    fig_rc.subplots_adjust(left=0.08, bottom=0.22, right=0.92, top=0.97)
 
     fig_rc.savefig(str(save_path), dpi=500, facecolor="white")
     plt.close(fig_rc)
@@ -1920,7 +1919,7 @@ def plot_temporal_risk_coverage_curve_final_copy(save_path: Path,
     # Forbidden zone: white background + stronger red hatch, no fill.
     ax_rc.axvspan(0.0, cov_min, facecolor="white", edgecolor=c_forbid,
                   hatch="///", linewidth=0.0, alpha=1.0, zorder=0)
-    ax_rc.axvspan(cov_min, cov_star, color=c_penalty, alpha=0.10, hatch="..",
+    ax_rc.axvspan(cov_min, cov_star, facecolor=c_penalty, alpha=0.10, hatch="..",
                   edgecolor=c_penalty, linewidth=0.0, zorder=0)
     ax_rc.axvline(x=cov_min, color=c_forbid, linestyle=":", linewidth=1.2, alpha=0.8, zorder=1)
     ax_rc.axvline(x=cov_star, color=c_penalty, linestyle=":", linewidth=1.2, alpha=0.8, zorder=1)
@@ -3921,6 +3920,7 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
         cbar_a = fig.colorbar(im_a, ax=ax_acc, fraction=0.038, pad=0.02)
         cbar_a.set_label("Accuracy", fontsize=9)
         cbar_a.ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0, decimals=0))
+        cbar_a.ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
         cbar_a.ax.tick_params(labelsize=8)
 
         # ┏━━━━━━━━━━ Highlight best accuracy cell ━━━━━━━━━━┓
@@ -4070,6 +4070,524 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
     return output_dir
 
 
+def plot_results_3d(
+    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+    metric: str = "prec_delta",
+):
+    """3D scatter plot of M2 results across Granularity × M2 model × metric.
+
+    Axes:
+        X : Granularity (coarse → fine)
+        Y : M2 model
+        Z : metric value (prec_delta = ΔPrecision, or m2_return)
+    Dot size : Coverage (execution rate %)
+    Color     : M1 model
+    One figure per direction (UP / DOWN), saved to output_dir.
+
+    metric options: 'prec_delta' | 'm2_return'
+    """
+    import os
+    import json
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    from pathlib import Path
+
+    M1_MODELS  = ["Tirex", "Chronos2", "Fincast", "Kronos"]
+    M2_MODELS  = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
+    M2_LABELS  = {"rf": "RF", "autogluon": "AG", "tabpfn": "TPFN", "tabicl": "TICL", "ctts": "CTTS"}
+    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    DIRECTIONS = ["UP", "DOWN"]
+    GRAN_DIR   = {g: f"{g}_tp" for g in GRAN_ORDER}
+
+    M2_KEYS = {
+        "rf":        "rf_backtest_all_features",
+        "autogluon": "autogluon_backtest_all_features",
+        "tabpfn":    "tabpfn_backtest_all_features",
+        "tabicl":    "tabicl_backtest_all_features",
+        "ctts":      "ctts_backtest_all_features",
+    }
+
+    M1_COLORS = {
+        "Tirex":    "#1f77b4",
+        "Chronos2": "#ff7f0e",
+        "Fincast":  "#2ca02c",
+        "Kronos":   "#d62728",
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    data_root = Path(data_root)
+
+    # ── load all data points ──────────────────────────────────────────────────
+    records = []
+    for m1 in M1_MODELS:
+        for m2 in M2_MODELS:
+            key = M2_KEYS[m2]
+            for direction in DIRECTIONS:
+                for gran, gran_dir in GRAN_DIR.items():
+                    path = (data_root / m1 / m2 / direction
+                            / "Utility_Score_NoCal" / gran_dir / "analysis_summary.json")
+                    if not path.exists():
+                        continue
+                    try:
+                        b = json.load(open(path)).get(key, {})
+                        if not b or b.get("m2_win_rate") is None:
+                            continue
+                        prec_delta = b["m2_win_rate"] - b["m1_win_rate"]
+                        records.append({
+                            "m1": m1, "m2": m2, "direction": direction, "gran": gran,
+                            "prec_delta":  prec_delta,
+                            "m2_return":   b.get("m2_total_return", 0.0),
+                            "coverage":    b.get("execution_rate", 0.0),
+                        })
+                    except Exception:
+                        continue
+
+    if not records:
+        print("[plot_results_3d] No data found.")
+        return
+
+    metric_label = "ΔPrecision (pp)" if metric == "prec_delta" else "M2 Return (%)"
+    out_paths = []
+
+    for direction in DIRECTIONS:
+        recs = [r for r in records if r["direction"] == direction]
+        if not recs:
+            continue
+
+        fig = plt.figure(figsize=(14, 9))
+        ax  = fig.add_subplot(111, projection="3d")
+
+        x_ticks = {g: i for i, g in enumerate(GRAN_ORDER)}
+        y_ticks = {m: i for i, m in enumerate(M2_MODELS)}
+
+        for m1 in M1_MODELS:
+            sub = [r for r in recs if r["m1"] == m1]
+            if not sub:
+                continue
+            xs  = np.array([x_ticks[r["gran"]] for r in sub])
+            ys  = np.array([y_ticks[r["m2"]]   for r in sub])
+            zs  = np.array([r[metric]           for r in sub])
+            cov = np.array([r["coverage"]       for r in sub])
+            sizes = 20 + (cov / cov.max() * 180) if cov.max() > 0 else np.full(len(cov), 60)
+
+            ax.scatter(xs, ys, zs,
+                       s=sizes,
+                       color=M1_COLORS[m1],
+                       alpha=0.75,
+                       edgecolors="white",
+                       linewidths=0.3,
+                       label=m1)
+
+        ax.set_xticks(list(x_ticks.values()))
+        ax.set_xticklabels(GRAN_ORDER, fontsize=8)
+        ax.set_yticks(list(y_ticks.values()))
+        ax.set_yticklabels([M2_LABELS[m] for m in M2_MODELS], fontsize=9)
+        ax.set_xlabel("Granularity", labelpad=10)
+        ax.set_ylabel("$M_2$ Model",  labelpad=10)
+        ax.set_zlabel(metric_label,   labelpad=8)
+        ax.set_title(f"{metric_label} — {direction} direction\n"
+                     f"Dot size ∝ Coverage | Color = $M_1$ model", fontsize=11)
+
+        # zero plane for reference
+        xlim = ax.get_xlim(); ylim = ax.get_ylim()
+        xx, yy = np.meshgrid(xlim, ylim)
+        ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.08, color="grey")
+
+        ax.legend(title="$M_1$", loc="upper left", fontsize=8, title_fontsize=9)
+        ax.view_init(elev=22, azim=-55)
+
+        fname = f"results_3d_{metric}_{direction.lower()}.png"
+        out_path = os.path.join(output_dir, fname)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[plot_results_3d] {direction}: {out_path}")
+        out_paths.append(out_path)
+
+    return out_paths
+
+
+def plot_results_radar(
+    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+    metric: str = "prec_delta",
+    tau_sr: float = 1.5,
+    tau_fp: float = 0.8,
+):
+    """Radar / spider chart of M2 results.
+
+    Layout  : 4 rows (M1) × 2 cols (direction) = 8 subplots.
+    Axes    : 8 spokes, one per granularity (1d → 30m).
+    Polygons: one per M2 model, colour-coded.
+    Values  : mean of `metric` across all 20 assets for that (M1, M2, direction, gran).
+              Missing cells are set to 0 so the polygon closes cleanly.
+
+    metric options: 'prec_delta' | 'm2_return'
+    Saved as: results_radar_{metric}.png
+    """
+    import os
+    import json
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+
+    M1_MODELS  = ["Tirex", "Chronos2", "Fincast", "Kronos"]
+    M1_LABELS  = {"Tirex": "TiRex", "Chronos2": "Chronos-2",
+                  "Fincast": "Fincast", "Kronos": "Kronos"}
+    M2_MODELS  = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
+    M2_LABELS  = {"rf": "RF", "autogluon": "AG", "tabpfn": "TPFN",
+                  "tabicl": "TICL", "ctts": "CTTS"}
+    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    DIRECTIONS = ["UP", "DOWN"]
+    GRAN_DIR   = {g: f"{g}_tp" for g in GRAN_ORDER}
+    M2_KEYS    = {
+        "rf":        "rf_backtest_all_features",
+        "autogluon": "autogluon_backtest_all_features",
+        "tabpfn":    "tabpfn_backtest_all_features",
+        "tabicl":    "tabicl_backtest_all_features",
+        "ctts":      "ctts_backtest_all_features",
+    }
+
+    # Academic colour palette — distinct, print-safe
+    M2_COLORS = {
+        "rf":        "#2166ac",   # steel blue
+        "autogluon": "#d6604d",   # muted red
+        "tabpfn":    "#4dac26",   # forest green
+        "tabicl":    "#8073ac",   # muted purple
+        "ctts":      "#e08214",   # warm orange
+    }
+    M2_LS = {
+        "rf": "-", "autogluon": "--", "tabpfn": "-.",
+        "tabicl": ":", "ctts": (0, (3, 1, 1, 1)),
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    data_root = Path(data_root)
+    edge_root  = data_root / "Analysis" / "Edge_NoCal"
+
+    VERDICT_DOT = {"GREEN": "#2ca02c", "AMBER": "#ff7f0e", "RED": "#d62728"}
+
+    # ── load backtest metrics ────────────────────────────────────────────────
+    vals: dict = {}
+    for m1 in M1_MODELS:
+        vals[m1] = {}
+        for m2 in M2_MODELS:
+            vals[m1][m2] = {}
+            key = M2_KEYS[m2]
+            for direction in DIRECTIONS:
+                vals[m1][m2][direction] = {}
+                for gran, gran_dir in GRAN_DIR.items():
+                    path = (data_root / m1 / m2 / direction
+                            / "Utility_Score_NoCal" / gran_dir / "analysis_summary.json")
+                    try:
+                        b = json.load(open(path)).get(key, {})
+                        if not b or b.get("m2_win_rate") is None:
+                            raise ValueError
+                        if metric == "prec_delta":
+                            v = b["m2_win_rate"] - b["m1_win_rate"]
+                        else:
+                            v = b.get("m2_total_return", 0.0)
+                        vals[m1][m2][direction][gran] = v
+                    except Exception:
+                        vals[m1][m2][direction][gran] = None
+
+    # ── load convergence verdicts (recomputed with tau_sr / tau_fp / C3) ──────
+    # C1: frac_profitable >= tau_fp
+    # C2: median_path_sharpe >= tau_sr
+    # C3: val_mean_ret > 0  (from backtest analysis_summary)
+    # GREEN = all 3 pass, AMBER = C1+C2 pass but C3 fails OR exactly one of C1/C2,
+    # RED   = neither C1 nor C2 passes
+    verdicts: dict = {}
+    for m1 in M1_MODELS:
+        verdicts[m1] = {}
+        for m2 in M2_MODELS:
+            verdicts[m1][m2] = {}
+            for direction in DIRECTIONS:
+                verdicts[m1][m2][direction] = {}
+                for gran, gran_dir in GRAN_DIR.items():
+                    path_edge = (edge_root / m1 / m2 / direction
+                                 / f"edge_summary_{gran}.json")
+                    path_bt   = (data_root / m1 / m2 / direction
+                                 / "Utility_Score_NoCal" / gran_dir
+                                 / "analysis_summary.json")
+                    try:
+                        entry  = json.load(open(path_edge)).get(gran, {})
+                        c1 = float(entry.get("frac_profitable", 0.0))    >= tau_fp
+                        c2 = float(entry.get("median_path_sharpe", -999)) >= tau_sr
+                        # C3: val mean selective return > 0
+                        try:
+                            bt    = json.load(open(path_bt))
+                            tkey  = f"{m2}_temporal_all_features"
+                            c3_v  = bt.get(tkey, {}).get("Val_selective", {}).get("mean_ret", None)
+                            c3    = (c3_v is not None and float(c3_v) > 0)
+                        except Exception:
+                            c3 = False
+                        if c1 and c2 and c3:
+                            v = "GREEN"
+                        elif (c1 and c2) or (c1 and c3) or (c2 and c3):
+                            v = "AMBER"
+                        else:
+                            v = "RED"
+                        verdicts[m1][m2][direction][gran] = v
+                    except Exception:
+                        verdicts[m1][m2][direction][gran] = None
+
+    # ── load m1_baseline_prec per (m1, direction, gran) ─────────────────────
+    # Use the first available M2 model's edge summary (m1 baseline is the same)
+    m1_prec: dict = {}
+    for m1 in M1_MODELS:
+        m1_prec[m1] = {}
+        for direction in DIRECTIONS:
+            m1_prec[m1][direction] = {}
+            for gran in GRAN_ORDER:
+                val = None
+                for m2 in M2_MODELS:
+                    path = (edge_root / m1 / m2 / direction
+                            / f"edge_summary_{gran}.json")
+                    try:
+                        entry = json.load(open(path)).get(gran, {})
+                        val = entry.get("m1_baseline_prec")
+                        if val is not None:
+                            break
+                    except Exception:
+                        continue
+                m1_prec[m1][direction][gran] = val
+
+    # ── figure layout: 2 rows (UP/DOWN) × 4 cols (M1) + right legend ─────────
+    # Layout: 2 rows × 5 cols where col 4 is a narrow legend axes
+    n_data_cols = len(M1_MODELS)
+    fig = plt.figure(figsize=(6.5 * n_data_cols + 2.8, 7.2 * 2), dpi=180)
+    fig.patch.set_facecolor("white")
+    gs = fig.add_gridspec(2, n_data_cols + 1,
+                          width_ratios=[1] * n_data_cols + [0.28],
+                          hspace=0.38, wspace=0.32)
+
+    N = len(GRAN_ORDER)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+    # Index of 8h spoke for value annotations
+    spoke_8h = GRAN_ORDER.index("8h")
+
+    metric_label = "ΔPrecision (pp)" if metric == "prec_delta" else "M2 Return (%)"
+    use_zone_bg  = (metric == "m2_return")
+
+    # ── global radial limits (5th–95th percentile) ───────────────────────────
+    global_all = [vals[m1][m2][direction][g]
+                  for m1 in M1_MODELS for m2 in M2_MODELS
+                  for direction in DIRECTIONS for g in GRAN_ORDER
+                  if vals[m1][m2][direction][g] is not None]
+    p05 = float(np.percentile(global_all,  5)) if global_all else -1.0
+    p95 = float(np.percentile(global_all, 95)) if global_all else  1.0
+    g_vmin = min(0.0, p05) * 1.08
+    g_vmax = p95 * 1.15
+
+    # ── sqrt radial transform helpers ─────────────────────────────────────────
+    # Applies signed-sqrt: f(x) = sign(x) * sqrt(|x|)
+    # This zooms into values near zero while preserving outer information.
+    def _r(x):
+        """Signed sqrt transform for radial axis."""
+        return float(np.sign(x) * np.sqrt(abs(x)))
+
+    def _r_inv(y):
+        """Inverse: y -> sign(y)*y^2"""
+        return float(np.sign(y) * y ** 2)
+
+    r_vmin = _r(g_vmin)
+    r_vmax = _r(g_vmax)
+
+    def _draw_spider(ax, m1, direction):
+        """Draw one spider subplot using signed-sqrt radial scale."""
+        # Work entirely in transformed space; label ticks with original values
+        vmin, vmax = r_vmin, r_vmax
+
+        # ── axis cosmetics ────────────────────────────────────────────────
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(GRAN_ORDER, fontsize=10.5, fontweight="semibold",
+                           color="#222222")
+        ax.tick_params(axis='x', pad=10)
+        ax.set_facecolor("white")
+        ax.spines["polar"].set_visible(False)
+        ax.grid(color="#e0e0e0", linewidth=0.55, linestyle="-", alpha=1.0)
+        ax.set_ylim(vmin, vmax)
+
+        all_vals = [vals[m1][m2][direction][g]
+                    for m2 in M2_MODELS for g in GRAN_ORDER
+                    if vals[m1][m2][direction][g] is not None]
+        if not all_vals:
+            return
+
+        ang_full = np.linspace(0, 2 * np.pi, 300)
+        r_zero   = _r(0.0)   # 0 in transformed space
+
+        if use_zone_bg:
+            ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, vmax),
+                            color="#d4edda", alpha=0.30, zorder=0)
+            if vmin < r_zero:
+                ax.fill_between(ang_full, np.full(300, vmin), np.full(300, r_zero),
+                                color="#f8d7da", alpha=0.38, zorder=0)
+            ax.plot(ang_full, np.full(300, r_zero),
+                    color="#777777", linewidth=1.0, linestyle="-", zorder=1)
+        else:
+            m1p_vals = [m1_prec[m1][direction][g] * 100
+                        for g in GRAN_ORDER
+                        if m1_prec[m1][direction].get(g) is not None]
+            m1p_mean        = float(np.mean(m1p_vals)) if m1p_vals else 40.0
+            breakeven_delta = max(0.0, 50.0 - m1p_mean)
+            r_be            = _r(breakeven_delta)
+
+            if vmin < r_zero:
+                ax.fill_between(ang_full, np.full(300, vmin), np.full(300, r_zero),
+                                color="#f8d7da", alpha=0.38, zorder=0)
+            if breakeven_delta > 0 and r_be <= vmax:
+                ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, r_be),
+                                color="#fff3cd", alpha=0.45, zorder=0)
+            if r_be < vmax:
+                ax.fill_between(ang_full, np.full(300, max(r_zero, r_be)),
+                                np.full(300, vmax),
+                                color="#d4edda", alpha=0.38, zorder=0)
+            ax.plot(ang_full, np.full(300, r_zero),
+                    color="#777777", linewidth=0.9, linestyle="-", zorder=1)
+            if r_zero < r_be < vmax:
+                ax.plot(ang_full, np.full(300, r_be),
+                        color="#cc8800", linewidth=1.1, linestyle="--", zorder=1)
+
+        # ── concentric ring ticks with original-value labels ──────────────
+        n_rings = 5
+        # Choose nice round tick values in original space
+        orig_ticks = np.linspace(g_vmin, g_vmax, n_rings + 2)[1:-1]
+        r_ticks    = [_r(v) for v in orig_ticks]
+        ax.set_yticks(r_ticks)
+        ax.set_yticklabels([""] * len(r_ticks))
+
+        ang_8h = angles[spoke_8h]
+
+        # Ring labels on 8h spoke (original values)
+        for rv_orig, rv_r in zip(orig_ticks, r_ticks):
+            ax.annotate(f"{rv_orig:.0f}",
+                        xy=(ang_8h + 0.09, rv_r),
+                        fontsize=7, color="#555555",
+                        ha="left", va="center", zorder=7)
+
+        # ── polygons ──────────────────────────────────────────────────────
+        for m2 in M2_MODELS:
+            raw  = [vals[m1][m2][direction][g] for g in GRAN_ORDER]
+            data = [_r(float(np.clip(v if v is not None else 0.0, g_vmin, g_vmax)))
+                    for v in raw]
+            data_closed = data + data[:1]
+            ax.plot(angles, data_closed,
+                    color=M2_COLORS[m2], linestyle=M2_LS[m2],
+                    linewidth=2.0, zorder=3, solid_capstyle="round")
+            # polygon fill removed — background zones carry the meaning
+
+            # verdict dots strictly inside border
+            for ai, gran in enumerate(GRAN_ORDER):
+                v   = vals[m1][m2][direction][gran]
+                vrd = verdicts[m1][m2][direction][gran]
+                if v is None:
+                    continue
+                v_r   = _r(float(np.clip(v, g_vmin, g_vmax * 0.97)))
+                dot_c = VERDICT_DOT.get(vrd, "#bbbbbb")
+                ax.scatter(angles[ai], v_r,
+                           s=48, color=dot_c,
+                           edgecolors="white", linewidths=0.9,
+                           zorder=6, clip_on=True)
+
+        # ── value annotations on 8h spoke (original values) ──────────────
+        offset_r = (vmax - vmin) * 0.06
+        for m2 in M2_MODELS:
+            v = vals[m1][m2][direction]["8h"]
+            if v is None:
+                continue
+            v_r = _r(float(np.clip(v, g_vmin, g_vmax)))
+            ax.annotate(f"{v:.1f}",
+                        xy=(ang_8h, v_r + offset_r),
+                        fontsize=6.5, color=M2_COLORS[m2],
+                        fontweight="bold", ha="center", va="bottom",
+                        zorder=8)
+
+        dir_arrow = "↑" if direction == "UP" else "↓"
+        ax.set_title(f"{M1_LABELS[m1]}  {dir_arrow}",
+                     fontsize=12, fontweight="bold", pad=20, color="#111111")
+
+    # ── draw all subplots: row=direction, col=M1 ─────────────────────────────
+    for ri, direction in enumerate(DIRECTIONS):
+        for ci, m1 in enumerate(M1_MODELS):
+            ax = fig.add_subplot(gs[ri, ci], polar=True)
+            _draw_spider(ax, m1, direction)
+
+        # Row label on left
+        row_ax = fig.add_subplot(gs[ri, 0])
+        row_ax.set_visible(False)
+
+    # ── vertical legend on right column ──────────────────────────────────────
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    leg_ax = fig.add_subplot(gs[:, -1])
+    leg_ax.set_axis_off()
+
+    m2_handles = [
+        Line2D([0], [0], color=M2_COLORS[m2], linewidth=2.5,
+               linestyle=M2_LS[m2], label=M2_LABELS[m2])
+        for m2 in M2_MODELS
+    ]
+    verdict_handles = [
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor=VERDICT_DOT["GREEN"], markersize=10,
+               markeredgecolor="white", label="GREEN — robust"),
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor=VERDICT_DOT["AMBER"], markersize=10,
+               markeredgecolor="white", label="AMBER — caution"),
+        Line2D([0], [0], marker="o", color="w",
+               markerfacecolor=VERDICT_DOT["RED"],   markersize=10,
+               markeredgecolor="white", label="RED — not robust"),
+    ]
+    zone_handles = [] if use_zone_bg else [
+        Patch(facecolor="#d4edda", edgecolor="#aaaaaa", alpha=0.8,
+              label="Prec ≥ 50%"),
+        Patch(facecolor="#fff3cd", edgecolor="#aaaaaa", alpha=0.8,
+              label="0 < Prec < 50%"),
+        Patch(facecolor="#f8d7da", edgecolor="#aaaaaa", alpha=0.8,
+              label="ΔPrec < 0"),
+    ]
+    all_handles = m2_handles + [Line2D([],[], visible=False)] + \
+                  verdict_handles + [Line2D([],[], visible=False)] + \
+                  zone_handles
+
+    leg = leg_ax.legend(handles=all_handles,
+                        loc="center left", bbox_to_anchor=(-0.05, 0.5),
+                        fontsize=9.5, frameon=True, framealpha=0.95,
+                        edgecolor="#cccccc",
+                        title="$M_2$ model / Verdict / Zones",
+                        title_fontsize=9.5,
+                        ncol=1, handlelength=2.2, handleheight=1.2,
+                        borderpad=1.0, labelspacing=0.8)
+    leg.get_frame().set_linewidth(0.8)
+
+    fig.suptitle(f"Radar chart — {metric_label} across granularities",
+                 fontsize=14, fontweight="bold", y=1.01)
+
+    fname = f"results_radar_{metric}.png"
+    out_path = os.path.join(output_dir, fname)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"[plot_results_radar] {out_path}")
+    return out_path
+
+
 if __name__ == "__main__":
     plot_cpcv_constraint_bars()
     plot_cpcv_edge_heatmap()
+    plot_results_3d()
+    plot_results_3d(metric="m2_return")
+    plot_results_radar()
+    plot_results_radar(metric="m2_return")
