@@ -4,6 +4,7 @@ import warnings
 import re
 import glob
 import os
+import json
 import torch
 import matplotlib
 matplotlib.use("Agg")
@@ -64,6 +65,9 @@ __all__ = [
     "plot_asset_correlation",
     "plot_dataset_size_distribution",
     "plot_return_quality_distribution",
+    "plot_best_m2_per_gran",
+    "plot_results_radar_focused",
+    "plot_kronos_down_combined",
 ]
 
 
@@ -1374,7 +1378,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     c_util_ref = "#E67E22"
     c_forbid   = "#C0392B"
     c_penalty  = "#E67E22"
-    c_baseline = "#7D3C98"
+    c_baseline = "#C0392B"  # red — Risk_ceil
     c_util     = "#B7950B"
 
     fig_rc, ax_rc = plt.subplots(figsize=(10.5, 6.8), facecolor="white")
@@ -1455,10 +1459,11 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                 ax.plot(x[idx_ok], y[idx_ok], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_OK, zorder=zorder)
 
     _plot_alpha_masked(ax_rc, grid_cov, risk_smooth, c_risk, 2.2, "-", 4)
-    ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=-2)
-    ax_rc.set_ylabel("Risk", fontsize=11, fontweight="bold", color="black", labelpad=8)
-    ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=9, width=1.5)
-    ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
+    ax_rc.set_xlabel("Coverage", fontsize=15, fontweight="bold", color="black", labelpad=-2)
+    ax_rc.set_ylabel("Risk", fontsize=15, fontweight="bold", color="black", labelpad=8)
+    ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=13, width=1.5)
+    ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=13, width=1.5)
+    ax_rc.yaxis.set_major_locator(plt.MaxNLocator(5))
     for spine in ax_rc.spines.values():
         spine.set_color("black")
         spine.set_linewidth(1.5)
@@ -1517,8 +1522,9 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
         if t in special_colors:
             lbl.set_color(special_colors[t])
             lbl.set_fontweight("bold")
+            lbl.set_fontsize(14)
             if special_colors[t] == c_op:
-                lbl.set_fontsize(8)
+                lbl.set_fontsize(12)
             if t == op_cov_tmp:
                 lbl.set_ha('left')
     ax_rc.set_xlim(0.0, 1.0)
@@ -1699,19 +1705,15 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                                     pin_x=op["coverage"])
     star_xy = None
     ax_util.set_ylabel("Risk-Profitability Score",
-                       fontsize=11, fontweight="bold", color=c_util, labelpad=8)
-    ax_util.tick_params(axis="y", colors=c_util, labelcolor=c_util, labelsize=8, width=1.2)
+                       fontsize=15, fontweight="bold", color=c_util, labelpad=8)
+    ax_util.tick_params(axis="y", colors=c_util, labelcolor=c_util, labelsize=13, width=1.2)
+    ax_util.yaxis.set_major_locator(plt.MaxNLocator(5))
     plt.setp(ax_util.get_yticklabels(), fontweight="bold")
 
     # ┏━━━━━━━━━━ Baseline precision floor (segment, skips forbidden zone) ━━━━━━━━━━┓
     risk_floor = 1.0 - max(_plot_prec_argmax, float(m1_precision) if m1_precision is not None and not (isinstance(m1_precision, float) and m1_precision != m1_precision) else 0.0)
     ax_rc.plot([cov_min, 1.0], [risk_floor, risk_floor],
                color=c_baseline, linestyle="-.", linewidth=1.6, alpha=0.9, zorder=3)
-    # Inline label at the right end of the line, just below it.
-    ax_rc.annotate(r"$Risk_{Floor}$",
-                   xy=(1.0, risk_floor), xytext=(-4, 11), textcoords="offset points",
-                   fontsize=9, color=c_baseline, fontweight="bold", ha="right", va="top",
-                   zorder=11)
 
     # ┏━━━━━━━━━━ Operating points (τ=0.5 and τ̂) ━━━━━━━━━━┓
     idx_05 = int(np.argmin(np.abs(thrs - 0.5)))
@@ -1725,16 +1727,13 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
         ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)
         ax_rc.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=40,
                       edgecolors="white", linewidths=1.0, zorder=5)
-        ax_rc.annotate("τ=0.50", xy=(cov_05, risk_05), xytext=(3, 5), textcoords="offset points",
-                       fontsize=7, color=c_thr05, fontweight="bold", zorder=10,
-                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_thr05, alpha=0.9, lw=0.6))
 
     aop = _zone_alpha(op_cov)  # kept for axvline only
     ax_rc.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7, linewidth=1.8)
     ax_rc.scatter([op_cov], [op_risk], color=c_op, marker="D", s=50,
                   edgecolors="white", linewidths=1.0, zorder=6)
     ax_rc.annotate(f"$\\hat{{\\tau}}$={op['threshold']:.3f}", xy=(op_cov, op_risk), xytext=(3, 6),
-                   textcoords="offset points", fontsize=7.5, color=c_op, fontweight="bold", zorder=10,
+                   textcoords="offset points", fontsize=12, color=c_op, fontweight="bold", zorder=10,
                    bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_op, alpha=0.9, lw=0.6))
 
     # Return annotations at τ̂
@@ -1783,7 +1782,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
         ax_ret.scatter([op_cov], [mr_dot], color=color, marker="D", s=40,
                        edgecolors="white", linewidths=1.0, zorder=7)
         ax_ret.annotate(f"{mr_val:+.2f}%", xy=(op_cov, mr_dot), xytext=(3, 6),
-                        textcoords="offset points", fontsize=7.5, color=color,
+                        textcoords="offset points", fontsize=12, color=color,
                         fontweight="bold", zorder=10)
 
 
@@ -1805,32 +1804,33 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     _mut_str  = rf"$t$-statistic: t={op.get('t_stat', 0):.2f}"
     handles = [
         # ── Column 1: Curves ──────────────────────────────────────────
-        Line2D([], [], color=c_util, marker="*", markersize=13, linestyle="None",
-               markeredgecolor="white", markeredgewidth=1.0, label=rf"Risk-Profitability Score"),
-        Line2D([], [], color=c_util, linewidth=2.0, label=r"Risk-Profitability Curve"),
+        Line2D([], [], color=c_util, marker="*", markersize=15, linestyle="None",
+               markeredgecolor="white", markeredgewidth=1.0, label=r"Max. Risk-Profitability Score"),
+        Line2D([], [], color=c_util, linewidth=2.0, linestyle="--", label=r"Risk-Profitability Score"),
         Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
 
         # ── Column 2: Zones ───────────────────────────────────────────
-        Line2D([], [], color=c_ret, linewidth=1.8, linestyle="--", label=rf"Mean net return $\mu$={op['mean_ret']*100:+.2f}% (i)"),
-        Line2D([], [], color=c_op, marker="D", markersize=7, linestyle="--",
+        Line2D([], [], color=c_ret, linewidth=1.8, linestyle="-", label=rf"Mean net return $\mu$={op['mean_ret']*100:+.2f}% (i)"),
+        Line2D([], [], color=c_op, marker="D", markersize=8, linestyle="--",
                markeredgecolor="white", markeredgewidth=0.8,
                label=rf"$\hat{{\tau}}$={op['threshold']:.3f}, {_mut_str} (ii)"),
-        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"$Risk_{floor}$ (iii)"),
-        
-        # ── Column 3: Operating points + stats ────────────────────────
-        Patch(facecolor=c_forbid, alpha=0.30, hatch="//", edgecolor=c_forbid,
+        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"$Risk_{ceil}$ (iii)"),
+
+        # ── Column 3: Zones + baseline τ ──────────────────────────────
+        Patch(facecolor="white", alpha=1.0, hatch="///", edgecolor=c_forbid,
               label=r"Coverage: $\mathcal{C} < \mathcal{C}_{min}$ (iv)"),
         Patch(facecolor=c_penalty, alpha=0.20, hatch="..", edgecolor=c_penalty,
               label=r"$(\mathcal{C}/\mathcal{C}^{*})^{2} < 1$"),
+        Line2D([], [], color=c_thr05, linewidth=1.8, linestyle="--", label=r"$\tau=0.5$ (Baseline)"),
     ]
 
     # Center the legend on the main axes span [left=0.08, right=0.92].
     _leg_cx = (0.08 + 0.92) / 2
     leg = fig_rc.legend(handles=handles, loc="lower center",
-                        bbox_to_anchor=(_leg_cx -0.005, -0.005), ncol=3,
+                        bbox_to_anchor=(_leg_cx -0.005, -0.015), ncol=3,
                         prop={"size": 14}, frameon=True, framealpha=0.95,
                         edgecolor="#BDC3C7", fancybox=True,
-                        handlelength=2.2, handletextpad=0.6,
+                        handlelength=2.4, handletextpad=0.6,
                         columnspacing=1.2, borderpad=0.6)
     leg.set_zorder(20)
     fig_rc.tight_layout()
@@ -1839,555 +1839,6 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     fig_rc.savefig(str(save_path), dpi=500, facecolor="white")
     plt.close(fig_rc)
 
-
-def plot_temporal_risk_coverage_curve_final_copy(save_path: Path,
-                                            curve: dict,
-                                            probs: np.ndarray,
-                                            y_true: np.ndarray,
-                                            split_rets: np.ndarray,
-                                            fee: float,
-                                            op: dict,
-                                            split_name: str,
-                                            model_label: str,
-                                            thres_mode: str,
-                                            ocp_alpha: float,
-                                            val_threshold: Optional[float] = None,
-                                            val_op: Optional[dict] = None,
-                                            is_ocp: bool = False,
-                                            test_approved_ocp: Optional[np.ndarray] = None,
-                                            cov_min: float = 0.05,
-                                            cov_star: float = 0.15,
-                                            t_min: float = 1.0,
-                                            n_prior: int = 50,
-                                            opt_probs: Optional[np.ndarray] = None,
-                                            opt_y: Optional[np.ndarray] = None,
-                                            opt_rets: Optional[np.ndarray] = None,
-                                            direction: str = "",
-                                            granularity: str = ""):
-    """Risk-coverage plot that visualizes the Stage-A optimization problem.
-
-    Adds on top of `plot_temporal_risk_coverage_curve`:
-      * Forbidden zone (Cov < cov_min) shaded red/hatched.
-      * Quadratic-penalty zone (cov_min ≤ Cov < cov_star) shaded orange/hatched.
-      * Baseline risk floor from M2 τ=0.5 precision: τ̂ must land below it.
-      * Stage-A utility curve U(τ) = t_reg × cov_factor on a third y-axis,
-        drawn only where Stage-A hard constraints hold (so the feasible region
-        is reinforced visually). A gold star marks argmax U.
-    """
-    thrs = curve["thresholds"]
-    covs = curve["coverage"]
-    risks_raw = curve["risk"]
-
-    # ┏━━━━━━━━━━ Colors ━━━━━━━━━━┓
-    c_risk     = "#1B4F72"
-    c_ret      = "#1E8449"
-    c_ret_neg  = "#8B0000"
-    c_win      = "#1E8449"
-    c_op       = "#8B008B"
-    c_grid     = "#D5D8DC"
-    c_thr05    = "#34495E"
-    c_util_ref = "#E67E22"
-    c_forbid   = "#C0392B"
-    c_penalty  = "#E67E22"
-    c_baseline = "#7D3C98"
-    c_util     = "#B7950B"
-
-    fig_rc, ax_rc = plt.subplots(figsize=(10.5, 6.8), facecolor="white")
-    ax_rc.set_facecolor("#FAFAFA")
-    x1, y1 = cov_min, cov_min  # [0, C_min] uses natural 1:1 scale
-    x2 = cov_star
-    if x2 <= x1 + 1e-5: x2 = min(1.0, x1 + 0.1)
-    y2 = min(0.95, y1 + 0.3)  # [C_min, 2*C*] gets warped to take up 75%
-    
-    x_nodes, y_nodes = [0.0, x1], [0.0, y1]
-    if x2 < 1.0 - 1e-5:
-        x_nodes.append(x2); y_nodes.append(y2)
-    x_nodes.append(1.0); y_nodes.append(1.0)
-    
-    ax_rc.set_xscale('piecewise_linear', x_nodes=x_nodes, y_nodes=y_nodes)
-
-    # Alphas per zone. Forbidden: curves are not drawn at all (handled via mask).
-    # Penalty: curves drawn with medium alpha so hatches still show through.
-    ALPHA_OK = 1.00
-    ALPHA_PEN = 0.55
-    ALPHA_FOR = 0.0   # forbidden: do not plot
-
-    def _zone_alpha(x):
-        return ALPHA_FOR if x < cov_min else (ALPHA_PEN if x < cov_star else ALPHA_OK)
-
-    # ┏━━━━━━━━━━ Feasibility zones (behind everything) ━━━━━━━━━━┓
-    # Forbidden zone: white background + stronger red hatch, no fill.
-    ax_rc.axvspan(0.0, cov_min, facecolor="white", edgecolor=c_forbid,
-                  hatch="///", linewidth=0.0, alpha=1.0, zorder=0)
-    ax_rc.axvspan(cov_min, cov_star, facecolor=c_penalty, alpha=0.10, hatch="..",
-                  edgecolor=c_penalty, linewidth=0.0, zorder=0)
-    ax_rc.axvline(x=cov_min, color=c_forbid, linestyle=":", linewidth=1.2, alpha=0.8, zorder=1)
-    ax_rc.axvline(x=cov_star, color=c_penalty, linestyle=":", linewidth=1.2, alpha=0.8, zorder=1)
-
-    # ┏━━━━━━━━━━ Smooth risk curve ━━━━━━━━━━┓
-    order = np.argsort(covs)
-    covs_s, risks_s = covs[order], risks_raw[order]
-    umask = np.concatenate(([True], np.diff(covs_s) != 0))
-    cov_u, risk_u = covs_s[umask], risks_s[umask]
-    fmask = np.isfinite(risk_u)
-    cov_u, risk_u = cov_u[fmask], risk_u[fmask]
-    if cov_u.size >= 2:
-        from scipy.interpolate import PchipInterpolator
-        grid_cov = np.linspace(cov_u.min(), cov_u.max(), 300)
-        risk_smooth = PchipInterpolator(cov_u, risk_u, extrapolate=False)(grid_cov)
-        valid_r = np.isfinite(risk_smooth)
-        grid_cov, risk_smooth = grid_cov[valid_r], risk_smooth[valid_r]
-    else:
-        grid_cov, risk_smooth = cov_u, risk_u
-
-    def _plot_alpha_masked(ax, x, y, base_color, lw, ls, zorder):
-        """Plot a line in two alpha tiers (penalty/OK). Forbidden zone is skipped."""
-        if len(x) < 2: return
-        x = np.asarray(x); y = np.asarray(y)
-        is_increasing = x[0] < x[-1]
-        
-        m_pen = (x >= cov_min) & (x <= cov_star)
-        idx_pen = np.where(m_pen)[0]
-        if len(idx_pen) > 0:
-            if is_increasing and idx_pen[-1] < len(x) - 1:
-                idx_pen = np.append(idx_pen, idx_pen[-1] + 1)
-            elif not is_increasing and idx_pen[0] > 0:
-                idx_pen = np.insert(idx_pen, 0, idx_pen[0] - 1)
-            if len(idx_pen) >= 2:
-                ax.plot(x[idx_pen], y[idx_pen], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_PEN, zorder=zorder)
-                
-        m_ok = (x >= cov_star)
-        idx_ok = np.where(m_ok)[0]
-        if len(idx_ok) > 0:
-            if is_increasing and idx_ok[0] > 0:
-                idx_ok = np.insert(idx_ok, 0, idx_ok[0] - 1)
-            elif not is_increasing and idx_ok[-1] < len(x) - 1:
-                idx_ok = np.append(idx_ok, idx_ok[-1] + 1)
-            if len(idx_ok) >= 2:
-                ax.plot(x[idx_ok], y[idx_ok], color=base_color, linewidth=lw, linestyle=ls, alpha=ALPHA_OK, zorder=zorder)
-
-    _plot_alpha_masked(ax_rc, grid_cov, risk_smooth, c_risk, 2.2, "-", 4)
-    ax_rc.set_xlabel("Coverage", fontsize=11, fontweight="bold", color="black", labelpad=8)
-    ax_rc.set_ylabel("Risk", fontsize=11, fontweight="bold", color="black", labelpad=8)
-    ax_rc.tick_params(axis="x", colors="black", labelcolor="black", labelsize=9, width=1.5)
-    ax_rc.tick_params(axis="y", colors="black", labelcolor="black", labelsize=9, width=1.5)
-    for spine in ax_rc.spines.values():
-        spine.set_color("black")
-        spine.set_linewidth(1.5)
-    plt.setp(ax_rc.get_xticklabels(), fontweight="bold")
-    plt.setp(ax_rc.get_yticklabels(), fontweight="bold")
-    ax_rc.set_xlim(-0.02, 1.02)
-    ax_rc.grid(True, which="major", color=c_grid, linewidth=0.6, alpha=0.7)
-    ax_rc.set_axisbelow(True)
-
-    xticks_cur = [t for t in ax_rc.get_xticks() if 0.0 <= t <= 1.0]
-    op_cov_tmp = op.get("coverage", None)
-    
-    special_ticks = []
-    special_labels = {}
-    special_colors = {}
-    
-    special_ticks.append(cov_min)
-    special_labels[cov_min] = r"$C_{min}$"
-    special_colors[cov_min] = c_forbid
-    
-    if abs(cov_star - cov_min) > 0.001:
-        special_ticks.append(cov_star)
-        special_labels[cov_star] = r"$C^{*}$"
-        special_colors[cov_star] = c_penalty
-    else:
-        special_labels[cov_min] = r"$C_{min}/C^{*}$"
-        
-    if op_cov_tmp is not None and 0.0 <= op_cov_tmp <= 1.0:
-        if abs(op_cov_tmp - cov_min) < 0.001:
-            special_labels[cov_min] += "\n" + r"$\hat{\tau}$" + f"({op_cov_tmp:.2f})"
-            special_colors[cov_min] = c_op
-        elif abs(op_cov_tmp - cov_star) < 0.001:
-            special_labels[cov_star] += "\n" + r"$\hat{\tau}$" + f"({op_cov_tmp:.2f})"
-            special_colors[cov_star] = c_op
-        else:
-            special_ticks.append(op_cov_tmp)
-            special_labels[op_cov_tmp] = rf"{op_cov_tmp:.2f}"
-            special_colors[op_cov_tmp] = c_op
-
-    final_ticks = list(special_ticks)
-    for t in xticks_cur:
-        clash_tol = 0.005 if cov_min <= t <= cov_star else 0.025
-        if not any(abs(t - st) < clash_tol for st in special_ticks):
-            final_ticks.append(t)
-            
-    final_ticks = sorted(set(final_ticks))
-    ax_rc.set_xticks(final_ticks)
-    
-    xtick_labels = []
-    for t in final_ticks:
-        if t in special_labels:
-            xtick_labels.append(special_labels[t])
-        else:
-            xtick_labels.append(f"{t:.1f}")
-    ax_rc.set_xticklabels(xtick_labels)
-    
-    for lbl, t in zip(ax_rc.get_xticklabels(), final_ticks):
-        if t in special_colors:
-            lbl.set_color(special_colors[t])
-            lbl.set_fontweight("bold")
-            if special_colors[t] == c_op:
-                lbl.set_fontsize(8)
-    ax_rc.set_xlim(0.0, 1.0)
-
-    # ┏━━━━━━━━━━ Per-threshold mean returns (plotted-split dataset) ━━━━━━━━━━┓
-    mean_rets = np.full_like(thrs, np.nan)
-    mean_win_rets = np.full_like(thrs, np.nan)
-    mean_lose_rets = np.full_like(thrs, np.nan)
-
-    labels_int = np.asarray(y_true).astype(int)
-    N_total = len(probs)
-
-    for i, thr in enumerate(thrs):
-        sel = probs >= thr
-        n = int(sel.sum())
-        if n < 2:
-            continue
-        net = split_rets[sel] - fee
-        lab = labels_int[sel]
-        mu = float(np.nanmean(net))
-        mean_rets[i] = mu
-        winners = net[lab == 1]
-        losers = net[lab == 0]
-        if len(winners) >= 1:
-            mean_win_rets[i] = float(np.nanmean(winners))
-        if len(losers) >= 1:
-            mean_lose_rets[i] = float(np.nanmean(losers))
-
-    # ┏━━━━━━━━━━ Stage-A utility — use the optimizer's dataset when provided ━━━━━━━━━━┓
-    # For nocal mode, opt_probs/opt_y/opt_rets = merged Val-Cal+Val-Opt (same N as optimizer).
-    # For calibrated mode they are None, so we fall back to the plotted-split dataset.
-    _u_probs  = np.asarray(opt_probs)  if opt_probs  is not None else probs
-    _u_y      = np.asarray(opt_y).astype(int) if opt_y is not None else labels_int
-    _u_rets   = np.asarray(opt_rets)   if opt_rets   is not None else split_rets
-    _u_N      = len(_u_probs)
-
-    min_trades = max(50, int(cov_min * _u_N))
-    all_net_base = _u_rets[_u_probs >= 0.50] - fee
-    base_var = float(np.nanvar(all_net_base, ddof=1)) if len(all_net_base) > 1 else 1.0
-    if base_var <= 0:
-        base_var = 1.0
-    sel_05 = _u_probs >= 0.50
-    prec_argmax = float(_u_y[sel_05].mean()) if sel_05.sum() > 0 else 0.0
-
-    # Mirror optimizer grid: grid_lo = clamp(median(pos_probs), 0.50, 0.85)
-    pos_probs = _u_probs[_u_probs >= 0.50]
-    if pos_probs.size >= max(min_trades * 2, 20):
-        grid_lo = min(max(float(np.median(pos_probs)), 0.50), 0.85)
-    else:
-        grid_lo = 0.50
-
-    # Evaluate U(τ) on a fine grid (1000 pts) over the optimizer's dataset — smooth by construction.
-    _u_thr_grid = np.linspace(grid_lo, 0.95, 1000)
-    _u_covs     = np.full(len(_u_thr_grid), np.nan)
-    utilities   = np.full(len(_u_thr_grid), np.nan)
-
-    for i, thr in enumerate(_u_thr_grid):
-        sel = _u_probs >= thr
-        n = int(sel.sum())
-        if n < min_trades:
-            continue
-        cov = n / _u_N
-        if cov < cov_min:
-            continue
-        net = _u_rets[sel] - fee
-        lab = _u_y[sel]
-        mu = float(np.nanmean(net))
-        if mu <= 0:
-            continue
-        prec_thr = float(lab.mean())
-        if prec_thr < prec_argmax:
-            continue
-        sample_var = float(np.nanvar(net, ddof=1)) if n > 1 else base_var
-        shrinkage = n_prior / (n + n_prior)
-        reg_var = (1 - shrinkage) * sample_var + shrinkage * base_var
-        reg_std = np.sqrt(max(reg_var, 1e-12))
-        if reg_std <= 0:
-            continue
-        t_reg = mu / reg_std * np.sqrt(n)
-        if t_reg < t_min:
-            continue
-        cov_factor = 1.0 if cov >= cov_star else (cov / cov_star) ** 2
-        utilities[i] = t_reg * cov_factor
-        _u_covs[i] = cov
-
-    # ┏━━━━━━━━━━ Return axis (right, primary) ━━━━━━━━━━┓
-    ax_ret = ax_rc.twinx()
-    valid = ~np.isnan(mean_rets) & (covs >= cov_min)
-    valid_w = ~np.isnan(mean_win_rets) & (covs >= cov_min)
-    valid_l = ~np.isnan(mean_lose_rets) & (covs >= cov_min)
-    # Profitability zone: shaded light-green band between Mean Win Return and
-    # Mean Net Return (the "above-average winners" region).
-    profit_band = valid & valid_w
-    if profit_band.any():
-        ax_ret.fill_between(covs[profit_band],
-                            mean_win_rets[profit_band] * 100,
-                            mean_rets[profit_band] * 100,
-                            alpha=0.13, color=c_win, zorder=1, label="_nolegend_")
-
-    def _plot_dynamic_return(ax, x, y, lw, ls, base_alpha, label, zorder):
-        if len(x) > 1:
-            from matplotlib.collections import LineCollection
-            from matplotlib.colors import to_rgba
-            x = np.asarray(x); y = np.asarray(y)
-            points = np.array([x, y]).T.reshape(-1, 1, 2)
-            segments = np.concatenate([points[:-1], points[1:]], axis=1)
-            y_mids = segments[:, :, 1].mean(axis=1)
-            x_mids = segments[:, :, 0].mean(axis=1)
-            keep = []
-            seg_colors = []
-            for idx, (ym, xm) in enumerate(zip(y_mids, x_mids)):
-                if xm < cov_min:
-                    continue  # skip forbidden zone entirely
-                col = c_ret if ym >= 0 else c_ret_neg
-                seg_colors.append(to_rgba(col, alpha=_zone_alpha(xm) * base_alpha))
-                keep.append(idx)
-            if keep:
-                lc = LineCollection(segments[keep], colors=seg_colors, linewidth=lw,
-                                    linestyles=ls, zorder=zorder)
-                ax.add_collection(lc)
-            if label and label != "_nolegend_":
-                ax.plot([], [], color=c_ret, linewidth=lw, linestyle=ls, label=label)
-        elif len(x) == 1:
-            color = c_ret if y[0] >= 0 else c_ret_neg
-            ax.plot(x, y, color=color, linewidth=lw, linestyle=ls, alpha=base_alpha, label=label, zorder=zorder)
-
-    _plot_dynamic_return(ax_ret, covs[valid], mean_rets[valid] * 100, 2.0, "-", 0.95, "Mean Return", 3)
-    _plot_dynamic_return(ax_ret, covs[valid_w], mean_win_rets[valid_w] * 100, 1.0, ":", 0.85, "_nolegend_", 2)
-    _plot_dynamic_return(ax_ret, covs[valid_l], mean_lose_rets[valid_l] * 100, 1.0, ":", 0.85, "_nolegend_", 2)
-
-    ax_ret.axhline(y=0, color=c_ret, linestyle=":", alpha=0.35, linewidth=1.0)
-    # Hide the Return axis visual elements: keep the axis (for data scaling) but
-    # suppress label, ticks, and spine so the right side is owned by utility.
-    ax_ret.set_ylabel("")
-    ax_ret.tick_params(axis="y", which="both", left=False, right=False,
-                       labelleft=False, labelright=False)
-    for spine in ax_ret.spines.values():
-        spine.set_visible(False)
-
-    # ┏━━━━━━━━━━ Utility axis (right, primary on right side) ━━━━━━━━━━┓
-    ax_util = ax_rc.twinx()
-    ax_util.set_frame_on(True)
-    ax_util.patch.set_visible(False)
-    for spine_name, spine in ax_util.spines.items():
-        spine.set_visible(spine_name == "right")
-        spine.set_color(c_util)
-        spine.set_linewidth(1.5)
-    valid_u = ~np.isnan(utilities)
-    star_xy = None
-    if valid_u.any():
-        xu_raw = _u_covs[valid_u]
-        yu_raw = utilities[valid_u]
-        order_u = np.argsort(xu_raw)
-        xu_sorted = xu_raw[order_u]
-        yu_sorted = yu_raw[order_u]
-        # Deduplicate equal coverages: keep the MAX utility at each unique coverage.
-        uniq_cov, inv = np.unique(xu_sorted, return_inverse=True)
-        uniq_util = np.full_like(uniq_cov, -np.inf, dtype=float)
-        for k, v in zip(inv, yu_sorted):
-            if v > uniq_util[k]:
-                uniq_util[k] = v
-        xu = uniq_cov
-        yu = uniq_util
-        # Smooth with PCHIP if enough points
-        if xu.size >= 3:
-            try:
-                from scipy.interpolate import PchipInterpolator
-                grid_xu = np.linspace(xu.min(), xu.max(), 300)
-                yu_smooth = PchipInterpolator(xu, yu, extrapolate=False)(grid_xu)
-                mvalid = np.isfinite(yu_smooth)
-                xu_plot, yu_plot = grid_xu[mvalid], yu_smooth[mvalid]
-            except Exception:
-                xu_plot, yu_plot = xu, yu
-        else:
-            xu_plot, yu_plot = xu, yu
-        # Utility curve: full alpha in both penalty and OK zones (user request:
-        # max alpha in the penalty zone for the utility curve specifically).
-        for lo, hi in [(cov_min, cov_star), (cov_star, np.inf)]:
-            m = (xu_plot >= lo) & (xu_plot <= hi)
-            if m.sum() >= 2:
-                ax_util.plot(xu_plot[m], yu_plot[m], color=c_util, linestyle="--",
-                             linewidth=1.8, alpha=1.0, zorder=3)
-        # Gold star: argmax U on the deduped grid (satisfies all Stage-A gates)
-        i_max = int(np.argmax(yu))
-        star_xy_main = (float(xu[i_max]), float(yu[i_max]))
-        ax_util.scatter([star_xy_main[0]], [star_xy_main[1]], color=c_util,
-                        marker="*", s=200, edgecolors="white", linewidths=1.2,
-                        zorder=9)
-    ax_util.set_ylabel("Risk-Profitability Score",
-                       fontsize=11, fontweight="bold", color=c_util, labelpad=8)
-    ax_util.tick_params(axis="y", colors=c_util, labelcolor=c_util, labelsize=8, width=1.2)
-    plt.setp(ax_util.get_yticklabels(), fontweight="bold")
-
-    # ┏━━━━━━━━━━ Baseline precision floor (segment, skips forbidden zone) ━━━━━━━━━━┓
-    risk_floor = 1.0 - prec_argmax
-    ax_rc.plot([cov_min, 1.0], [risk_floor, risk_floor],
-               color=c_baseline, linestyle="-.", linewidth=1.6, alpha=0.9, zorder=3)
-    # Inline label at the right end of the line, just below it.
-    ax_rc.annotate(r"$Risk_{M2@0.5}$",
-                   xy=(1.0, risk_floor), xytext=(-4, -10), textcoords="offset points",
-                   fontsize=9, color=c_baseline, fontweight="bold", ha="right", va="top",
-                   zorder=11)
-
-    # ┏━━━━━━━━━━ Operating points (τ=0.5 and τ̂) ━━━━━━━━━━┓
-    idx_05 = int(np.argmin(np.abs(thrs - 0.5)))
-    cov_05 = covs[idx_05]
-    risk_05 = np.interp(cov_05, grid_cov, risk_smooth) if grid_cov.size >= 2 else risks_raw[idx_05]
-    op_cov = op["coverage"]
-    op_risk = np.interp(op_cov, grid_cov, risk_smooth) if grid_cov.size >= 2 else op.get("risk", 0)
-    thr_source = op.get("threshold_source") or ("OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
-    show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
-    if show_baseline:
-        ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)
-        ax_rc.scatter([cov_05], [risk_05], color=c_thr05, marker="o", s=40,
-                      edgecolors="white", linewidths=1.0, zorder=5)
-        ax_rc.annotate("τ=0.50", xy=(cov_05, risk_05), xytext=(3, 5), textcoords="offset points",
-                       fontsize=7, color=c_thr05, fontweight="bold", zorder=10,
-                       bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_thr05, alpha=0.9, lw=0.6))
-
-    aop = _zone_alpha(op_cov)  # kept for axvline only
-    ax_rc.axvline(x=op_cov, color=c_op, linestyle="--", alpha=0.7, linewidth=1.8)
-    ax_rc.scatter([op_cov], [op_risk], color=c_op, marker="D", s=50,
-                  edgecolors="white", linewidths=1.0, zorder=6)
-    ax_rc.annotate(f"$\\hat{{\\tau}}$={op['threshold']:.3f}", xy=(op_cov, op_risk), xytext=(3, 6),
-                   textcoords="offset points", fontsize=7.5, color=c_op, fontweight="bold", zorder=10,
-                   bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=c_op, alpha=0.9, lw=0.6))
-
-    # Return annotations at τ̂
-    mr_val = op["mean_ret"] * 100
-    # Use the optimizer's dataset (opt_probs/opt_rets/opt_y) when provided so that
-    # mr/mw/ml annotations match op["mean_ret"] exactly (same N, same population).
-    _ann_probs  = _u_probs   if opt_probs is not None else probs
-    _ann_rets   = _u_rets    if opt_rets  is not None else split_rets
-    _ann_labels = _u_y       if opt_y     is not None else labels_int
-    sel_op = test_approved_ocp if split_name == "Test" and is_ocp and test_approved_ocp is not None else (_ann_probs >= op["threshold"])
-    n_op = int(sel_op.sum())
-    if n_op >= 2:
-        net_op = _ann_rets[sel_op] - fee
-        lab_op = _ann_labels[sel_op]
-        w_op = net_op[lab_op == 1]
-        l_op = net_op[lab_op == 0]
-        mw_val = float(np.nanmean(w_op)) * 100 if len(w_op) >= 1 else None
-        ml_val = float(np.nanmean(l_op)) * 100 if len(l_op) >= 1 else None
-    else:
-        mw_val, ml_val = None, None
-
-    # Interpolate exact y-coordinates from the return curves at op_cov so markers
-    # land precisely on top of each line.
-    def _interp_on_curve(x_target, mask, values):
-        xs = covs[mask]
-        ys = values[mask]
-        if len(xs) < 2:
-            return None
-        order = np.argsort(xs)
-        xs, ys = xs[order], ys[order]
-        if x_target < xs[0] or x_target > xs[-1]:
-            return None
-        return float(np.interp(x_target, xs, ys))
-
-    # Dot y-positions: always interpolated from the plotted curves so dots sit exactly
-    # on top of the visible lines regardless of which dataset was used for labels.
-    # Label values: already set from the optimizer's dataset (mr_val/mw_val/ml_val)
-    # when opt_rets is provided; otherwise also use the curve interpolation.
-    mr_dot = _interp_on_curve(op_cov, valid,   mean_rets      * 100)
-    mw_dot = _interp_on_curve(op_cov, valid_w, mean_win_rets  * 100)
-    ml_dot = _interp_on_curve(op_cov, valid_l, mean_lose_rets * 100)
-    if opt_rets is None:
-        # Calibrated mode: labels and dots both come from the plotted curves.
-        if mr_dot is not None: mr_val = mr_dot
-        if mw_dot is not None: mw_val = mw_dot
-        if ml_dot is not None: ml_val = ml_dot
-
-    def _get_staggered_offsets(val_dict):
-        valid_vals = {k: v for k, v in val_dict.items() if v is not None}
-        s_keys = sorted(valid_vals.keys(), key=lambda k: valid_vals[k])
-        if len(s_keys) == 3:
-            return {s_keys[0]: (3, -8), s_keys[1]: (3, 0), s_keys[2]: (3, 8)}
-        if len(s_keys) == 2:
-            return {s_keys[0]: (3, -5), s_keys[1]: (3, 5)}
-        if len(s_keys) == 1:
-            return {s_keys[0]: (3, 0)}
-        return {}
-
-    _dot_positions = {"mr": mr_dot, "mw": mw_dot, "ml": ml_dot}
-    _label_values  = {"mr": mr_val, "mw": mw_val, "ml": ml_val}
-    offs_op = _get_staggered_offsets({k: v for k, v in _dot_positions.items() if v is not None})
-    for key in ("mr", "mw", "ml"):
-        dot_y   = _dot_positions[key]
-        label_v = _label_values[key]
-        if dot_y is None or label_v is None:
-            continue
-        color = c_ret if label_v >= 0 else c_ret_neg
-        ax_ret.scatter([op_cov], [dot_y], color=color, marker="D" if key == "mr" else "o",
-                       s=40 if key == "mr" else 30,
-                       edgecolors="white", linewidths=1.0 if key == "mr" else 0.7,
-                       zorder=7 if key == "mr" else 6)
-        ax_ret.annotate(f"{label_v:+.2f}%", xy=(op_cov, dot_y), xytext=offs_op.get(key, (3, 0)),
-                        textcoords="offset points", fontsize=7.5, color=color,
-                        fontweight="bold", zorder=10)
-
-
-
-    # ┏━━━━━━━━━━ Title ━━━━━━━━━━┓
-    _model_display = {"RF": "Random Forest", "rf": "Random Forest"}.get(model_label, model_label)
-    _split_display = {"Val": "Validation", "val": "Validation"}.get(split_name, split_name)
-    _dir_gran = f"  |  {direction.upper()}  {granularity}" if direction or granularity else ""
-    ax_rc.set_title(f"Profitability-Risk  |  {_split_display}  |  {_model_display}{_dir_gran}",
-                    fontsize=13, fontweight="bold", color="#2C3E50", pad=12)
-
-    # ┏━━━━━━━━━━ Single legend: 3 rows × 4 columns ━━━━━━━━━━┓
-    # Stats (Prec, Cov, μ/t) are embedded as multi-line text in col-4 entries
-    # so no phantom handle-space is wasted on invisible patches.
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-    _prec_str = rf"Prec$_{{\hat{{τ}}}}$={op.get('precision', float('nan'))*100:.1f}%"
-    _cov_str  = rf"Cov$_{{\hat{{τ}}}}$={op['coverage']*100:.1f}% (N={op.get('selected_count', 0)})"
-    _mut_str  = rf"$\mu$={op['mean_ret']*100:+.2f}%, t={op.get('t_stat', 0):.2f}"
-    handles = [
-        # ── Column 1: Returns ─────────────────────────────────────────
-        Line2D([], [], color=c_ret, linewidth=2.0, label="Mean Net Return"),
-        Line2D([], [], color=c_ret, linewidth=1.0, linestyle=":", label="Mean Win Return"),
-        Line2D([], [], color=c_ret_neg, linewidth=1.0, linestyle=":", label="Mean Loss Return"),
-        # ── Column 2: Risk / Utility curves ───────────────────────────
-        Line2D([], [], color=c_risk, linewidth=2.2, label="Risk-Coverage Curve"),
-        Line2D([], [], color=c_util, linewidth=1.8, linestyle="--", label="Risk-Profitability Score"),
-        Line2D([], [], color=c_baseline, linewidth=1.6, linestyle="-.", label=r"Risk Floor: $Risk_{M2@0.5}$"),
-        # ── Column 3: Zones ───────────────────────────────────────────
-        Patch(facecolor=c_forbid, alpha=0.30, hatch="//", edgecolor=c_forbid,
-              label=r"Forbidden: $\mathrm{Cov} < C_{min}$"),
-        Patch(facecolor=c_penalty, alpha=0.20, hatch="..", edgecolor=c_penalty,
-              label=r"Quadratic Penalty: $\mathrm{Cov} < C^{*}$"),
-        Patch(facecolor=c_win, alpha=0.20, edgecolor="none", label="Profitability Zone"),
-        # ── Column 4: Operating points + stats inline ─────────────────
-        Line2D([], [], color=c_util, marker="*", markersize=13, linestyle="None",
-               markeredgecolor="white", markeredgewidth=1.0,
-               label=rf"Max Risk-Prof Score       {_prec_str}"),
-        Line2D([], [], color=c_op, marker="D", markersize=7, linestyle="--",
-               markeredgecolor="white", markeredgewidth=0.8,
-               label=rf"$\hat{{\tau}}$={op['threshold']:.3f} ({thr_source})     {_cov_str}"),
-        Line2D([], [], color=c_thr05, marker="o", markersize=6, linestyle="--",
-               markeredgecolor="white", markeredgewidth=0.8,
-               label=rf"$\tau$=0.5 (Baseline)            {_mut_str}"),
-    ]
-    # Center the legend on the main axes span [left=0.08, right=0.92].
-    _leg_cx = (0.08 + 0.92) / 2
-    leg = fig_rc.legend(handles=handles, loc="lower center",
-                        bbox_to_anchor=(_leg_cx, 0.01), ncol=4,
-                        prop={"size": 8.5}, frameon=True, framealpha=0.95,
-                        edgecolor="#BDC3C7", fancybox=True,
-                        handlelength=2.2, handletextpad=0.6,
-                        columnspacing=1.2, borderpad=0.6)
-    leg.set_zorder(20)
-    fig_rc.tight_layout()
-    fig_rc.subplots_adjust(left=0.08, bottom=0.22, right=0.92, top=0.93)
-
-    fig_rc.savefig(str(save_path), dpi=500, facecolor="white")
-    plt.close(fig_rc)
 
 # ┏━━━━━━━━━━ OCP Threshold Evolution ━━━━━━━━━━┓
 def plot_ocp_threshold_evolution(save_path: Path,
@@ -2421,7 +1872,6 @@ def plot_ocp_threshold_evolution(save_path: Path,
     fig_thr.tight_layout()
     fig_thr.savefig(str(save_path), dpi=200, facecolor="white")
     plt.close(fig_thr)
-
 
 
 # ┏━━━━━━━━━━ M2 Selective Return Distribution (TP/FP vs M1) ━━━━━━━━━━┓
@@ -3337,7 +2787,7 @@ def plot_return_quality_distribution(cache_roots: Optional[Dict[str, Path]] = No
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# performance over number of features
+# Performance over number of features
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def plot_performance_over_n_features(base_dir:         str = "/home/till/PycharmProjects/Secondary-Model/src/Output",
                                      m1:               str = "kronos",
@@ -4070,157 +3520,16 @@ def plot_cpcv_edge_heatmap(edge_root: str = "/home/pablo/M2_DS/Secondary-Model/s
     return output_dir
 
 
-def plot_results_3d(
-    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
-    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
-    metric: str = "prec_delta",
-):
-    """3D scatter plot of M2 results across Granularity × M2 model × metric.
-
-    Axes:
-        X : Granularity (coarse → fine)
-        Y : M2 model
-        Z : metric value (prec_delta = ΔPrecision, or m2_return)
-    Dot size : Coverage (execution rate %)
-    Color     : M1 model
-    One figure per direction (UP / DOWN), saved to output_dir.
-
-    metric options: 'prec_delta' | 'm2_return'
-    """
-    import os
-    import json
-    import numpy as np
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-    from pathlib import Path
-
-    M1_MODELS  = ["Tirex", "Chronos2", "Fincast", "Kronos"]
-    M2_MODELS  = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
-    M2_LABELS  = {"rf": "RF", "autogluon": "AG", "tabpfn": "TPFN", "tabicl": "TICL", "ctts": "CTTS"}
-    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
-    DIRECTIONS = ["UP", "DOWN"]
-    GRAN_DIR   = {g: f"{g}_tp" for g in GRAN_ORDER}
-
-    M2_KEYS = {
-        "rf":        "rf_backtest_all_features",
-        "autogluon": "autogluon_backtest_all_features",
-        "tabpfn":    "tabpfn_backtest_all_features",
-        "tabicl":    "tabicl_backtest_all_features",
-        "ctts":      "ctts_backtest_all_features",
-    }
-
-    M1_COLORS = {
-        "Tirex":    "#1f77b4",
-        "Chronos2": "#ff7f0e",
-        "Fincast":  "#2ca02c",
-        "Kronos":   "#d62728",
-    }
-
-    os.makedirs(output_dir, exist_ok=True)
-    data_root = Path(data_root)
-
-    # ── load all data points ──────────────────────────────────────────────────
-    records = []
-    for m1 in M1_MODELS:
-        for m2 in M2_MODELS:
-            key = M2_KEYS[m2]
-            for direction in DIRECTIONS:
-                for gran, gran_dir in GRAN_DIR.items():
-                    path = (data_root / m1 / m2 / direction
-                            / "Utility_Score_NoCal" / gran_dir / "analysis_summary.json")
-                    if not path.exists():
-                        continue
-                    try:
-                        b = json.load(open(path)).get(key, {})
-                        if not b or b.get("m2_win_rate") is None:
-                            continue
-                        prec_delta = b["m2_win_rate"] - b["m1_win_rate"]
-                        records.append({
-                            "m1": m1, "m2": m2, "direction": direction, "gran": gran,
-                            "prec_delta":  prec_delta,
-                            "m2_return":   b.get("m2_total_return", 0.0),
-                            "coverage":    b.get("execution_rate", 0.0),
-                        })
-                    except Exception:
-                        continue
-
-    if not records:
-        print("[plot_results_3d] No data found.")
-        return
-
-    metric_label = "ΔPrecision (pp)" if metric == "prec_delta" else "M2 Return (%)"
-    out_paths = []
-
-    for direction in DIRECTIONS:
-        recs = [r for r in records if r["direction"] == direction]
-        if not recs:
-            continue
-
-        fig = plt.figure(figsize=(14, 9))
-        ax  = fig.add_subplot(111, projection="3d")
-
-        x_ticks = {g: i for i, g in enumerate(GRAN_ORDER)}
-        y_ticks = {m: i for i, m in enumerate(M2_MODELS)}
-
-        for m1 in M1_MODELS:
-            sub = [r for r in recs if r["m1"] == m1]
-            if not sub:
-                continue
-            xs  = np.array([x_ticks[r["gran"]] for r in sub])
-            ys  = np.array([y_ticks[r["m2"]]   for r in sub])
-            zs  = np.array([r[metric]           for r in sub])
-            cov = np.array([r["coverage"]       for r in sub])
-            sizes = 20 + (cov / cov.max() * 180) if cov.max() > 0 else np.full(len(cov), 60)
-
-            ax.scatter(xs, ys, zs,
-                       s=sizes,
-                       color=M1_COLORS[m1],
-                       alpha=0.75,
-                       edgecolors="white",
-                       linewidths=0.3,
-                       label=m1)
-
-        ax.set_xticks(list(x_ticks.values()))
-        ax.set_xticklabels(GRAN_ORDER, fontsize=8)
-        ax.set_yticks(list(y_ticks.values()))
-        ax.set_yticklabels([M2_LABELS[m] for m in M2_MODELS], fontsize=9)
-        ax.set_xlabel("Granularity", labelpad=10)
-        ax.set_ylabel("$M_2$ Model",  labelpad=10)
-        ax.set_zlabel(metric_label,   labelpad=8)
-        ax.set_title(f"{metric_label} — {direction} direction\n"
-                     f"Dot size ∝ Coverage | Color = $M_1$ model", fontsize=11)
-
-        # zero plane for reference
-        xlim = ax.get_xlim(); ylim = ax.get_ylim()
-        xx, yy = np.meshgrid(xlim, ylim)
-        ax.plot_surface(xx, yy, np.zeros_like(xx), alpha=0.08, color="grey")
-
-        ax.legend(title="$M_1$", loc="upper left", fontsize=8, title_fontsize=9)
-        ax.view_init(elev=22, azim=-55)
-
-        fname = f"results_3d_{metric}_{direction.lower()}.png"
-        out_path = os.path.join(output_dir, fname)
-        fig.tight_layout()
-        fig.savefig(out_path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"[plot_results_3d] {direction}: {out_path}")
-        out_paths.append(out_path)
-
-    return out_paths
-
-
-def plot_results_radar(
-    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
-    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
-    metric: str = "prec_delta",
-    tau_sr: float = 1.5,
-    tau_fp: float = 0.8,
-):
+def plot_results_radar(data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+                       output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+                       metric: str = "prec_delta",
+                       tau_sr: float = 1.5,
+                       tau_fp: float = 0.8,
+                       cv_max: float = None,
+                       require_constraint: bool = False):
     """Radar / spider chart of M2 results.
 
-    Layout  : 4 rows (M1) × 2 cols (direction) = 8 subplots.
+    Layout  : 4 rows (M1) x 2 cols (direction) = 8 subplots.
     Axes    : 8 spokes, one per granularity (1d → 30m).
     Polygons: one per M2 model, colour-coded.
     Values  : mean of `metric` across all 20 assets for that (M1, M2, direction, gran).
@@ -4241,8 +3550,8 @@ def plot_results_radar(
     M1_LABELS  = {"Tirex": "TiRex", "Chronos2": "Chronos-2",
                   "Fincast": "Fincast", "Kronos": "Kronos"}
     M2_MODELS  = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
-    M2_LABELS  = {"rf": "RF", "autogluon": "AG", "tabpfn": "TPFN",
-                  "tabicl": "TICL", "ctts": "CTTS"}
+    M2_LABELS  = {"rf": "Random Forest", "autogluon": "AutoGluon",
+                  "tabpfn": "TabPFN", "tabicl": "TabICL", "ctts": "CTTS"}
     GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
     DIRECTIONS = ["UP", "DOWN"]
     GRAN_DIR   = {g: f"{g}_tp" for g in GRAN_ORDER}
@@ -4254,13 +3563,13 @@ def plot_results_radar(
         "ctts":      "ctts_backtest_all_features",
     }
 
-    # Academic colour palette — distinct, print-safe
+    # Muted palette consistent with best_m2_per_gran.png and focused radar
     M2_COLORS = {
-        "rf":        "#2166ac",   # steel blue
-        "autogluon": "#d6604d",   # muted red
-        "tabpfn":    "#4dac26",   # forest green
-        "tabicl":    "#8073ac",   # muted purple
-        "ctts":      "#e08214",   # warm orange
+        "rf":        "#7FB069",   # muted green
+        "autogluon": "#E89A4F",   # muted orange
+        "tabpfn":    "#6FA8DC",   # muted blue
+        "tabicl":    "#C28EC9",   # muted purple
+        "ctts":      "#D97374",   # muted red
     }
     M2_LS = {
         "rf": "-", "autogluon": "--", "tabpfn": "-.",
@@ -4271,7 +3580,7 @@ def plot_results_radar(
     data_root = Path(data_root)
     edge_root  = data_root / "Analysis" / "Edge_NoCal"
 
-    VERDICT_DOT = {"GREEN": "#2ca02c", "AMBER": "#ff7f0e", "RED": "#d62728"}
+    VERDICT_DOT = {"GREEN": "#2ca02c", "RED": "#d62728"}
 
     # ── load backtest metrics ────────────────────────────────────────────────
     vals: dict = {}
@@ -4290,7 +3599,8 @@ def plot_results_radar(
                         if not b or b.get("m2_win_rate") is None:
                             raise ValueError
                         if metric == "prec_delta":
-                            v = b["m2_win_rate"] - b["m1_win_rate"]
+                            # plot full M2 precision (not delta) — units: %
+                            v = b["m2_win_rate"]
                         else:
                             v = b.get("m2_total_return", 0.0)
                         vals[m1][m2][direction][gran] = v
@@ -4318,22 +3628,17 @@ def plot_results_radar(
                                  / "analysis_summary.json")
                     try:
                         entry  = json.load(open(path_edge)).get(gran, {})
-                        c1 = float(entry.get("frac_profitable", 0.0))    >= tau_fp
-                        c2 = float(entry.get("median_path_sharpe", -999)) >= tau_sr
-                        # C3: val mean selective return > 0
+                        # GREEN = constraint_satisfied AND CV<0.5; RED otherwise
                         try:
-                            bt    = json.load(open(path_bt))
-                            tkey  = f"{m2}_temporal_all_features"
-                            c3_v  = bt.get(tkey, {}).get("Val_selective", {}).get("mean_ret", None)
-                            c3    = (c3_v is not None and float(c3_v) > 0)
+                            bt     = json.load(open(path_bt))
+                            tkey_v = f"{m2}_temporal_all_features"
+                            constr = bool(bt.get(tkey_v, {}).get("Val_selective", {})
+                                         .get("constraint_satisfied", False))
                         except Exception:
-                            c3 = False
-                        if c1 and c2 and c3:
-                            v = "GREEN"
-                        elif (c1 and c2) or (c1 and c3) or (c2 and c3):
-                            v = "AMBER"
-                        else:
-                            v = "RED"
+                            constr = False
+                        p_e = np.array(entry.get("path_total_rets", []), dtype=float)
+                        cv_e = float(np.std(p_e)/(abs(np.mean(p_e))+1e-6)) if len(p_e)>1 else 99.0
+                        v = "GREEN" if (constr and cv_e < 0.5) else "RED"
                         verdicts[m1][m2][direction][gran] = v
                     except Exception:
                         verdicts[m1][m2][direction][gran] = None
@@ -4359,14 +3664,64 @@ def plot_results_radar(
                         continue
                 m1_prec[m1][direction][gran] = val
 
+    # ── Optional reliability filters ─────────────────────────────────────
+    #   * cv_max:             keep only cells with CPCV CV < cv_max
+    #   * require_constraint: keep only cells with constraint_satisfied=True
+    if cv_max is not None or require_constraint:
+        n_kept = n_dropped = 0
+        for m1 in M1_MODELS:
+            for m2 in M2_MODELS:
+                for direction in DIRECTIONS:
+                    for gran, gran_dir in GRAN_DIR.items():
+                        if vals[m1][m2][direction][gran] is None:
+                            continue
+                        # CV from edge summary
+                        if cv_max is not None:
+                            path_edge = (edge_root / m1 / m2 / direction
+                                         / f"edge_summary_{gran}.json")
+                            try:
+                                entry = json.load(open(path_edge)).get(gran, {})
+                                p_e = np.array(entry.get("path_total_rets", []), dtype=float)
+                                cv_e = float(np.std(p_e)/(abs(np.mean(p_e))+1e-6)) if len(p_e) > 1 else 99.0
+                            except Exception:
+                                cv_e = 99.0
+                        else:
+                            cv_e = 0.0
+                        # constraint_satisfied from backtest analysis_summary
+                        if require_constraint:
+                            path_bt = (data_root / m1 / m2 / direction
+                                       / "Utility_Score_NoCal" / gran_dir
+                                       / "analysis_summary.json")
+                            try:
+                                bt = json.load(open(path_bt))
+                                tkey_v = f"{m2}_temporal_all_features"
+                                constr = bool(bt.get(tkey_v, {}).get("Val_selective", {})
+                                               .get("constraint_satisfied", False))
+                            except Exception:
+                                constr = False
+                        else:
+                            constr = True
+                        drop = (cv_max is not None and cv_e >= cv_max) or \
+                               (require_constraint and not constr)
+                        if drop:
+                            vals[m1][m2][direction][gran] = None
+                            n_dropped += 1
+                        else:
+                            n_kept += 1
+        tag = []
+        if cv_max is not None:        tag.append(f"CV<{cv_max}")
+        if require_constraint:        tag.append("constr=True")
+        print(f"[plot_results_radar] {' & '.join(tag)}: kept {n_kept}, dropped {n_dropped}")
+
     # ── figure layout: 2 rows (UP/DOWN) × 4 cols (M1) + right legend ─────────
     # Layout: 2 rows × 5 cols where col 4 is a narrow legend axes
     n_data_cols = len(M1_MODELS)
-    fig = plt.figure(figsize=(6.5 * n_data_cols + 2.8, 7.2 * 2), dpi=180)
+    fig = plt.figure(figsize=(8.0 * n_data_cols, 8.5 * 2 + 1.8), dpi=180)
     fig.patch.set_facecolor("white")
-    gs = fig.add_gridspec(2, n_data_cols + 1,
-                          width_ratios=[1] * n_data_cols + [0.28],
-                          hspace=0.38, wspace=0.32)
+    # 2 data rows + 1 legend row at bottom
+    gs = fig.add_gridspec(3, n_data_cols,
+                          height_ratios=[1, 1, 0.05],
+                          hspace=0.08, wspace=0.15)
 
     N = len(GRAN_ORDER)
     angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
@@ -4374,7 +3729,7 @@ def plot_results_radar(
     # Index of 8h spoke for value annotations
     spoke_8h = GRAN_ORDER.index("8h")
 
-    metric_label = "ΔPrecision (pp)" if metric == "prec_delta" else "M2 Return (%)"
+    metric_label = "M2 Precision (%)" if metric == "prec_delta" else "M2 Return (%)"
     use_zone_bg  = (metric == "m2_return")
 
     # ── global radial limits (5th–95th percentile) ───────────────────────────
@@ -4403,8 +3758,37 @@ def plot_results_radar(
 
     def _draw_spider(ax, m1, direction):
         """Draw one spider subplot using signed-sqrt radial scale."""
-        # Work entirely in transformed space; label ticks with original values
-        vmin, vmax = r_vmin, r_vmax
+        # Compute local limits from this subplot's data only
+        local_vals = [vals[m1][m2][direction][g]
+                      for m2 in M2_MODELS for g in GRAN_ORDER
+                      if vals[m1][m2][direction][g] is not None]
+        if metric == "prec_delta":
+            # Precision metric (units: %). Zoom into the meaningful 30–95 band:
+            # values below ~30% are extremely rare and squash the visual range.
+            if local_vals:
+                lp05 = float(np.percentile(local_vals,  5))
+                lp95 = float(np.percentile(local_vals, 95))
+                l_vmin = max(30.0, lp05 - 5.0)
+                l_vmax = min(98.0, lp95 + 5.0)
+            else:
+                l_vmin, l_vmax = 30.0, 90.0
+            # Ensure the 50% reference ring sits inside the chart area
+            if l_vmin > 50.0: l_vmin = 50.0 - 5.0
+            if l_vmax < 55.0: l_vmax = 60.0
+        else:
+            if local_vals:
+                lp05 = float(np.percentile(local_vals,  5))
+                lp95 = float(np.percentile(local_vals, 95))
+                l_vmin = min(0.0, lp05) * 1.08
+                l_vmax = lp95 * 1.15
+            else:
+                l_vmin, l_vmax = g_vmin, g_vmax
+            # Always leave a visible red (loss) band even when all surviving values
+            # are positive.
+            if l_vmin >= 0.0:
+                l_vmin = -max(0.05 * max(l_vmax, 1.0), 0.5)
+        vmin = _r(l_vmin)
+        vmax = _r(l_vmax)
 
         # ── axis cosmetics ────────────────────────────────────────────────
         ax.set_theta_offset(np.pi / 2)
@@ -4412,74 +3796,91 @@ def plot_results_radar(
         ax.set_xticks(angles[:-1])
         ax.set_xticklabels(GRAN_ORDER, fontsize=10.5, fontweight="semibold",
                            color="#222222")
-        ax.tick_params(axis='x', pad=10)
+        ax.tick_params(axis='x', pad=4)
         ax.set_facecolor("white")
-        ax.spines["polar"].set_visible(False)
-        ax.grid(color="#e0e0e0", linewidth=0.55, linestyle="-", alpha=1.0)
+        ax.spines["polar"].set_visible(True)
+        ax.spines["polar"].set_color("#777777")
+        ax.spines["polar"].set_linewidth(1.0)
+        ax.grid(color="#aaaaaa", linewidth=0.8, linestyle="-", alpha=1.0)
+        # Disable default y-grid (concentric rings) — we draw them manually with a gap
+        ax.yaxis.grid(False)
         ax.set_ylim(vmin, vmax)
+        # For the precision metric, shift the radial origin so vmin sits at the
+        # plot CENTRE — eliminates the empty "donut hole" caused by zooming into
+        # the meaningful 30–95 % band.
+        if metric == "prec_delta":
+            ax.set_rorigin(vmin)
+
+        # Draw zone shading FIRST (before any early-return) so even subplots
+        # with no surviving points still display the green/red reference rings.
+        ang_full = np.linspace(0, 2 * np.pi, 300)
+        r_zero   = _r(0.0)   # 0 in transformed space
+
+        if use_zone_bg:
+            ax_vmax = ax.get_ylim()[1]
+            ax_vmin = ax.get_ylim()[0]
+            ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, ax_vmax),
+                            color="#a8d5b5", alpha=0.45, zorder=0)
+            if ax_vmin < r_zero:
+                ax.fill_between(ang_full, np.full(300, ax_vmin), np.full(300, r_zero),
+                                color="#f0a8a8", alpha=0.55, zorder=0)
+            ax.plot(ang_full, np.full(300, r_zero),
+                    color="#777777", linewidth=1.0, linestyle="-", zorder=1)
 
         all_vals = [vals[m1][m2][direction][g]
                     for m2 in M2_MODELS for g in GRAN_ORDER
                     if vals[m1][m2][direction][g] is not None]
         if not all_vals:
             return
-
-        ang_full = np.linspace(0, 2 * np.pi, 300)
-        r_zero   = _r(0.0)   # 0 in transformed space
-
-        if use_zone_bg:
-            ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, vmax),
-                            color="#d4edda", alpha=0.30, zorder=0)
-            if vmin < r_zero:
-                ax.fill_between(ang_full, np.full(300, vmin), np.full(300, r_zero),
-                                color="#f8d7da", alpha=0.38, zorder=0)
-            ax.plot(ang_full, np.full(300, r_zero),
-                    color="#777777", linewidth=1.0, linestyle="-", zorder=1)
         else:
-            m1p_vals = [m1_prec[m1][direction][g] * 100
-                        for g in GRAN_ORDER
-                        if m1_prec[m1][direction].get(g) is not None]
-            m1p_mean        = float(np.mean(m1p_vals)) if m1p_vals else 40.0
-            breakeven_delta = max(0.0, 50.0 - m1p_mean)
-            r_be            = _r(breakeven_delta)
+            # Precision metric: red zone = below 50%, green zone = ≥ 50%.
+            # No amber (break-even) ring.
+            r_50 = _r(50.0)
+            if vmin < r_50:
+                ax.fill_between(ang_full, np.full(300, vmin), np.full(300, r_50),
+                                color="#f0a8a8", alpha=0.45, zorder=0)
+            if r_50 < vmax:
+                ax.fill_between(ang_full, np.full(300, r_50), np.full(300, vmax),
+                                color="#a8d5b5", alpha=0.45, zorder=0)
+            ax.plot(ang_full, np.full(300, r_50),
+                    color="#777777", linewidth=1.0, linestyle="-", zorder=1)
 
-            if vmin < r_zero:
-                ax.fill_between(ang_full, np.full(300, vmin), np.full(300, r_zero),
-                                color="#f8d7da", alpha=0.38, zorder=0)
-            if breakeven_delta > 0 and r_be <= vmax:
-                ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, r_be),
-                                color="#fff3cd", alpha=0.45, zorder=0)
-            if r_be < vmax:
-                ax.fill_between(ang_full, np.full(300, max(r_zero, r_be)),
-                                np.full(300, vmax),
-                                color="#d4edda", alpha=0.38, zorder=0)
-            ax.plot(ang_full, np.full(300, r_zero),
-                    color="#777777", linewidth=0.9, linestyle="-", zorder=1)
-            if r_zero < r_be < vmax:
-                ax.plot(ang_full, np.full(300, r_be),
-                        color="#cc8800", linewidth=1.1, linestyle="--", zorder=1)
-
-        # ── concentric ring ticks with original-value labels ──────────────
+        # ── concentric ring ticks equally spaced in transformed (radial) space ──
         n_rings = 5
-        # Choose nice round tick values in original space
-        orig_ticks = np.linspace(g_vmin, g_vmax, n_rings + 2)[1:-1]
-        r_ticks    = [_r(v) for v in orig_ticks]
+        # Equal spacing in transformed space → equal visual ring gaps
+        r_ticks    = np.linspace(vmin, vmax, n_rings + 2)[1:-1].tolist()
+        orig_ticks = [_r_inv(r) for r in r_ticks]   # back to original for labels
         ax.set_yticks(r_ticks)
         ax.set_yticklabels([""] * len(r_ticks))
 
-        ang_8h = angles[spoke_8h]
+        ang_8h   = angles[spoke_8h]
+        # Place ring labels in the gap between 30m (last) and 1d (first) spokes
+        ang_30m  = angles[GRAN_ORDER.index("30m")]
+        ang_1d   = angles[GRAN_ORDER.index("1d")]
+        # wrap-around gap: average the two angles accounting for circular wrap
+        ang_gap  = (ang_30m + ang_1d + 2 * np.pi) / 2.0
 
-        # Ring labels on 8h spoke (original values)
-        for rv_orig, rv_r in zip(orig_ticks, r_ticks):
+        # Custom concentric rings drawn as arcs with an angular gap at ang_gap;
+        # label sits in the gap so the ring appears interrupted by the number (---79---).
+        _gap_half = np.deg2rad(3.5)   # tighter gap
+        ang_arc = np.linspace(ang_gap + _gap_half,
+                              ang_gap + 2 * np.pi - _gap_half, 300)
+        _r_span = r_ticks[-1] - r_ticks[0] if len(r_ticks) > 1 else 1.0
+        for i, (rv_orig, rv_r) in enumerate(zip(orig_ticks, r_ticks)):
+            ax.plot(ang_arc, np.full_like(ang_arc, rv_r),
+                    color="#aaaaaa", linewidth=0.8, linestyle="-",
+                    alpha=1.0, zorder=1)
+            # Pull the outermost label slightly inward so it doesn't kiss the spine
+            r_label = rv_r - 0.04 * _r_span if i == len(r_ticks) - 1 else rv_r
             ax.annotate(f"{rv_orig:.0f}",
-                        xy=(ang_8h + 0.09, rv_r),
-                        fontsize=7, color="#555555",
-                        ha="left", va="center", zorder=7)
+                        xy=(ang_gap, r_label),
+                        fontsize=9, color="#222222", fontweight="bold",
+                        ha="center", va="center", zorder=9)
 
         # ── polygons ──────────────────────────────────────────────────────
         for m2 in M2_MODELS:
             raw  = [vals[m1][m2][direction][g] for g in GRAN_ORDER]
-            data = [_r(float(np.clip(v if v is not None else 0.0, g_vmin, g_vmax)))
+            data = [_r(float(np.clip(v if v is not None else 0.0, l_vmin, l_vmax)))
                     for v in raw]
             data_closed = data + data[:1]
             ax.plot(angles, data_closed,
@@ -4487,35 +3888,12 @@ def plot_results_radar(
                     linewidth=2.0, zorder=3, solid_capstyle="round")
             # polygon fill removed — background zones carry the meaning
 
-            # verdict dots strictly inside border
-            for ai, gran in enumerate(GRAN_ORDER):
-                v   = vals[m1][m2][direction][gran]
-                vrd = verdicts[m1][m2][direction][gran]
-                if v is None:
-                    continue
-                v_r   = _r(float(np.clip(v, g_vmin, g_vmax * 0.97)))
-                dot_c = VERDICT_DOT.get(vrd, "#bbbbbb")
-                ax.scatter(angles[ai], v_r,
-                           s=48, color=dot_c,
-                           edgecolors="white", linewidths=0.9,
-                           zorder=6, clip_on=True)
+            # (verdict dots removed — reliability is conveyed elsewhere)
 
-        # ── value annotations on 8h spoke (original values) ──────────────
-        offset_r = (vmax - vmin) * 0.06
-        for m2 in M2_MODELS:
-            v = vals[m1][m2][direction]["8h"]
-            if v is None:
-                continue
-            v_r = _r(float(np.clip(v, g_vmin, g_vmax)))
-            ax.annotate(f"{v:.1f}",
-                        xy=(ang_8h, v_r + offset_r),
-                        fontsize=6.5, color=M2_COLORS[m2],
-                        fontweight="bold", ha="center", va="bottom",
-                        zorder=8)
 
-        dir_arrow = "↑" if direction == "UP" else "↓"
+        dir_arrow = r"$\uparrow$" if direction == "UP" else r"$\downarrow$"
         ax.set_title(f"{M1_LABELS[m1]}  {dir_arrow}",
-                     fontsize=12, fontweight="bold", pad=20, color="#111111")
+                     fontsize=16, fontweight="bold", pad=20, color="#111111")
 
     # ── draw all subplots: row=direction, col=M1 ─────────────────────────────
     for ri, direction in enumerate(DIRECTIONS):
@@ -4523,15 +3901,14 @@ def plot_results_radar(
             ax = fig.add_subplot(gs[ri, ci], polar=True)
             _draw_spider(ax, m1, direction)
 
-        # Row label on left
-        row_ax = fig.add_subplot(gs[ri, 0])
-        row_ax.set_visible(False)
+        pass  # row label removed
 
-    # ── vertical legend on right column ──────────────────────────────────────
+    # ── horizontal legend — figure-level, aligned with spider chart columns ──
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    leg_ax = fig.add_subplot(gs[:, -1])
+    # Invisible axes in legend row just to hold the row height
+    leg_ax = fig.add_subplot(gs[2, :])
     leg_ax.set_axis_off()
 
     m2_handles = [
@@ -4539,43 +3916,43 @@ def plot_results_radar(
                linestyle=M2_LS[m2], label=M2_LABELS[m2])
         for m2 in M2_MODELS
     ]
-    verdict_handles = [
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=VERDICT_DOT["GREEN"], markersize=10,
-               markeredgecolor="white", label="GREEN — robust"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=VERDICT_DOT["AMBER"], markersize=10,
-               markeredgecolor="white", label="AMBER — caution"),
-        Line2D([0], [0], marker="o", color="w",
-               markerfacecolor=VERDICT_DOT["RED"],   markersize=10,
-               markeredgecolor="white", label="RED — not robust"),
+    zone_handles = [
+        Patch(facecolor="#a8d5b5", edgecolor="#aaaaaa", alpha=0.8,
+              label="M2 Return $> 0$ (Profitable)"),
+        Patch(facecolor="#f0a8a8", edgecolor="#aaaaaa", alpha=0.8,
+              label="M2 Return $< 0$ (Loss)"),
     ]
-    zone_handles = [] if use_zone_bg else [
-        Patch(facecolor="#d4edda", edgecolor="#aaaaaa", alpha=0.8,
-              label="Prec ≥ 50%"),
-        Patch(facecolor="#fff3cd", edgecolor="#aaaaaa", alpha=0.8,
-              label="0 < Prec < 50%"),
-        Patch(facecolor="#f8d7da", edgecolor="#aaaaaa", alpha=0.8,
-              label="ΔPrec < 0"),
-    ]
-    all_handles = m2_handles + [Line2D([],[], visible=False)] + \
-                  verdict_handles + [Line2D([],[], visible=False)] + \
-                  zone_handles
+    all_handles = m2_handles + [Line2D([], [], visible=False)] + zone_handles
 
-    leg = leg_ax.legend(handles=all_handles,
-                        loc="center left", bbox_to_anchor=(-0.05, 0.5),
-                        fontsize=9.5, frameon=True, framealpha=0.95,
-                        edgecolor="#cccccc",
-                        title="$M_2$ model / Verdict / Zones",
-                        title_fontsize=9.5,
-                        ncol=1, handlelength=2.2, handleheight=1.2,
-                        borderpad=1.0, labelspacing=0.8)
+    # Get the x-extent of the spider chart area from the first and last subplot
+    fig.canvas.draw()   # force layout so axes positions are known
+    ax_left  = fig.axes[0]   # top-left spider (UP, Tirex)
+    ax_right = fig.axes[3]   # top-right spider (UP, Kronos)
+    inv = fig.transFigure.inverted()
+    x0 = inv.transform(ax_left.transAxes.transform([0, 0]))[0]
+    x1 = inv.transform(ax_right.transAxes.transform([1, 0]))[0]
+    x_center = (x0 + x1) / 2
+
+    # y position: centre of the legend axes row
+    leg_bbox = inv.transform(leg_ax.transAxes.transform([0.5, 0.5]))
+    y_center = leg_bbox[1]
+
+    leg = fig.legend(handles=all_handles,
+                     loc="center",
+                     bbox_to_anchor=(x_center, y_center),
+                     bbox_transform=fig.transFigure,
+                     fontsize=18, frameon=True, framealpha=0.95,
+                     edgecolor="#cccccc",
+                     ncol=len(all_handles), handlelength=2.4, handleheight=1.6,
+                     markerscale=1.8,
+                     borderpad=0.8, labelspacing=0.2, columnspacing=0.8)
     leg.get_frame().set_linewidth(0.8)
 
-    fig.suptitle(f"Radar chart — {metric_label} across granularities",
-                 fontsize=14, fontweight="bold", y=1.01)
 
-    fname = f"results_radar_{metric}.png"
+    suffix = ""
+    if cv_max is not None:        suffix += f"_cv{str(cv_max).replace('.','p')}"
+    if require_constraint:        suffix += "_constr"
+    fname = f"results_radar_{metric}{suffix}.png"
     out_path = os.path.join(output_dir, fname)
     fig.savefig(out_path, dpi=200, bbox_inches="tight",
                 facecolor="white", edgecolor="none")
@@ -4591,3 +3968,2220 @@ if __name__ == "__main__":
     plot_results_3d(metric="m2_return")
     plot_results_radar()
     plot_results_radar(metric="m2_return")
+
+
+def plot_results_radar_focused(
+    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+    m1: str = "Kronos",
+    m2_models: tuple = ("rf", "tabpfn", "ctts"),
+    metric: str = "m2_return",
+):
+    """Two side-by-side spider charts for ONE M1 (UP and DOWN), with only the
+    selected ``m2_models`` plotted. Colours match ``plot_best_m2_per_gran`` so
+    the figure is consistent across the paper.
+
+    Layout:  1 row × 2 cols  (col 0: UP, col 1: DOWN)
+    Saved as: results_radar_focused_{m1}_{metric}.png
+    """
+    import os, json
+    from pathlib import Path
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    M2_LABELS = {"rf": "Random Forest", "autogluon": "AutoGluon",
+                 "tabpfn": "TabPFN", "tabicl": "TabICL", "ctts": "CTTS"}
+    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    DIRECTIONS = ["UP", "DOWN"]
+    GRAN_DIR   = {g: f"{g}_tp" for g in GRAN_ORDER}
+    M2_KEYS    = {m2: f"{m2}_backtest_all_features" for m2 in
+                  ("rf", "autogluon", "tabpfn", "tabicl", "ctts")}
+
+    # ── Palette consistent with plot_best_m2_per_gran ────────────────────
+    M2_COLORS = {
+        "rf":        "#7FB069",   # muted green
+        "autogluon": "#E89A4F",   # muted orange
+        "tabpfn":    "#6FA8DC",   # muted blue
+        "tabicl":    "#C28EC9",   # muted purple
+        "ctts":      "#D97374",   # muted red
+    }
+    M2_LS = {"rf": "-", "autogluon": "--", "tabpfn": "-",
+             "tabicl": ":",  "ctts": "-"}
+
+    VERDICT_DOT = {"GREEN": "#2ca02c", "RED": "#d62728"}
+
+    os.makedirs(output_dir, exist_ok=True)
+    data_root = Path(data_root)
+    edge_root = data_root / "Analysis" / "Edge_NoCal"
+
+    # ── Load values for the selected M1 × M2s only ──────────────────────
+    vals: dict = {m2: {d: {} for d in DIRECTIONS} for m2 in m2_models}
+    for m2 in m2_models:
+        key = M2_KEYS[m2]
+        for direction in DIRECTIONS:
+            for gran, gd in GRAN_DIR.items():
+                path = (data_root / m1 / m2 / direction
+                        / "Utility_Score_NoCal" / gd / "analysis_summary.json")
+                v = None
+                try:
+                    b = json.load(open(path)).get(key, {})
+                    if b and b.get("m2_win_rate") is not None:
+                        if metric == "prec_delta":
+                            v = b["m2_win_rate"] - b["m1_win_rate"]
+                        else:
+                            v = b.get("m2_total_return", 0.0)
+                except Exception:
+                    v = None
+                vals[m2][direction][gran] = v
+
+    # ── Reliability verdicts (CV<0.5 AND constraint_satisfied) ──────────
+    verdicts: dict = {m2: {d: {} for d in DIRECTIONS} for m2 in m2_models}
+    for m2 in m2_models:
+        for direction in DIRECTIONS:
+            for gran, gd in GRAN_DIR.items():
+                path_edge = (edge_root / m1 / m2 / direction
+                             / f"edge_summary_{gran}.json")
+                path_bt   = (data_root / m1 / m2 / direction
+                             / "Utility_Score_NoCal" / gd
+                             / "analysis_summary.json")
+                v = None
+                try:
+                    entry = json.load(open(path_edge)).get(gran, {})
+                    try:
+                        bt = json.load(open(path_bt))
+                        tkey_v = f"{m2}_temporal_all_features"
+                        constr = bool(bt.get(tkey_v, {}).get("Val_selective", {})
+                                       .get("constraint_satisfied", False))
+                    except Exception:
+                        constr = False
+                    p_e = np.array(entry.get("path_total_rets", []), dtype=float)
+                    cv_e = float(np.std(p_e) / (abs(np.mean(p_e)) + 1e-6)) if len(p_e) > 1 else 99.0
+                    v = "GREEN" if (constr and cv_e < 0.5) else "RED"
+                except Exception:
+                    v = None
+                verdicts[m2][direction][gran] = v
+
+    # ── signed-sqrt radial transform ───────────────────────────────────
+    def _r(x):     return float(np.sign(x) * np.sqrt(abs(x)))
+    def _r_inv(y): return float(np.sign(y) * y * y)
+
+    # ── figure ─────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(13, 7.6), dpi=180)
+    fig.patch.set_facecolor("white")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.10],
+                          hspace=0.05, wspace=0.18)
+
+    N = len(GRAN_ORDER)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+    use_zone_bg = (metric == "m2_return")
+
+    def _draw_one(ax, direction):
+        local = [vals[m2][direction][g]
+                 for m2 in m2_models for g in GRAN_ORDER
+                 if vals[m2][direction][g] is not None]
+        if local:
+            lp05 = float(np.percentile(local, 5))
+            lp95 = float(np.percentile(local, 95))
+            l_vmin = min(0.0, lp05) * 1.08
+            l_vmax = lp95 * 1.15
+        else:
+            l_vmin, l_vmax = -1.0, 1.0
+        vmin = _r(l_vmin); vmax = _r(l_vmax)
+
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(GRAN_ORDER, fontsize=11, fontweight="semibold",
+                           color="#222222")
+        ax.tick_params(axis="x", pad=6)
+        ax.set_facecolor("white")
+        ax.spines["polar"].set_visible(True)
+        ax.spines["polar"].set_color("#777777")
+        ax.spines["polar"].set_linewidth(1.0)
+        ax.grid(color="#aaaaaa", linewidth=0.8, linestyle="-", alpha=1.0)
+        ax.yaxis.grid(False)
+        ax.set_ylim(vmin, vmax)
+
+        ang_full = np.linspace(0, 2 * np.pi, 300)
+        r_zero = _r(0.0)
+
+        if use_zone_bg:
+            ax_vmax = ax.get_ylim()[1]; ax_vmin = ax.get_ylim()[0]
+            ax.fill_between(ang_full, np.full(300, r_zero), np.full(300, ax_vmax),
+                            color="#a8d5b5", alpha=0.45, zorder=0)
+            if ax_vmin < r_zero:
+                ax.fill_between(ang_full, np.full(300, ax_vmin), np.full(300, r_zero),
+                                color="#f0a8a8", alpha=0.55, zorder=0)
+            ax.plot(ang_full, np.full(300, r_zero), color="#777777",
+                    linewidth=0.9, linestyle="-", zorder=1)
+
+        # Concentric ring labels with arc-gap (---79--- effect)
+        n_rings = 5
+        r_ticks = np.linspace(vmin, vmax, n_rings + 2)[1:-1].tolist()
+        # Snap the ring closest to the zone boundary onto it exactly,
+        # so the visible label reads "0" (return) / "50" (precision)
+        # instead of e.g. "−1" / "49".
+        if abs(r_zone - vmin) > 1e-9 and abs(r_zone - vmax) > 1e-9:
+            i_snap = int(np.argmin([abs(rt - r_zone) for rt in r_ticks]))
+            r_ticks[i_snap] = r_zone
+        orig_ticks = [_r_inv(r) for r in r_ticks]
+        ax.set_yticks(r_ticks)
+        ax.set_yticklabels([""] * len(r_ticks))
+        ang_30m = angles[GRAN_ORDER.index("30m")]
+        ang_1d  = angles[GRAN_ORDER.index("1d")]
+        ang_gap = (ang_30m + ang_1d + 2 * np.pi) / 2.0
+        gap_half = np.deg2rad(3.5)
+        ang_arc = np.linspace(ang_gap + gap_half,
+                              ang_gap + 2 * np.pi - gap_half, 300)
+        r_span = r_ticks[-1] - r_ticks[0] if len(r_ticks) > 1 else 1.0
+        for i, (rv_orig, rv_r) in enumerate(zip(orig_ticks, r_ticks)):
+            ax.plot(ang_arc, np.full_like(ang_arc, rv_r),
+                    color="#aaaaaa", linewidth=0.8, linestyle="-",
+                    alpha=1.0, zorder=1)
+            r_label = rv_r - 0.03 * r_span if i == len(r_ticks) - 1 else rv_r
+            ax.annotate(f"{rv_orig:.0f}", xy=(ang_gap, r_label),
+                        fontsize=9, color="#222222", fontweight="bold",
+                        ha="center", va="center", zorder=9)
+
+        # Polygons
+        for m2 in m2_models:
+            raw = [vals[m2][direction][g] for g in GRAN_ORDER]
+            data = [_r(float(np.clip(v if v is not None else 0.0, l_vmin, l_vmax)))
+                    for v in raw]
+            data_closed = data + data[:1]
+            ax.plot(angles, data_closed, color=M2_COLORS[m2],
+                    linestyle=M2_LS[m2], linewidth=2.4, zorder=3,
+                    solid_capstyle="round")
+
+        dir_arrow = r"$\uparrow$" if direction == "UP" else r"$\downarrow$"
+        ax.set_title(f"{m1}  {dir_arrow}",
+                     fontsize=15, fontweight="bold", pad=18, color="#111111")
+
+    for ci, dr in enumerate(DIRECTIONS):
+        ax = fig.add_subplot(gs[0, ci], polar=True)
+        _draw_one(ax, dr)
+
+    # ── Legend (one row, bottom) ────────────────────────────────────────
+    leg_ax = fig.add_subplot(gs[1, :]); leg_ax.set_axis_off()
+    m2_handles = [Line2D([0], [0], color=M2_COLORS[m2], linewidth=2.6,
+                         linestyle=M2_LS[m2], label=M2_LABELS[m2])
+                  for m2 in m2_models]
+    zone_handles = []
+    if use_zone_bg:
+        zone_handles = [
+            Patch(facecolor="#a8d5b5", edgecolor="#aaaaaa", alpha=0.8,
+                  label=r"M2 Return $> 0$ (Profitable)"),
+            Patch(facecolor="#f0a8a8", edgecolor="#aaaaaa", alpha=0.8,
+                  label=r"M2 Return $< 0$ (Loss)"),
+        ]
+    handles = m2_handles + zone_handles
+
+    fig.canvas.draw()
+    inv = fig.transFigure.inverted()
+    ax_l = fig.axes[0]; ax_r = fig.axes[1]
+    x0 = inv.transform(ax_l.transAxes.transform([0, 0]))[0]
+    x1 = inv.transform(ax_r.transAxes.transform([1, 0]))[0]
+    x_center = (x0 + x1) / 2
+    leg_bbox = inv.transform(leg_ax.transAxes.transform([0.5, 0.5]))
+    y_center = leg_bbox[1]
+
+    fig.legend(handles=handles, loc="center",
+               bbox_to_anchor=(x_center, y_center),
+               bbox_transform=fig.transFigure,
+               fontsize=12, frameon=True, framealpha=0.95,
+               edgecolor="#cccccc", ncol=len(handles),
+               handlelength=2.4, handleheight=1.4, markerscale=1.4,
+               borderpad=0.6, columnspacing=1.4)
+
+    fname = f"results_radar_focused_{m1}_{metric}.png"
+    out = os.path.join(output_dir, fname)
+    fig.savefig(out, dpi=200, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"[plot_results_radar_focused] {out}")
+    return out
+
+
+def plot_kronos_down_combined(
+    data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+    output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+    m2_models: tuple = ("rf", "tabpfn", "ctts"),
+):
+    """One figure with two side-by-side spider charts for **Kronos / DOWN**:
+
+      • LEFT  — M2 total return (%):  green > 0, red < 0
+      • RIGHT — M2 precision    (%):  green ≥ 50, red < 50
+
+    Three M2 models drawn (default: rf, tabpfn, ctts) using the muted palette
+    consistent with ``best_m2_per_gran.png``. A single shared bottom legend.
+    """
+    import os, json
+    from pathlib import Path
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    M1, DIR = "Kronos", "DOWN"
+    M2_LABELS = {"rf": "Random Forest", "autogluon": "AutoGluon",
+                 "tabpfn": "TabPFN", "tabicl": "TabICL", "ctts": "CTTS"}
+    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    M2_KEYS    = {m2: f"{m2}_backtest_all_features"
+                  for m2 in ("rf", "autogluon", "tabpfn", "tabicl", "ctts")}
+
+    M2_COLORS = {
+        "rf":        "#7FB069",   # muted green
+        "autogluon": "#E89A4F",   # muted orange
+        "tabpfn":    "#6FA8DC",   # muted blue
+        "tabicl":    "#C28EC9",   # muted purple
+        "ctts":      "#D97374",   # muted red
+    }
+    M2_LS = {"rf": "-", "autogluon": "--", "tabpfn": "-",
+             "tabicl": ":", "ctts": "-"}
+
+    os.makedirs(output_dir, exist_ok=True)
+    data_root = Path(data_root)
+
+    # ── load values for both metrics ─────────────────────────────────────
+    vals_ret  = {m2: {} for m2 in m2_models}
+    vals_prec = {m2: {} for m2 in m2_models}
+    for m2 in m2_models:
+        key = M2_KEYS[m2]
+        for g in GRAN_ORDER:
+            p = (data_root / M1 / m2 / DIR / "Utility_Score_NoCal"
+                 / f"{g}_tp" / "analysis_summary.json")
+            r_v = pr_v = None
+            try:
+                b = json.load(open(p)).get(key, {})
+                if b and b.get("m2_win_rate") is not None:
+                    r_v  = b.get("m2_total_return", 0.0)
+                    pr_v = b["m2_win_rate"]            # already in %
+            except Exception:
+                pass
+            vals_ret[m2][g]  = r_v
+            vals_prec[m2][g] = pr_v
+
+    # ── signed-sqrt radial transform ────────────────────────────────────
+    def _r(x):     return float(np.sign(x) * np.sqrt(abs(x)))
+    def _r_inv(y): return float(np.sign(y) * y * y)
+
+    fig = plt.figure(figsize=(13, 7.6), dpi=180)
+    fig.patch.set_facecolor("white")
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.10],
+                          hspace=0.05, wspace=0.18,
+                          left=0.06, right=0.94)
+
+    N = len(GRAN_ORDER)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+
+    # Fraction of each chart's radial extent (in transformed sqrt space) to
+    # reserve for the inner RED zone. Keeping this constant across both
+    # subplots makes their red discs visually similar in size.
+    RED_FRAC = 0.35
+
+    def _draw(ax, vals: dict, title: str, kind: str):
+        """kind ∈ {"return", "precision"}"""
+        local = [vals[m2][g] for m2 in m2_models for g in GRAN_ORDER
+                 if vals[m2][g] is not None]
+        if kind == "return":
+            if local:
+                lp95 = float(np.percentile(local, 95))
+                l_vmax = lp95 * 1.15
+            else:
+                l_vmax = 1.0
+            zone_orig = 0.0
+            r_zone    = _r(zone_orig)
+            r_vmax    = _r(l_vmax)
+            # Force the red zone to occupy RED_FRAC of the radial extent in
+            # transformed (sqrt) space.  Solve for l_vmin such that
+            # (r_zone − r_vmin) / (r_vmax − r_vmin) == RED_FRAC.
+            r_vmin    = r_zone - RED_FRAC / (1.0 - RED_FRAC) * (r_vmax - r_zone)
+            l_vmin    = _r_inv(r_vmin)
+        else:  # precision (units: %)
+            if local:
+                lp95 = float(np.percentile(local, 95))
+                l_vmax = min(98.0, lp95 + 5.0)
+            else:
+                l_vmax = 90.0
+            if l_vmax < 55.0: l_vmax = 60.0
+            zone_orig = 50.0
+            r_zone    = _r(zone_orig)
+            r_vmax    = _r(l_vmax)
+            r_vmin    = r_zone - RED_FRAC / (1.0 - RED_FRAC) * (r_vmax - r_zone)
+            l_vmin    = _r_inv(r_vmin)
+
+        vmin = _r(l_vmin); vmax = _r(l_vmax)
+
+        ax.set_theta_offset(np.pi / 2)
+        ax.set_theta_direction(-1)
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(GRAN_ORDER, fontsize=15, fontweight="semibold",
+                           color="#222222")
+        ax.tick_params(axis="x", pad=6)
+        ax.set_facecolor("white")
+        ax.spines["polar"].set_visible(True)
+        ax.spines["polar"].set_color("#777777")
+        ax.spines["polar"].set_linewidth(1.0)
+        ax.grid(color="#aaaaaa", linewidth=0.8, linestyle="-", alpha=1.0)
+        ax.yaxis.grid(False)
+        ax.set_ylim(vmin, vmax)
+        # Always apply set_rorigin: keeps the inner red zone proportionally
+        # equal across both subplots (controlled by RED_FRAC).
+        ax.set_rorigin(vmin)
+
+        ang_full = np.linspace(0, 2 * np.pi, 300)
+        ax_vmin, ax_vmax = ax.get_ylim()
+        if ax_vmin < r_zone:
+            ax.fill_between(ang_full, np.full(300, ax_vmin), np.full(300, r_zone),
+                            color="#f0a8a8", alpha=0.55, zorder=0)
+        if r_zone < ax_vmax:
+            ax.fill_between(ang_full, np.full(300, r_zone), np.full(300, ax_vmax),
+                            color="#a8d5b5", alpha=0.45, zorder=0)
+        ax.plot(ang_full, np.full(300, r_zone),
+                color="#777777", linewidth=1.0, linestyle="-", zorder=1)
+
+        # Concentric rings drawn manually with arc-gap (---79--- effect)
+        n_rings = 5
+        r_ticks = np.linspace(vmin, vmax, n_rings + 2)[1:-1].tolist()
+        # Snap the ring closest to the zone boundary onto it exactly so the
+        # label reads "0" (return) / "50" (precision).
+        if abs(r_zone - vmin) > 1e-9 and abs(r_zone - vmax) > 1e-9:
+            i_snap = int(np.argmin([abs(rt - r_zone) for rt in r_ticks]))
+            r_ticks[i_snap] = r_zone
+        orig_ticks = [_r_inv(r) for r in r_ticks]
+        ax.set_yticks(r_ticks)
+        ax.set_yticklabels([""] * len(r_ticks))
+
+        ang_30m = angles[GRAN_ORDER.index("30m")]
+        ang_1d  = angles[GRAN_ORDER.index("1d")]
+        ang_gap = (ang_30m + ang_1d + 2 * np.pi) / 2.0
+        gap_half = np.deg2rad(3.5)
+        ang_arc = np.linspace(ang_gap + gap_half,
+                              ang_gap + 2 * np.pi - gap_half, 300)
+        r_span = r_ticks[-1] - r_ticks[0] if len(r_ticks) > 1 else 1.0
+        seen_labels = set()
+        for i, (rv_orig, rv_r) in enumerate(zip(orig_ticks, r_ticks)):
+            ax.plot(ang_arc, np.full_like(ang_arc, rv_r),
+                    color="#aaaaaa", linewidth=0.8, linestyle="-",
+                    alpha=1.0, zorder=1)
+            # Avoid "-0" rendering and duplicate "0" labels when multiple
+            # ticks round to the same integer (e.g. −0.4 and the snapped 0).
+            label_v = 0.0 if abs(rv_orig) < 0.5 else rv_orig
+            label_str = f"{label_v:.0f}"
+            if label_str in seen_labels:
+                continue
+            seen_labels.add(label_str)
+            r_label = rv_r - 0.04 * r_span if i == len(r_ticks) - 1 else rv_r
+            ax.annotate(label_str, xy=(ang_gap, r_label),
+                        fontsize=15, color="#222222", fontweight="bold",
+                        ha="center", va="center", zorder=9)
+
+        # Polygons
+        for m2 in m2_models:
+            raw = [vals[m2][g] for g in GRAN_ORDER]
+            data = [_r(float(np.clip(v if v is not None else 0.0, l_vmin, l_vmax)))
+                    for v in raw]
+            data_closed = data + data[:1]
+            ax.plot(angles, data_closed, color=M2_COLORS[m2],
+                    linestyle=M2_LS[m2], linewidth=2.4, zorder=3,
+                    solid_capstyle="round")
+
+        ax.set_title(title, fontsize=15, fontweight="bold",
+                     pad=18, color="#111111")
+
+    ax_ret  = fig.add_subplot(gs[0, 0], polar=True)
+    ax_prec = fig.add_subplot(gs[0, 1], polar=True)
+    _draw(ax_ret,  vals_ret,  "M2 Total Return (%)", kind="return")
+    _draw(ax_prec, vals_prec, "M2 Precision (%)",    kind="precision")
+
+    # Shared centred label sitting between the two individual subplot titles
+    fig.canvas.draw()
+    inv = fig.transFigure.inverted()
+    # Use the top of the left axes as the y reference so the label sits
+    # just below the subplot titles and is clearly between them.
+    top_y = inv.transform(ax_ret.transAxes.transform([0.5, 1.0]))[1]
+    FS = 15   # unified font size for all text in the figure
+
+    fig.text(0.5, top_y + 0.065, rf"{M1}  $\downarrow$",
+             ha="center", va="bottom", fontsize=15, fontweight="bold",
+             color="#111111")
+
+    # ── shared bottom legend — 2 rows: M2 models (top) / zone conditions (bottom) ──
+    leg_ax = fig.add_subplot(gs[1, :]); leg_ax.set_axis_off()
+    m2_handles = [Line2D([0], [0], color=M2_COLORS[m2], linewidth=2.6,
+                         linestyle=M2_LS[m2], label=M2_LABELS[m2])
+                  for m2 in m2_models]
+    zone_handles = [
+        Patch(facecolor="#a8d5b5", edgecolor="#aaaaaa", alpha=0.85,
+              label=r"M2 Return $> 0$  /  Precision $\geq$ 50%"),
+        Patch(facecolor="#f0a8a8", edgecolor="#aaaaaa", alpha=0.85,
+              label=r"M2 Return $< 0$  /  Precision $<$ 50%"),
+    ]
+    # Row 1: M2 model lines; Row 2: zone patches — achieved with ncol=max(len)
+    # so both rows are centred independently.
+    handles = m2_handles + zone_handles
+
+    fig.canvas.draw()
+    inv = fig.transFigure.inverted()
+    leg_bbox = inv.transform(leg_ax.transAxes.transform([0.5, 0.5]))
+    y_center = leg_bbox[1]
+
+    # Two separate legends stacked vertically so each row is exact:
+    #   Row 1 (top):    Random Forest | TabPFN | CTTS
+    #   Row 2 (bottom): M2 Return>0… | M2 Return<0…
+    leg_kw = dict(bbox_transform=fig.transFigure, fontsize=FS,
+                  frameon=False, handlelength=2.4, handleheight=1.4,
+                  markerscale=1.4, borderpad=0.4, columnspacing=1.4)
+    leg1 = fig.legend(handles=m2_handles, loc="center",
+                      bbox_to_anchor=(0.5, y_center + 0.01),
+                      ncol=len(m2_handles), **leg_kw)
+    fig.add_artist(leg1)
+    fig.legend(handles=zone_handles, loc="center",
+               bbox_to_anchor=(0.5, y_center - 0.04),
+               ncol=len(zone_handles), **leg_kw)
+
+    out = os.path.join(output_dir, "results_kronos_down_combined.png")
+    fig.savefig(out, dpi=200, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"[plot_kronos_down_combined] {out}")
+    return out
+
+
+def plot_scenario_matrices(data_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output",
+                           output_dir: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Results",
+                           edge_root: str = "/home/pablo/M2_DS/Secondary-Model/src/Output/Analysis/Edge_NoCal"):
+    """Generate two 2x2 matrices counting outcomes of precision and profitability scenarios."""
+    import os
+    import json
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+    try:
+        from Utils.backtest.engine import _build_spread_equity
+    except ImportError:
+        _build_spread_equity = None
+
+    M1_MODELS  = ["Tirex", "Chronos2", "Fincast", "Kronos"]
+    M2_MODELS  = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
+    GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    DIRECTIONS = ["UP", "DOWN"]
+
+    M2_KEYS = {
+        "rf":        "rf_backtest_all_features",
+        "autogluon": "autogluon_backtest_all_features",
+        "tabpfn":    "tabpfn_backtest_all_features",
+        "tabicl":    "tabicl_backtest_all_features",
+        "ctts":      "ctts_backtest_all_features",
+    }
+    M2_TEMP_KEYS = {
+        "rf":        "rf_temporal_all_features",
+        "autogluon": "autogluon_temporal_all_features",
+        "tabpfn":    "tabpfn_temporal_all_features",
+        "tabicl":    "tabicl_temporal_all_features",
+        "ctts":      "ctts_temporal_all_features",
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    data_path = Path(data_root)
+    edge_path = Path(edge_root)
+
+    mat1 = np.zeros((2, 2), dtype=int)
+    mat2 = np.zeros((2, 2), dtype=int)
+
+    for m1 in M1_MODELS:
+        for m2 in M2_MODELS:
+            key_back = M2_KEYS[m2]
+            key_temp = M2_TEMP_KEYS[m2]
+            for direction in DIRECTIONS:
+                for gran in GRAN_ORDER:
+                    gran_dir = f"{gran}_tp"
+                    p_base = data_path / m1 / m2 / direction / "Utility_Score_NoCal" / gran_dir
+                    bp = p_base / "analysis_summary.json"
+                    ep = edge_path / m1 / m2 / direction / f"edge_summary_{gran}.json"
+                    trades_csv = p_base / "10_backtest_all_trades.csv"
+
+                    if not bp.exists() or not trades_csv.exists():
+                        continue
+                    
+                    try:
+                        bt_ = json.load(open(bp))
+                        b_ = bt_.get(key_back, {})
+                        t_ = bt_.get(key_temp, {})
+                        if not b_ or not t_:
+                            continue
+                        
+                        test_perf = t_.get("Test", {})
+                        test_sel_perf = t_.get("Test_selective", {})
+                        
+                        if not test_perf or not test_sel_perf:
+                            continue
+
+                        # Matrix 1: Precision
+                        prec_05 = test_perf.get("precision", 0)
+                        baseline_05 = test_perf.get("baseline", 0)
+                        prec_sel = test_sel_perf.get("precision", 0)
+                        
+                        if prec_05 > baseline_05:
+                            mat1[0, 0] += 1
+                        else:
+                            mat1[0, 1] += 1
+                            
+                        if prec_sel > baseline_05:
+                            mat1[1, 0] += 1
+                        else:
+                            mat1[1, 1] += 1
+
+                        # Reliability check
+                        constr = bool(test_sel_perf.get("constraint_satisfied", False))
+                        cv_val = 99.0
+                        if ep.exists():
+                            edge_data = json.load(open(ep)).get(gran, {})
+                            p_rets = np.array(edge_data.get('path_total_rets', []), dtype=float)
+                            if len(p_rets) > 1:
+                                cv_val = float(np.std(p_rets) / (abs(np.mean(p_rets)) + 1e-6))
+                        green = constr and (cv_val < 0.5)
+
+                        # Matrix 2: Profitability
+                        m1_ret = b_.get("m1_total_return", 0)
+                        m2_ret_sel = b_.get("m2_total_return", 0)
+                        
+                        m2_ret_05 = m1_ret
+                        if _build_spread_equity is not None:
+                            df = pd.read_csv(trades_csv)
+                            df['date'] = pd.to_datetime(df['date'])
+                            df_05 = df[df['m2_prob'] >= 0.5].copy()
+                            df_05['m2_approved'] = True
+                            if len(df_05) > 0:
+                                timeline = pd.DatetimeIndex(sorted(df["date"].unique()))
+                                eq_05, _ = _build_spread_equity(df_05, timeline, 7)
+                                m2_ret_05 = (eq_05.iloc[-1] - 1) * 100
+                            else:
+                                m2_ret_05 = 0.0
+
+                        if m2_ret_05 > m1_ret:
+                            mat2[0, 1] += 1
+                            if green:
+                                mat2[0, 0] += 1
+                                
+                        if m2_ret_sel > m1_ret:
+                            mat2[1, 1] += 1
+                            if green:
+                                mat2[1, 0] += 1
+                                
+                    except Exception as e:
+                        print(f"Error processing {bp}: {e}")
+                        continue
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6), facecolor='white')
+    
+    def draw_matrix(ax, mat, row_labels, col_labels, title):
+        cax = ax.matshow(mat, cmap='Blues', alpha=0.8)
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                val = mat[i, j]
+                color = 'white' if val > np.max(mat)/2 else 'black'
+                ax.text(j, i, str(val), va='center', ha='center',
+                        fontsize=20, fontweight='bold', color=color)
+        
+        ax.set_xticks(range(len(col_labels)))
+        ax.set_yticks(range(len(row_labels)))
+        ax.set_xticklabels(col_labels, fontsize=12, fontweight='bold')
+        ax.set_yticklabels(row_labels, fontsize=12, fontweight='bold', rotation=90, va='center')
+        ax.xaxis.set_ticks_position('bottom')
+        ax.set_title(title, pad=20, fontsize=15, fontweight='bold', color='#2c3e50')
+        ax.tick_params(axis='both', which='both', length=0)
+
+    draw_matrix(axes[0], mat1, 
+                ["Baseline $\\tau=0.5$", "Optimized $\\hat{\\tau}$"], 
+                ["Precision > $M_1$ Base", "Precision $\\leq$ $M_1$ Base"],
+                "Scenario 1: Precision ($M_2$ vs $M_1$)")
+                
+    draw_matrix(axes[1], mat2, 
+                ["Baseline $\\tau=0.5$", "Optimized $\\hat{\\tau}$"], 
+                ["With Reliability\nAnalysis", "Without Reliability\nAnalysis"],
+                "Scenario 2: Profitability ($M_2$ Return > $M_1$ Return)")
+                
+    plt.tight_layout()
+    out_path = Path(output_dir) / "scenario_matrices.png"
+    plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    print(f"Saved scenario matrices to {out_path}")
+
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ┏━━━━━━━━━━ CPCV / Results matrices analysis ━━━━━━━━━━┓
+# ════════════════════════════════════════════════════════════════════════════
+# Three callables (also exposed via run_confusion_combined.py):
+#   - plot_cpcv_filter_confusion(...)      bar chart of filter combinations
+#   - compute_tab_vs_ctts_comparison(...)  tab vs CTTS counts -> JSON
+#   - plot_results_matrices(...)           3×4 results matrices (this file)
+# ════════════════════════════════════════════════════════════════════════════
+
+_M1_LIST   = ["Tirex", "Chronos2", "Fincast", "Kronos"]
+_M2_LIST   = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
+_DIRS_LIST = ["UP", "DOWN"]
+_GRANS_LIST = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+
+
+def _load_cpcv_records(edge_root: Path, bt_root: Path):
+    """Load all (M1,M2,dir,gran) records with constraint_satisfied=True for CPCV analysis.
+
+    Used by plot_cpcv_filter_confusion and compute_tab_vs_ctts_comparison.
+    Returns list of dicts with fp, med_sr, mean_sr, cv, path_mean, val_mean_ret,
+    val_tstat, val_constr, test_pos, val_pos, m1, m2, dir, gran.
+    """
+    records = []
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    ep = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+                    bp = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    try:
+                        entry = json.load(open(ep)).get(g, {})
+                        bt    = json.load(open(bp))
+                        tkey  = f"{m2}_temporal_all_features"
+                        bkey  = f"{m2}_backtest_all_features"
+                        val_sel  = bt[tkey]["Val_selective"]
+                        val_ret  = val_sel["mean_ret"]
+                        test_ret = bt[bkey]["m2_total_return"]
+                        if val_ret is None or test_ret is None: continue
+                        if not val_sel.get("constraint_satisfied", False): continue
+                        p   = np.array(entry.get("path_total_rets", []), dtype=float)
+                        srs = np.array(entry.get("path_sharpes", []),    dtype=float)
+                        cv        = float(np.std(p) / (abs(np.mean(p)) + 1e-6)) if len(p) > 1 else 99.0
+                        mean_sr   = float(np.mean(srs)) if len(srs) > 0 else -99.0
+                        path_mean = float(np.mean(p))   if len(p)   > 0 else -99.0
+                        records.append({
+                            "val_pos":      int(val_ret > 0),
+                            "test_pos":     int(test_ret > 0),
+                            "fp":           entry.get("frac_profitable", 0),
+                            "med_sr":       entry.get("median_path_sharpe", -99),
+                            "mean_sr":      mean_sr,
+                            "pp_mean":      entry.get("path_sel_prec_mean", 0),
+                            "pp_std":       entry.get("path_sel_prec_std", 99),
+                            "cv":           cv,
+                            "path_mean":    path_mean,
+                            "val_mean_ret": val_ret,
+                            "val_tstat":    val_sel.get("t_stat", 0),
+                            "val_constr":   1,
+                            "test_ret":     test_ret,
+                            "test_sharpe":  bt[bkey].get("m2_sharpe", None),
+                            "m1": m1, "m2": m2, "dir": d, "gran": g,
+                        })
+                    except Exception:
+                        pass
+    return records
+
+
+def plot_cpcv_filter_confusion(edge_root: Path, bt_root: Path, save_path: Path):
+    """Top-30 filter combinations bar chart for CPCV reliability analysis.
+
+    Saves results_matrices_summary-style PNG showing TP/FP/FN/TN bars and
+    precision/recall/accuracy lines for the top-30 filter combinations
+    (out of singles + pairs + triples) ranked by test precision.
+    """
+    from itertools import combinations
+    records = _load_cpcv_records(edge_root, bt_root)
+    N = len(records)
+    print(f"[plot_cpcv_filter_confusion] N={N}")
+
+    base_conditions = [
+        ("fp≥0.6",      lambda r: r["fp"]          >= 0.6),
+        ("fp≥0.8",      lambda r: r["fp"]          >= 0.8),
+        ("meanSR>0.5",  lambda r: r["mean_sr"]     > 0.5),
+        ("meanSR>1.0",  lambda r: r["mean_sr"]     > 1.0),
+        ("meanSR≥1.5",  lambda r: r["mean_sr"]     >= 1.5),
+        ("medSR>0.5",   lambda r: r["med_sr"]      > 0.5),
+        ("medSR>1.0",   lambda r: r["med_sr"]      > 1.0),
+        ("medSR≥1.5",   lambda r: r["med_sr"]      >= 1.5),
+        ("CV<1.0",      lambda r: r["cv"]          < 1.0),
+        ("CV<0.5",      lambda r: r["cv"]          < 0.5),
+        ("prec≥0.52",   lambda r: r["pp_mean"]     >= 0.52),
+        ("pathMean>0",  lambda r: r["path_mean"]   > 0),
+        ("valRet>0",    lambda r: r["val_mean_ret"] > 0),
+        ("tStat>1.5",   lambda r: r["val_tstat"]   > 1.5),
+        ("tStat>2",     lambda r: r["val_tstat"]   > 2),
+        ("tStat>3",     lambda r: r["val_tstat"]   > 3),
+        ("constr=True", lambda r: r["val_constr"]  == 1),
+    ]
+    redundant_groups = [
+        {"fp≥0.6", "fp≥0.8"},
+        {"meanSR>0.5", "meanSR>1.0", "meanSR≥1.5"},
+        {"medSR>0.5", "medSR>1.0", "medSR≥1.5"},
+        {"tStat>1.5", "tStat>2", "tStat>3"},
+        {"CV<1.0", "CV<0.5"},
+        {"constr=True", "valRet>0"},
+        {"constr=True", "tStat>1.5"},
+        {"constr=True", "tStat>2"},
+    ]
+    def _has_red(names):
+        s = set(names)
+        return any(len(g & s) > 1 for g in redundant_groups)
+
+    def _combine(fns):
+        return lambda r: all(fn(r) for fn in fns)
+
+    all_filters = [("Baseline\n(no filter)", lambda r: True)]
+    for name, fn in base_conditions:
+        all_filters.append((name, fn))
+    for (n1, f1), (n2, f2) in combinations(base_conditions, 2):
+        if not _has_red([n1, n2]):
+            all_filters.append((f"{n1} &\n{n2}", _combine([f1, f2])))
+    for (n1, f1), (n2, f2), (n3, f3) in combinations(base_conditions, 3):
+        if not _has_red([n1, n2, n3]):
+            all_filters.append((f"{n1} &\n{n2} & {n3}", _combine([f1, f2, f3])))
+
+    def _stats(filters, key):
+        TPs, FPs, FNs, TNs = [], [], [], []
+        for _, fn in filters:
+            sel = [r for r in records if fn(r)]
+            rej = [r for r in records if not fn(r)]
+            TPs.append(sum(r[key] == 1 for r in sel))
+            FPs.append(sum(r[key] == 0 for r in sel))
+            FNs.append(sum(r[key] == 1 for r in rej))
+            TNs.append(sum(r[key] == 0 for r in rej))
+        return TPs, FPs, FNs, TNs
+
+    TPs_t, FPs_t, FNs_t, TNs_t = _stats(all_filters, "test_pos")
+    precs_all = [TP / (TP + FP) if (TP + FP) > 0 else -1 for TP, FP in zip(TPs_t, FPs_t)]
+    ranked = [0] + sorted(range(1, len(all_filters)), key=lambda i: -precs_all[i])
+    TOP_N = 30
+    keep = ranked[: TOP_N + 1]
+    filters = [all_filters[i] for i in keep]
+    # Pin CV<0.5 & fp≥0.8 at the end
+    filters.append(("CV<0.5 &\nfp≥0.8", lambda r: r["cv"] < 0.5 and r["fp"] >= 0.8))
+
+    splits = [("VAL", "val_pos", "Val_selective mean_ret > 0"),
+              ("TEST", "test_pos", "m2_total_return > 0")]
+
+    fig, axes = plt.subplots(2, 1, figsize=(26, 16), dpi=160)
+    fig.patch.set_facecolor("white")
+
+    for ax, (split, out_key, split_label) in zip(axes, splits):
+        n_pos = sum(r[out_key] for r in records)
+        n_neg = N - n_pos
+        bar_w = 0.18
+        TPs, FPs, FNs, TNs = _stats(filters, out_key)
+        x = np.arange(len(filters))
+
+        TPs_r = np.array(TPs) / N; FPs_r = np.array(FPs) / N
+        FNs_r = np.array(FNs) / N; TNs_r = np.array(TNs) / N
+
+        b1 = ax.bar(x - 1.5*bar_w, TPs_r, bar_w, label="TP: selected & profitable",
+                    color="#2ca02c", edgecolor="white")
+        b2 = ax.bar(x - 0.5*bar_w, FPs_r, bar_w, label="FP: selected & NOT profitable",
+                    color="#d62728", edgecolor="white")
+        b3 = ax.bar(x + 0.5*bar_w, TNs_r, bar_w, label="TN: rejected & NOT profitable",
+                    color="#1f77b4", edgecolor="white")
+        b4 = ax.bar(x + 1.5*bar_w, FNs_r, bar_w, label="FN: rejected & profitable (missed)",
+                    color="#ff7f0e", edgecolor="white")
+
+        for bars, vals in [(b1, TPs), (b2, FPs), (b3, TNs), (b4, FNs)]:
+            for bar, v in zip(bars, vals):
+                if v > 0:
+                    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
+                            str(v), ha="center", va="bottom", fontsize=7,
+                            fontweight="bold", color="#111111")
+
+        ax2 = ax.twinx()
+        precisions = [TP/(TP+FP) if (TP+FP) > 0 else np.nan for TP, FP in zip(TPs, FPs)]
+        recalls    = [TP/(TP+FN) if (TP+FN) > 0 else np.nan for TP, FN in zip(TPs, FNs)]
+        accs       = [(TP+TN)/N  if N > 0       else np.nan for TP, TN in zip(TPs, TNs)]
+        ax2.plot(x, precisions, "D--", color="#9467bd", lw=1.8, ms=6,
+                 label="Precision TP/(TP+FP)", zorder=5)
+        ax2.plot(x, recalls,    "s--", color="#8c564b", lw=1.8, ms=6,
+                 label="Recall TP/(TP+FN)",    zorder=5)
+        ax2.plot(x, accs,       "^--", color="#17becf", lw=1.8, ms=6,
+                 label="Accuracy (TP+TN)/N",   zorder=5)
+        for xi, (p, r_, a) in enumerate(zip(precisions, recalls, accs)):
+            if np.isfinite(p):
+                ax2.text(xi - 0.22, p + 0.02, f"{p:.0%}", fontsize=6.5,
+                         color="#9467bd", ha="center", fontweight="bold")
+            if np.isfinite(r_):
+                ax2.text(xi + 0.0, r_ - 0.05, f"{r_:.0%}", fontsize=6.5,
+                         color="#8c564b", ha="center", fontweight="bold")
+            if np.isfinite(a):
+                ax2.text(xi + 0.22, a + 0.02, f"{a:.0%}", fontsize=6.5,
+                         color="#17becf", ha="center", fontweight="bold")
+        ax2.set_ylim(0, 1.15)
+        ax2.set_ylabel("Precision / Recall / Accuracy", fontsize=10)
+        ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+        ax2.spines["top"].set_visible(False)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels([f[0] for f in filters], fontsize=8, rotation=35, ha="right")
+        ax.set_ylabel(f"Fraction of all configs (N={N})", fontsize=10)
+        ax.set_ylim(0, 0.75)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_facecolor("#fafafa")
+        ax.grid(axis="y", color="#dddddd", lw=0.6, zorder=0)
+        ax.axvspan(-0.5, 0.5, color="#ffffcc", alpha=0.5, zorder=0)
+
+        h1, l1 = ax.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8, framealpha=0.9, ncol=3)
+
+        ax.text(0.01, 0.97,
+                f"Actually profitable: {n_pos}/{N} ({n_pos/N:.1%})  |  "
+                f"Actually not profitable: {n_neg}/{N} ({n_neg/N:.1%})",
+                transform=ax.transAxes, fontsize=8.5, va="top",
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                          edgecolor="#aaaaaa", alpha=0.9))
+        ax.set_title(f"► {split} split  —  Profitable = {split_label}",
+                     fontsize=11, fontweight="bold", pad=8)
+
+    fig.suptitle(
+        f"CPCV Filter Confusion Analysis  |  Top {TOP_N} filters by TEST precision "
+        f"(out of {len(all_filters)})  |  N={N} configs  |  Ranked left→right",
+        fontsize=11, fontweight="bold", y=1.01)
+
+    plt.tight_layout(h_pad=4.0)
+    fig.savefig(str(save_path), dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[plot_cpcv_filter_confusion] Saved -> {save_path}")
+
+
+def compute_tab_vs_ctts_comparison(bt_root: Path, edge_root: Path, save_path: Path):
+    """Tab vs CTTS Δ Precision and reliability-aware return comparison → JSON."""
+    def _load(m1, m2, d, g):
+        bp = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+        ep = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+        try:
+            bt_   = json.load(open(bp))
+            entry = json.load(open(ep)).get(g, {})
+            b = bt_[f"{m2}_backtest_all_features"]
+            t = bt_[f"{m2}_temporal_all_features"]
+            val_sel = t["Val_selective"]
+            constr  = bool(val_sel.get("constraint_satisfied", False))
+            p       = np.array(entry.get("path_total_rets", []), dtype=float)
+            cv      = float(np.std(p) / (abs(np.mean(p)) + 1e-6)) if len(p) > 1 else 99.0
+            return {"prec_delta": b["m2_win_rate"] - b["m1_win_rate"],
+                    "m2_return":  b["m2_total_return"],
+                    "green":      constr and cv < 1.0}
+        except Exception:
+            return None
+
+    TAB = ["rf", "autogluon", "tabpfn", "tabicl"]
+    t1_tab_wins = t1_ctts_wins = t1_tie = t1_total = 0
+    t2_scA_tab = t2_scA_ctts = t2_scA_tie = 0
+    t2_scB = t2_scC = t2_neither = 0
+
+    for m1 in _M1_LIST:
+        for d in _DIRS_LIST:
+            for g in _GRANS_LIST:
+                ctts = _load(m1, "ctts", d, g)
+                tabs = {m2: _load(m1, m2, d, g) for m2 in TAB}
+                tab_deltas = [v["prec_delta"] for v in tabs.values() if v is not None]
+                ctts_delta = ctts["prec_delta"] if ctts else None
+                if tab_deltas and ctts_delta is not None:
+                    best_tab = max(tab_deltas)
+                    t1_total += 1
+                    if best_tab > ctts_delta:   t1_tab_wins  += 1
+                    elif best_tab < ctts_delta: t1_ctts_wins += 1
+                    else:                       t1_tie       += 1
+
+                green_tabs = {m2: v for m2, v in tabs.items() if v is not None and v["green"]}
+                ctts_green = ctts is not None and ctts["green"]
+                if ctts_green and green_tabs:
+                    best_tab_ret = max(v["m2_return"] for v in green_tabs.values())
+                    ctts_ret     = ctts["m2_return"]
+                    if   best_tab_ret > ctts_ret: t2_scA_tab  += 1
+                    elif best_tab_ret < ctts_ret: t2_scA_ctts += 1
+                    else:                         t2_scA_tie  += 1
+                elif not ctts_green and green_tabs: t2_scB     += 1
+                elif ctts_green and not green_tabs: t2_scC     += 1
+                else:                               t2_neither += 1
+
+    out = {
+        "table1": {
+            "total":        t1_total,
+            "tab_wins":     t1_tab_wins,
+            "ctts_wins":    t1_ctts_wins,
+            "tie":          t1_tie,
+            "tab_win_pct":  round(t1_tab_wins / t1_total, 4) if t1_total else 0,
+            "ctts_win_pct": round(t1_ctts_wins / t1_total, 4) if t1_total else 0,
+        },
+        "table2": {
+            "total":              len(_M1_LIST) * len(_DIRS_LIST) * len(_GRANS_LIST),
+            "scA_tab_wins":       t2_scA_tab,
+            "scA_ctts_wins":      t2_scA_ctts,
+            "scA_tie":            t2_scA_tie,
+            "scB_ctts_red_tab_green": t2_scB,
+            "scC_ctts_green_no_tab":  t2_scC,
+            "neither_green":      t2_neither,
+            "total_tab_wins":     t2_scA_tab + t2_scB,
+            "total_ctts_wins":    t2_scA_ctts + t2_scC,
+        },
+    }
+    json.dump(out, open(save_path, "w"), indent=2)
+    print(f"[compute_tab_vs_ctts_comparison] Saved -> {save_path}")
+    print(f"  Table 1: tab={t1_tab_wins} ctts={t1_ctts_wins} (tie={t1_tie}, total={t1_total})")
+    print(f"  Table 2: tab={out['table2']['total_tab_wins']} ctts={out['table2']['total_ctts_wins']}")
+    return out
+
+
+def _compute_metrics_at_threshold(csv_path: Path, threshold: float, fee: float = 0.002,
+                                  horizon: int = 7):
+    """Re-evaluate metrics at any threshold from 10_backtest_all_trades.csv.
+
+    Reuses _build_spread_equity and _equity_horizon_returns/_calc_sharpe from backtest engine.
+    Returns dict with: m2_total_return (%), m2_sharpe, avg_app (%), avg_rej (%), n_app, n_rej.
+    The 'return' column in the CSV is already net-of-fee; threshold filters
+    by m2_prob >= threshold.
+    """
+    from Utils.backtest.engine import _build_spread_equity, _equity_horizon_returns, _calc_sharpe, _annualization_factor  # type: ignore
+
+    df = pd.read_csv(csv_path)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["return"]).reset_index(drop=True)
+
+    approved = df["m2_prob"].values >= threshold
+    n_app = int(approved.sum())
+    n_rej = int((~approved).sum())
+
+    avg_app = float(df.loc[approved, "return"].mean()) * 100 if n_app > 0 else 0.0
+    avg_rej = float(df.loc[~approved, "return"].mean()) * 100 if n_rej > 0 else 0.0
+
+    # Profitable / losing among the approved trades (return is already net-of-fee)
+    if n_app > 0:
+        app_rets = df.loc[approved, "return"].values
+        win_mask = app_rets > 0
+        loss_mask = ~win_mask
+        n_app_win  = int(win_mask.sum())
+        n_app_loss = int(loss_mask.sum())
+        avg_app_win  = float(app_rets[win_mask].mean())  * 100 if n_app_win  > 0 else 0.0
+        avg_app_loss = float(app_rets[loss_mask].mean()) * 100 if n_app_loss > 0 else 0.0
+    else:
+        n_app_win = n_app_loss = 0
+        avg_app_win = avg_app_loss = 0.0
+
+    full_idx = pd.DatetimeIndex(sorted(df["date"].unique()))
+    appr_df = df[approved].copy()
+    m2_total_return = 0.0
+    m2_sharpe = float("nan")
+    if len(appr_df) > 0:
+        equity, _ = _build_spread_equity(appr_df, full_idx, horizon)
+        if len(equity) > 0:
+            m2_total_return = float((equity.iloc[-1] - 1) * 100)
+            # infer granularity from date spacing for annualisation
+            if len(full_idx) > 1:
+                delta_h = (full_idx[1] - full_idx[0]).total_seconds() / 3600
+                if   delta_h >= 24*7: gran_str = "1w"
+                elif delta_h >= 24:   gran_str = "1d"
+                elif delta_h >= 12:   gran_str = "12h"
+                elif delta_h >= 8:    gran_str = "8h"
+                elif delta_h >= 6:    gran_str = "6h"
+                elif delta_h >= 4:    gran_str = "4h"
+                elif delta_h >= 2:    gran_str = "2h"
+                elif delta_h >= 1:    gran_str = "1h"
+                else:                 gran_str = "30m"
+                ann = _annualization_factor(gran_str)
+                ann_h = np.sqrt(ann ** 2 / horizon)
+                h_rets = _equity_horizon_returns(equity, horizon)
+                if len(h_rets) > 0:
+                    m2_sharpe = float(_calc_sharpe(h_rets, ann_h))
+
+    return {
+        "m2_total_return": m2_total_return,
+        "m2_sharpe":       m2_sharpe,
+        "avg_app":         avg_app,
+        "avg_rej":         avg_rej,
+        "n_app":           n_app,
+        "n_rej":           n_rej,
+        "n_app_win":       n_app_win,
+        "n_app_loss":      n_app_loss,
+        "avg_app_win":     avg_app_win,
+        "avg_app_loss":    avg_app_loss,
+    }
+
+
+def _walk_results_configs(bt_root: Path, edge_root: Path):
+    """Yield per-config dicts with all metrics needed by plot_results_matrices.
+
+    Per (M1, M2, dir, gran) config emits:
+      - M1 baseline precision and total return
+      - M2 precision at τ=0.5 (Test.precision) and τ̂ (Test_selective.precision)
+      - M2 total return at τ=0.5 (recomputed) and τ̂ (from JSON)
+      - Avg approved/rejected return at τ=0.5 (recomputed) and τ̂ (from ROI.txt)
+      - constraint_satisfied flag
+      - CV (from edge_summary path_total_rets)
+    Skips configs without all required files.
+    """
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            tkey = f"{m2}_temporal_all_features"
+            bkey = f"{m2}_backtest_all_features"
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    bp  = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    csv = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_trades.csv"
+                    roi = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_ROI.txt"
+                    ep  = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+                    if not (bp.exists() and csv.exists()):
+                        continue
+                    try:
+                        bt_data = json.load(open(bp))
+                        b = bt_data.get(bkey, {})
+                        t = bt_data.get(tkey, {})
+                        if not b or not t:
+                            continue
+                        val_sel = t.get("Val_selective", {})
+                        constr  = bool(val_sel.get("constraint_satisfied", False))
+                        m1_prec = float(t.get("Test", {}).get("baseline", float("nan")))
+                        m2_prec_05  = float(t.get("Test", {}).get("precision", float("nan")))
+                        m2_prec_tau = float(t.get("Test_selective", {}).get("precision", float("nan")))
+                        m1_total_ret = float(b.get("m1_total_return", float("nan")))
+                        m2_total_ret_tau = float(b.get("m2_total_return", float("nan")))
+                        m2_sharpe_tau    = float(b.get("m2_sharpe", float("nan")))
+                        fee = float(b.get("fee", 0.002))
+
+                        # CV from CPCV
+                        cv = 99.0
+                        if ep.exists():
+                            try:
+                                entry = json.load(open(ep)).get(g, {})
+                                p = np.array(entry.get("path_total_rets", []), dtype=float)
+                                if len(p) > 1:
+                                    cv = float(np.std(p) / (abs(np.mean(p)) + 1e-6))
+                            except Exception:
+                                pass
+
+                        # Recompute τ=0.5 metrics from CSV
+                        m05 = _compute_metrics_at_threshold(csv, 0.5, fee=fee, horizon=7)
+
+                        # τ̂ approved/rejected averages: parse from ROI.txt if present
+                        avg_app_tau = avg_rej_tau = None
+                        if roi.exists():
+                            try:
+                                roi_txt = roi.read_text()
+                                import re as _re
+                                m_app = _re.search(r"Avg Return APPROVED:\s+([+-]?[\d.]+)%", roi_txt)
+                                m_rej = _re.search(r"Avg Return REJECTED:\s+([+-]?[\d.]+)%", roi_txt)
+                                if m_app: avg_app_tau = float(m_app.group(1))
+                                if m_rej: avg_rej_tau = float(m_rej.group(1))
+                            except Exception:
+                                pass
+                        # Fallback: recompute at τ̂ if ROI parse failed
+                        if avg_app_tau is None or avg_rej_tau is None:
+                            try:
+                                tau_hat = float(b.get("threshold", 0.5))
+                                m_tau = _compute_metrics_at_threshold(csv, tau_hat, fee=fee, horizon=7)
+                                avg_app_tau = m_tau["avg_app"]
+                                avg_rej_tau = m_tau["avg_rej"]
+                            except Exception:
+                                continue
+
+                        # Val metrics
+                        val_m1_prec      = float(t.get("Val", {}).get("baseline", float("nan")))
+                        val_m2_prec_05   = float(t.get("Val", {}).get("precision", float("nan")))
+                        val_m2_prec_tau  = float(t.get("Val_selective", {}).get("precision", float("nan")))
+                        val_mean_ret_tau = float(t.get("Val_selective", {}).get("mean_ret", float("nan")))
+
+                        yield {
+                            "m1": m1, "m2": m2, "dir": d, "gran": g,
+                            "m1_prec":           m1_prec,
+                            "m2_prec_05":        m2_prec_05,
+                            "m2_prec_tau":       m2_prec_tau,
+                            "m1_total_ret":      m1_total_ret,
+                            "m2_total_ret_05":   m05["m2_total_return"],
+                            "m2_sharpe_05":      m05["m2_sharpe"],
+                            "m2_sharpe_tau":     m2_sharpe_tau,
+                            "m2_total_ret_tau":  m2_total_ret_tau,
+                            "avg_app_05":        m05["avg_app"],
+                            "avg_rej_05":        m05["avg_rej"],
+                            "avg_app_tau":       avg_app_tau,
+                            "avg_rej_tau":       avg_rej_tau,
+                            "constr":            constr,
+                            "cv":                cv,
+                            "reliable":          constr and (cv < 0.5),
+                            # validation split
+                            "val_m1_prec":       val_m1_prec,
+                            "val_m2_prec_05":    val_m2_prec_05,
+                            "val_m2_prec_tau":   val_m2_prec_tau,
+                            "val_mean_ret_tau":  val_mean_ret_tau,   # Val_selective mean_ret at τ̂
+                        }
+                    except Exception as e:
+                        print(f"[walk] skip {m1}/{m2}/{d}/{g}: {e}")
+                        continue
+
+
+def build_metrics_dict(bt_root: Path, save_path: Path) -> dict:
+    """Build and save a structured metrics dict with the schema:
+
+        metrics[m1][m2][direction][granularity] = {
+            "threshold_found":                  bool,
+            "precision_without_threshold":      float,   # Test.precision at τ=0.5
+            "precision_with_threshold":         float,   # Test_selective.precision at τ̂
+            "mean_return_without_threshold":    float,   # M2 total return recomputed at τ=0.5
+            "mean_return_with_threshold":       float,   # M2 total return at τ̂ (stored)
+            "sharpe_ratio_without_threshold":   float,   # Sharpe recomputed at τ=0.5
+            "sharpe_ratio_with_threshold":      float,   # Sharpe at τ̂ (stored)
+            "n_trades_without_threshold":       int,     # trades approved at τ=0.5
+            "n_trades_with_threshold":          int,     # trades approved at τ̂
+            "n_total_suggested_trades_by_m1":   int,     # all M1 trades in test
+        }
+    """
+    metrics = {m1: {m2: {d: {} for d in _DIRS_LIST} for m2 in _M2_LIST} for m1 in _M1_LIST}
+
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            bkey = f"{m2}_backtest_all_features"
+            tkey = f"{m2}_temporal_all_features"
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    bp  = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    csv = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_trades.csv"
+                    entry = {}
+                    try:
+                        bt_data = json.load(open(bp))
+                        b = bt_data.get(bkey, {})
+                        t = bt_data.get(tkey, {})
+                        fee = float(b.get("fee", 0.002))
+
+                        # τ̂ fields (stored)
+                        entry["threshold_found"]               = bool(b.get("constraint_satisfied", False))
+                        entry["precision_without_threshold"]   = float(t.get("Test", {}).get("precision", float("nan")))
+                        entry["precision_with_threshold"]      = float(t.get("Test_selective", {}).get("precision", float("nan")))
+                        entry["mean_return_with_threshold"]    = float(b.get("m2_total_return", float("nan")))
+                        entry["sharpe_ratio_with_threshold"]   = float(b.get("m2_sharpe", float("nan")))
+                        entry["n_trades_with_threshold"]       = int(b.get("n_m2_trades", 0))
+                        entry["n_total_suggested_trades_by_m1"] = int(b.get("n_total_trades", 0))
+
+                        # τ=0.5 fields (recomputed from CSV)
+                        if csv.exists():
+                            m05 = _compute_metrics_at_threshold(csv, 0.5, fee=fee, horizon=7)
+                            entry["mean_return_without_threshold"]  = m05["m2_total_return"]
+                            entry["sharpe_ratio_without_threshold"] = m05["m2_sharpe"]
+                            entry["n_trades_without_threshold"]     = m05["n_app"]
+                        else:
+                            entry["mean_return_without_threshold"]  = float("nan")
+                            entry["sharpe_ratio_without_threshold"] = float("nan")
+                            entry["n_trades_without_threshold"]     = 0
+
+                    except Exception as e:
+                        print(f"[build_metrics_dict] skip {m1}/{m2}/{d}/{g}: {e}")
+                        entry = {
+                            "threshold_found": None,
+                            "precision_without_threshold": float("nan"),
+                            "precision_with_threshold": float("nan"),
+                            "mean_return_without_threshold": float("nan"),
+                            "mean_return_with_threshold": float("nan"),
+                            "sharpe_ratio_without_threshold": float("nan"),
+                            "sharpe_ratio_with_threshold": float("nan"),
+                            "n_trades_without_threshold": 0,
+                            "n_trades_with_threshold": 0,
+                            "n_total_suggested_trades_by_m1": 0,
+                        }
+                    metrics[m1][m2][d][g] = entry
+
+    import pickle as _pickle
+    with open(save_path, "wb") as f:
+        _pickle.dump(metrics, f)
+    print(f"[build_metrics_dict] Saved -> {save_path}")
+    return metrics
+
+
+def build_reliability_metrics_dict(bt_root: Path, edge_root: Path, save_path: Path) -> dict:
+    """Build and save a reliability-filtered metrics dict with schema:
+
+        metrics[m1][m2][direction][granularity] = {
+            "threshold_found":                  bool,   # True if CV<0.5 AND constraint_satisfied
+            "precision_without_threshold":      float,  # Test.precision at τ=0.5
+            "mean_return_without_threshold":    float,  # M2 total return at τ=0.5 (recomputed)
+            "sharpe_ratio_without_threshold":   float,  # Sharpe at τ=0.5 (recomputed)
+            "n_trades_without_threshold":       int,    # trades approved at τ=0.5
+            "n_total_suggested_trades_by_m1":   int,    # all M1 trades in test
+        }
+    Only _without_threshold fields are filled (τ=0.5). The reliability flag replaces
+    the threshold optimisation flag.
+    """
+    metrics = {m1: {m2: {d: {} for d in _DIRS_LIST} for m2 in _M2_LIST} for m1 in _M1_LIST}
+
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            bkey = f"{m2}_backtest_all_features"
+            tkey = f"{m2}_temporal_all_features"
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    bp  = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    csv = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_trades.csv"
+                    ep  = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+                    entry = {}
+                    try:
+                        bt_data = json.load(open(bp))
+                        b = bt_data.get(bkey, {})
+                        t = bt_data.get(tkey, {})
+                        fee = float(b.get("fee", 0.002))
+
+                        # Reliability flag: CV < 0.5 AND constraint_satisfied
+                        constr = bool(bt_data.get(tkey, {}).get("Val_selective", {}).get("constraint_satisfied", False))
+                        cv = 99.0
+                        if ep.exists():
+                            edge_entry = json.load(open(ep)).get(g, {})
+                            p = np.array(edge_entry.get("path_total_rets", []), dtype=float)
+                            if len(p) > 1:
+                                cv = float(np.std(p) / (abs(np.mean(p)) + 1e-6))
+                        reliable = constr and cv < 0.5
+
+                        entry["threshold_found"]                 = reliable
+                        entry["precision_without_threshold"]     = float(t.get("Test", {}).get("precision", float("nan")))
+                        entry["n_total_suggested_trades_by_m1"]  = int(b.get("n_total_trades", 0))
+
+                        if csv.exists():
+                            m05 = _compute_metrics_at_threshold(csv, 0.5, fee=fee, horizon=7)
+                            entry["mean_return_without_threshold"]  = m05["m2_total_return"]
+                            entry["sharpe_ratio_without_threshold"] = m05["m2_sharpe"]
+                            entry["n_trades_without_threshold"]     = m05["n_app"]
+                        else:
+                            entry["mean_return_without_threshold"]  = float("nan")
+                            entry["sharpe_ratio_without_threshold"] = float("nan")
+                            entry["n_trades_without_threshold"]     = 0
+
+                    except Exception as e:
+                        print(f"[build_reliability_metrics_dict] skip {m1}/{m2}/{d}/{g}: {e}")
+                        entry = {
+                            "threshold_found": None,
+                            "precision_without_threshold": float("nan"),
+                            "mean_return_without_threshold": float("nan"),
+                            "sharpe_ratio_without_threshold": float("nan"),
+                            "n_trades_without_threshold": 0,
+                            "n_total_suggested_trades_by_m1": 0,
+                        }
+                    metrics[m1][m2][d][g] = entry
+
+    import pickle as _pickle
+    with open(save_path, "wb") as f:
+        _pickle.dump(metrics, f)
+    print(f"[build_reliability_metrics_dict] Saved -> {save_path}")
+    return metrics
+
+
+def build_combined_metrics_dict(bt_root: Path, edge_root: Path, save_path: Path) -> dict:
+    """Single unified dict for all 320 configs with separate reliability and threshold flags.
+
+    Source convention
+    -----------------
+    Each key carries a prefix indicating which model it describes:
+      • ``m1_*``  → metric of the upstream forecaster M1 (no reliability filter).
+                    M1 emits a directional signal for every test bar; these
+                    metrics are computed on the full set of M1 trades.
+      • ``m2_*``  → metric of the downstream selective classifier M2 evaluated
+                    at a specific decision threshold τ (suffix ``_tau05`` for
+                    τ=0.5, ``_tauhat`` for the optimisation-derived τ̂). M2
+                    selects a subset of M1 trades to actually execute.
+      • no prefix → meta-flags / diagnostics about the M2 calibration itself
+                    (constraint, reliability, CV).
+
+    metrics[m1][m2][direction][granularity] = {
+        # ── Calibration meta-flags (M2 fit diagnostics) ───────────────────
+        "constraint_satisfied":  bool,   # τ̂ optimiser found a valid threshold
+                                         # (Stage-A constraints satisfied on Val)
+        "reliable":              bool,   # M2 CPCV stability flag: CV < 0.5
+                                         # (independent of threshold convergence)
+        "cv":                    float,  # M2 CPCV coefficient of variation =
+                                         # std(path_total_rets) / |mean(path_total_rets)|
+
+        # ── M1 baseline (unfiltered, all trades) ──────────────────────────
+        "m1_n_trades":           int,    # # of M1 directional trades in test split
+        "m1_precision":          float,  # M1 baseline precision = win-rate of M1 trades (∈ [0,1])
+        "m1_total_return":       float,  # M1 equity-curve total return (%) over test
+        "m1_sharpe":             float,  # M1 Sharpe ratio over test
+
+        # ── M2 @ τ=0.5 (default decision threshold, no calibration) ───────
+        # Always filled when the trades CSV exists.
+        "m2_precision_tau05":         float,  # M2 selective precision at τ=0.5
+        "m2_total_return_tau05":      float,  # M2 equity-curve total return (%), τ=0.5
+        "m2_sharpe_tau05":            float,  # M2 Sharpe at τ=0.5 (via engine._calc_sharpe)
+        "m2_n_trades_tau05":          int,    # # of M2-approved trades at τ=0.5
+        "m2_n_profitable_trades_tau05":    int,    # of approved trades, # with net return > 0
+        "m2_n_losing_trades_tau05":        int,    # of approved trades, # with net return ≤ 0
+        "m2_mean_return_profitable_tau05": float,  # mean net return (%) over profitable approved trades
+        "m2_mean_return_losing_tau05":     float,  # mean net return (%) over losing approved trades
+
+        # ── M2 @ τ̂ (calibrated threshold from Stage-A optimiser) ──────────
+        # Filled only when constraint_satisfied=True; NaN/0 otherwise.
+        "m2_precision_tauhat":          float, # M2 selective precision at τ̂
+        "m2_total_return_tauhat":       float, # M2 equity-curve total return (%), τ̂
+        "m2_sharpe_tauhat":             float, # M2 Sharpe at τ̂
+        "m2_n_trades_tauhat":           int,   # # of M2-approved trades at τ̂
+        "m2_n_profitable_trades_tauhat":    int,    # of approved trades, # with net return > 0
+        "m2_n_losing_trades_tauhat":        int,    # of approved trades, # with net return ≤ 0
+        "m2_mean_return_profitable_tauhat": float,  # mean net return (%) over profitable approved trades
+        "m2_mean_return_losing_tauhat":     float,  # mean net return (%) over losing approved trades
+    }
+    All 320 configs present. ``m2_*_tauhat`` fields are NaN when
+    constraint_satisfied=False.
+    """
+    metrics = {m1: {m2: {d: {} for d in _DIRS_LIST} for m2 in _M2_LIST} for m1 in _M1_LIST}
+    nan = float("nan")
+
+    total = included = 0
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            bkey = f"{m2}_backtest_all_features"
+            tkey = f"{m2}_temporal_all_features"
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    total += 1
+                    bp  = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    csv = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_trades.csv"
+                    ep  = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+                    entry = {
+                        # M2 calibration diagnostics
+                        "constraint_satisfied":     False,
+                        "reliable":                 False,
+                        "cv":                       nan,
+                        # M1 baseline
+                        "m1_n_trades":              0,
+                        "m1_precision":             nan,
+                        "m1_total_return":          nan,
+                        "m1_sharpe":                nan,
+                        # M2 @ τ=0.5
+                        "m2_precision_tau05":            nan,
+                        "m2_total_return_tau05":         nan,
+                        "m2_sharpe_tau05":               nan,
+                        "m2_n_trades_tau05":             0,
+                        "m2_n_profitable_trades_tau05":    0,
+                        "m2_n_losing_trades_tau05":        0,
+                        "m2_mean_return_profitable_tau05": nan,
+                        "m2_mean_return_losing_tau05":     nan,
+                        # M2 @ τ̂
+                        "m2_precision_tauhat":           nan,
+                        "m2_total_return_tauhat":        nan,
+                        "m2_sharpe_tauhat":              nan,
+                        "m2_n_trades_tauhat":            0,
+                        "m2_n_profitable_trades_tauhat":    0,
+                        "m2_n_losing_trades_tauhat":        0,
+                        "m2_mean_return_profitable_tauhat": nan,
+                        "m2_mean_return_losing_tauhat":     nan,
+                    }
+                    try:
+                        bt_data = json.load(open(bp))
+                        b = bt_data.get(bkey, {})
+                        t = bt_data.get(tkey, {})
+                        fee = float(b.get("fee", 0.002))
+
+                        # ── Flags ──────────────────────────────────────────
+                        constr = bool(t.get("Val_selective", {}).get("constraint_satisfied", False))
+                        cv = 99.0
+                        if ep.exists():
+                            p = np.array(json.load(open(ep)).get(g, {}).get("path_total_rets", []), dtype=float)
+                            if len(p) > 1:
+                                cv = float(np.std(p) / (abs(np.mean(p)) + 1e-6))
+
+                        entry["constraint_satisfied"] = constr
+                        entry["reliable"]             = cv < 0.5   # independent of constraint
+                        entry["cv"]                   = round(cv, 6)
+                        entry["m1_n_trades"]     = int(b.get("n_total_trades", 0))
+                        entry["m1_total_return"] = float(b.get("m1_total_return", nan))
+                        entry["m1_sharpe"]       = float(b.get("m1_sharpe", nan))
+                        # m1_win_rate is stored in % (e.g. 45.35) — convert to fraction
+                        _wr = b.get("m1_win_rate", nan)
+                        try:
+                            entry["m1_precision"] = float(_wr) / 100.0 if _wr == _wr else nan
+                        except Exception:
+                            entry["m1_precision"] = nan
+
+                        # ── M2 @ τ=0.5 ─────────────────────────────────────
+                        entry["m2_precision_tau05"] = float(t.get("Test", {}).get("precision", nan))
+                        if csv.exists():
+                            m05 = _compute_metrics_at_threshold(csv, 0.5, fee=fee, horizon=7)
+                            entry["m2_total_return_tau05"]        = m05["m2_total_return"]
+                            entry["m2_sharpe_tau05"]              = m05["m2_sharpe"]
+                            entry["m2_n_trades_tau05"]            = m05["n_app"]
+                            entry["m2_n_profitable_trades_tau05"]    = m05["n_app_win"]
+                            entry["m2_n_losing_trades_tau05"]        = m05["n_app_loss"]
+                            entry["m2_mean_return_profitable_tau05"] = m05["avg_app_win"]
+                            entry["m2_mean_return_losing_tau05"]     = m05["avg_app_loss"]
+
+                        # ── M2 @ τ̂ (only when constraint_satisfied) ───────
+                        if constr:
+                            entry["m2_precision_tauhat"]    = float(t.get("Test_selective", {}).get("precision", nan))
+                            entry["m2_total_return_tauhat"] = float(b.get("m2_total_return", nan))
+                            entry["m2_sharpe_tauhat"]       = float(b.get("m2_sharpe", nan))
+                            entry["m2_n_trades_tauhat"]     = int(b.get("n_m2_trades", 0))
+                            if csv.exists():
+                                tau_hat = float(b.get("threshold", 0.5))
+                                m_th = _compute_metrics_at_threshold(csv, tau_hat, fee=fee, horizon=7)
+                                entry["m2_n_profitable_trades_tauhat"]    = m_th["n_app_win"]
+                                entry["m2_n_losing_trades_tauhat"]        = m_th["n_app_loss"]
+                                entry["m2_mean_return_profitable_tauhat"] = m_th["avg_app_win"]
+                                entry["m2_mean_return_losing_tauhat"]     = m_th["avg_app_loss"]
+
+                        included += 1
+                    except Exception as e:
+                        print(f"[build_combined_metrics_dict] skip {m1}/{m2}/{d}/{g}: {e}")
+
+                    metrics[m1][m2][d][g] = entry
+
+    import pickle as _pickle
+    with open(save_path, "wb") as f:
+        _pickle.dump(metrics, f)
+
+    constr_n  = sum(metrics[m1][m2][d][g]["constraint_satisfied"]
+                    for m1 in metrics for m2 in metrics[m1]
+                    for d in metrics[m1][m2] for g in metrics[m1][m2][d])
+    reliable_n = sum(metrics[m1][m2][d][g]["reliable"]
+                     for m1 in metrics for m2 in metrics[m1]
+                     for d in metrics[m1][m2] for g in metrics[m1][m2][d])
+    both_n = sum(1 for m1 in metrics for m2 in metrics[m1]
+                 for d in metrics[m1][m2] for g in metrics[m1][m2][d]
+                 if metrics[m1][m2][d][g]["constraint_satisfied"] and metrics[m1][m2][d][g]["reliable"])
+    print(f"[build_combined_metrics_dict] Saved -> {save_path}")
+    print(f"  Total={total}  loaded={included}  constraint_satisfied={constr_n}  reliable(CV<0.5)={reliable_n}  both={both_n}")
+    return metrics
+
+
+def build_threshold_and_reliability_dict(bt_root: Path, edge_root: Path, save_path: Path) -> dict:
+    """Build and save a dict restricted to configs that BOTH have a valid τ̂ AND pass reliability.
+
+    Includes only configs where constraint_satisfied=True AND CV<0.5.
+    All fields (with and without threshold) are filled.
+
+        metrics[m1][m2][direction][granularity] = {
+            "threshold_found":                  bool,   # always True (filter guarantees it)
+            "reliable":                         bool,   # always True (filter guarantees it)
+            "precision_without_threshold":      float,
+            "precision_with_threshold":         float,
+            "mean_return_without_threshold":    float,
+            "mean_return_with_threshold":       float,
+            "sharpe_ratio_without_threshold":   float,
+            "sharpe_ratio_with_threshold":      float,
+            "n_trades_without_threshold":       int,
+            "n_trades_with_threshold":          int,
+            "n_total_suggested_trades_by_m1":   int,
+        }
+    Configs not passing both conditions are omitted entirely.
+    """
+    metrics = {m1: {m2: {d: {} for d in _DIRS_LIST} for m2 in _M2_LIST} for m1 in _M1_LIST}
+
+    included = 0
+    for m1 in _M1_LIST:
+        for m2 in _M2_LIST:
+            bkey = f"{m2}_backtest_all_features"
+            tkey = f"{m2}_temporal_all_features"
+            for d in _DIRS_LIST:
+                for g in _GRANS_LIST:
+                    bp  = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "analysis_summary.json"
+                    csv = bt_root / m1 / m2 / d / "Utility_Score_NoCal" / f"{g}_tp" / "10_backtest_all_trades.csv"
+                    ep  = edge_root / m1 / m2 / d / f"edge_summary_{g}.json"
+                    try:
+                        bt_data = json.load(open(bp))
+                        b = bt_data.get(bkey, {})
+                        t = bt_data.get(tkey, {})
+                        fee = float(b.get("fee", 0.002))
+
+                        constr = bool(t.get("Val_selective", {}).get("constraint_satisfied", False))
+                        cv = 99.0
+                        if ep.exists():
+                            p = np.array(json.load(open(ep)).get(g, {}).get("path_total_rets", []), dtype=float)
+                            if len(p) > 1:
+                                cv = float(np.std(p) / (abs(np.mean(p)) + 1e-6))
+
+                        if not (constr and cv < 0.5):
+                            continue   # skip — does not pass both conditions
+
+                        entry = {
+                            "threshold_found":               True,
+                            "reliable":                      True,
+                            "precision_without_threshold":   float(t.get("Test", {}).get("precision", float("nan"))),
+                            "precision_with_threshold":      float(t.get("Test_selective", {}).get("precision", float("nan"))),
+                            "mean_return_with_threshold":    float(b.get("m2_total_return", float("nan"))),
+                            "sharpe_ratio_with_threshold":   float(b.get("m2_sharpe", float("nan"))),
+                            "n_trades_with_threshold":       int(b.get("n_m2_trades", 0)),
+                            "n_total_suggested_trades_by_m1": int(b.get("n_total_trades", 0)),
+                        }
+                        if csv.exists():
+                            m05 = _compute_metrics_at_threshold(csv, 0.5, fee=fee, horizon=7)
+                            entry["mean_return_without_threshold"]  = m05["m2_total_return"]
+                            entry["sharpe_ratio_without_threshold"] = m05["m2_sharpe"]
+                            entry["n_trades_without_threshold"]     = m05["n_app"]
+                        else:
+                            entry["mean_return_without_threshold"]  = float("nan")
+                            entry["sharpe_ratio_without_threshold"] = float("nan")
+                            entry["n_trades_without_threshold"]     = 0
+
+                        metrics[m1][m2][d][g] = entry
+                        included += 1
+
+                    except Exception as e:
+                        print(f"[build_threshold_and_reliability_dict] skip {m1}/{m2}/{d}/{g}: {e}")
+
+    import pickle as _pickle
+    with open(save_path, "wb") as f:
+        _pickle.dump(metrics, f)
+    print(f"[build_threshold_and_reliability_dict] Saved -> {save_path}  ({included} configs included)")
+    return metrics
+
+
+def plot_results_matrices(bt_root: Path, edge_root: Path, save_path: Path):
+    """Generate a 1×3 panel of summary matrices (precision, profitability, ROI).
+
+    Each matrix is 2×2 with axes:
+      rows: τ=0.5  vs  τ̂ (optimized selective threshold)
+      cols: without reliability filter  vs  with reliability filter (CV<0.5 & constraint)
+
+    Matrix 1 (Precision):    cell = % configs where M2 precision > M1 baseline
+    Matrix 2 (Profitability): cell = % configs where M2 total return > M1 total return
+    Matrix 3 (Approved vs Rejected): cell = (avg_app, avg_rej, % configs where avg_app > avg_rej)
+    """
+    print(f"[plot_results_matrices] Walking configs...")
+    configs = list(_walk_results_configs(bt_root, edge_root))
+    print(f"[plot_results_matrices] Loaded {len(configs)} configs")
+    if not configs:
+        print("[plot_results_matrices] No configs — abort")
+        return
+
+    # ── Matrix 1: Precision ──────────────────────────────────────────
+    def _mat1_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]  # τ̂ only meaningful when constraint satisfied
+        if not pop: return (0, 0, 0.0)
+        prec_key = "m2_prec_05" if thr_key == "05" else "m2_prec_tau"
+        wins = sum(1 for c in pop
+                   if not np.isnan(c[prec_key]) and not np.isnan(c["m1_prec"])
+                   and c[prec_key] > c["m1_prec"])
+        return (wins, len(pop), wins / len(pop))
+
+    # ── Matrix 2: Profitability ──────────────────────────────────────
+    def _mat2_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]
+        if not pop: return (0, 0, 0.0)
+        ret_key = "m2_total_ret_05" if thr_key == "05" else "m2_total_ret_tau"
+        wins = sum(1 for c in pop
+                   if not np.isnan(c[ret_key]) and not np.isnan(c["m1_total_ret"])
+                   and c[ret_key] > c["m1_total_ret"])
+        return (wins, len(pop), wins / len(pop))
+
+    # ── Matrix 3: Approved vs Rejected ───────────────────────────────
+    def _mat3_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]
+        if not pop: return (np.nan, np.nan, 0, 0, 0.0)
+        app_key = "avg_app_05" if thr_key == "05" else "avg_app_tau"
+        rej_key = "avg_rej_05" if thr_key == "05" else "avg_rej_tau"
+        apps = [c[app_key] for c in pop if c[app_key] is not None and not (isinstance(c[app_key], float) and np.isnan(c[app_key]))]
+        rejs = [c[rej_key] for c in pop if c[rej_key] is not None and not (isinstance(c[rej_key], float) and np.isnan(c[rej_key]))]
+        avg_app = float(np.mean(apps)) if apps else np.nan
+        avg_rej = float(np.mean(rejs)) if rejs else np.nan
+        wins = sum(1 for c in pop
+                   if c[app_key] is not None and c[rej_key] is not None
+                   and not (isinstance(c[app_key], float) and np.isnan(c[app_key]))
+                   and not (isinstance(c[rej_key], float) and np.isnan(c[rej_key]))
+                   and c[app_key] > c[rej_key])
+        return (avg_app, avg_rej, wins, len(pop), wins / len(pop))
+
+    row_labels = [r"$\tau = 0.5$", r"$\hat{\tau}$ (optimized)"]
+    col_labels = ["No reliability\nfilter", "Reliability filter\n(CV < 0.5 & constr.)"]
+
+    fig = plt.figure(figsize=(30, 13), dpi=160)
+    fig.patch.set_facecolor("white")
+    # 2 rows × 4 cols; col 2 (Matrix 3) given extra width via width_ratios
+    # row 0: Matrix 1(Test) | Matrix 2(Test) | Matrix 3(Test) | Matrix 4(Test)
+    # row 1: Matrix 5(Val)  | Matrix 6(Val)  | Matrix 7(Test) | Matrix 8(Test)
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 4, figure=fig, hspace=0.50, wspace=0.35,
+                  width_ratios=[1, 1, 1.4, 1])
+    ax_t1  = fig.add_subplot(gs[0, 0])   # Matrix 1 (Test): precision vs M1
+    ax_t2  = fig.add_subplot(gs[0, 1])   # Matrix 2 (Test): M2 return > M1 return
+    ax_t3  = fig.add_subplot(gs[0, 2])   # Matrix 3 (Test): approved vs rejected
+    ax_t4  = fig.add_subplot(gs[0, 3])   # Matrix 4 (Test): CV confusion
+    ax_v1  = fig.add_subplot(gs[1, 0])   # Matrix 5 (Val):  precision vs M1
+    ax_v2  = fig.add_subplot(gs[1, 1])   # Matrix 6 (Val):  val mean ret > 0 at τ̂
+    ax_t7  = fig.add_subplot(gs[1, 2])   # Matrix 7 (Test): M2 return > 0
+    ax_t8  = fig.add_subplot(gs[1, 3])   # Matrix 8 (Test): mean return / mean sharpe
+    axes = [ax_t1, ax_t2, ax_t3, ax_t4]   # backward-compat for existing code
+
+    # ── Helper to render a 2×2 matrix with given cell-value texts and colours ──
+    def _draw_matrix(ax, cells, title, cmap_name="RdYlGn",
+                     value_for_color=lambda c: c["frac"], vmin=0, vmax=1, fmt_text=None):
+        ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
+        ax.set_xticklabels(col_labels, fontsize=11, fontweight="bold")
+        ax.set_yticklabels(row_labels, fontsize=11, fontweight="bold")
+        ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+        ax.set_xlim(-0.5, 1.5); ax.set_ylim(-0.5, 1.5)
+        ax.invert_yaxis()
+        cmap = plt.get_cmap(cmap_name)
+        for (i, j), c in cells.items():
+            v = value_for_color(c)
+            color = cmap((v - vmin) / max(vmax - vmin, 1e-9))
+            ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                       facecolor=color, edgecolor="black", linewidth=1.5))
+            txt = fmt_text(c) if fmt_text else f"{c['frac']:.0%}"
+            ax.text(j, i, txt, ha="center", va="center",
+                    fontsize=12, fontweight="bold", color="black",
+                    linespacing=1.4)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+        ax.tick_params(length=0)
+
+    # Matrix 1 (Test)
+    cells1 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            w, n, frac = _mat1_cell(thr, rel)
+            cells1[(i, j)] = {"wins": w, "n": n, "frac": frac}
+    _draw_matrix(axes[0], cells1,
+                 "Matrix 1 (Test): Precision\n% configs with $M_2$ Prec > $M_1$ baseline",
+                 fmt_text=lambda c: f"{c['frac']:.1%}\n({c['wins']}/{c['n']})")
+
+    # Matrix 2 (Test)
+    cells2 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            w, n, frac = _mat2_cell(thr, rel)
+            cells2[(i, j)] = {"wins": w, "n": n, "frac": frac}
+    _draw_matrix(axes[1], cells2,
+                 "Matrix 2 (Test): Profitability\n% configs with $M_2$ Return > $M_1$ Return",
+                 fmt_text=lambda c: f"{c['frac']:.1%}\n({c['wins']}/{c['n']})")
+
+    # Matrix 3 (Test) — approved vs rejected
+    cells3 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            avg_app, avg_rej, w, n, frac = _mat3_cell(thr, rel)
+            cells3[(i, j)] = {"avg_app": avg_app, "avg_rej": avg_rej,
+                              "wins": w, "n": n, "frac": frac}
+    def _mat3_fmt(c):
+        return (f"App: {c['avg_app']:+.2f}%\n"
+                f"Rej: {c['avg_rej']:+.2f}%\n"
+                f"App>Rej: {c['frac']:.1%} ({c['wins']}/{c['n']})")
+    _draw_matrix(axes[2], cells3,
+                 "Matrix 3 (Test): Approved vs Rejected\nMean returns across configs",
+                 fmt_text=_mat3_fmt)
+    # Slightly smaller font for Matrix 3 to fit 3-line cell text
+    for txt in axes[2].texts:
+        txt.set_fontsize(10.5)
+
+    # Matrix 4 — CV<0.5 confusion matrix on CPCV-eligible configs (constr=True)
+    cpcv_records = _load_cpcv_records(edge_root, bt_root)
+    N_cpcv = len(cpcv_records)
+    cv_fn  = lambda r: r["cv"] < 0.5
+    sel_c  = [r for r in cpcv_records if cv_fn(r)]
+    rej_c  = [r for r in cpcv_records if not cv_fn(r)]
+    TP_c = sum(r["test_pos"] == 1 for r in sel_c)
+    FP_c = sum(r["test_pos"] == 0 for r in sel_c)
+    TN_c = sum(r["test_pos"] == 0 for r in rej_c)
+    FN_c = sum(r["test_pos"] == 1 for r in rej_c)
+    base_pos_c = sum(r["test_pos"] for r in cpcv_records)
+    prec_c = TP_c / (TP_c + FP_c) if (TP_c + FP_c) > 0 else 0.0
+    acc_c  = (TP_c + TN_c) / N_cpcv if N_cpcv > 0 else 0.0
+
+    ax4 = axes[3]
+    # Draw 2×2 confusion matrix: rows=Predicted (Selected/Rejected), cols=Actual (Profitable/Not)
+    cm_labels_x = ["Profitable\n(Actual)", "Not Profitable\n(Actual)"]
+    cm_labels_y = ["Selected\n(CV<0.5)", "Rejected\n(CV≥0.5)"]
+    cm_vals = [[TP_c, FP_c], [FN_c, TN_c]]
+    cm_fracs= [[TP_c/N_cpcv, FP_c/N_cpcv], [FN_c/N_cpcv, TN_c/N_cpcv]]
+    cm_colors = [["#2ca02c", "#d62728"], ["#ff7f0e", "#1f77b4"]]  # TP=green FP=red FN=orange TN=blue
+    cm_labels_abbr = [["TP", "FP"], ["FN", "TN"]]
+
+    ax4.set_xlim(-0.5, 1.5); ax4.set_ylim(-0.5, 1.5)
+    ax4.invert_yaxis()
+    for i in range(2):
+        for j in range(2):
+            ax4.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                        facecolor=cm_colors[i][j], edgecolor="black",
+                                        linewidth=1.5, alpha=0.75))
+            ax4.text(j, i - 0.18, cm_labels_abbr[i][j],
+                     ha="center", va="center", fontsize=14, fontweight="bold", color="white")
+            ax4.text(j, i + 0.08, f"{cm_vals[i][j]}",
+                     ha="center", va="center", fontsize=13, fontweight="bold", color="white")
+            ax4.text(j, i + 0.30, f"({cm_fracs[i][j]:.1%})",
+                     ha="center", va="center", fontsize=10, color="white")
+
+    ax4.set_xticks([0, 1]); ax4.set_yticks([0, 1])
+    ax4.set_xticklabels(cm_labels_x, fontsize=10, fontweight="bold")
+    ax4.set_yticklabels(cm_labels_y, fontsize=10, fontweight="bold")
+    for sp in ax4.spines.values():
+        sp.set_visible(False)
+    ax4.tick_params(length=0)
+    ax4.set_title(
+        f"Matrix 4 (Test): CV<0.5 Confusion  |  N={N_cpcv} (constr=True)\n"
+        f"Base={base_pos_c/N_cpcv:.1%} profitable  |  "
+        f"Prec={prec_c:.1%}  |  Acc={acc_c:.1%}  |  Lift={prec_c - base_pos_c/N_cpcv:+.1%}pp",
+        fontsize=11, fontweight="bold", pad=10)
+
+    # ── Val Matrix 1: Precision ─────────────────────────────────────────
+    def _vmat1_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]
+        if not pop: return (0, 0, 0.0)
+        prec_key = "val_m2_prec_05" if thr_key == "05" else "val_m2_prec_tau"
+        wins = sum(1 for c in pop
+                   if not np.isnan(c[prec_key]) and not np.isnan(c["val_m1_prec"])
+                   and c[prec_key] > c["val_m1_prec"])
+        return (wins, len(pop), wins / len(pop))
+
+    # ── Val Matrix 2: Profitability (Val_selective mean_ret > 0 for τ̂; N/A for τ=0.5) ──
+    def _vmat2_cell(thr_key, reliab):
+        # τ̂: use Val_selective.mean_ret > 0 (stored val net return at optimized threshold)
+        # τ=0.5: val trades CSV not stored → return None (N/A)
+        if thr_key == "05":
+            return None
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        pop = [c for c in pop if c["constr"]]
+        if not pop: return (0, 0, 0.0)
+        wins = sum(1 for c in pop
+                   if not np.isnan(c["val_mean_ret_tau"]) and c["val_mean_ret_tau"] > 0)
+        return (wins, len(pop), wins / len(pop))
+
+    vcells1 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            w, n, frac = _vmat1_cell(thr, rel)
+            vcells1[(i, j)] = {"wins": w, "n": n, "frac": frac}
+    _draw_matrix(ax_v1, vcells1,
+                 "Matrix 5 (Val): Precision\n% configs with $M_2$ Prec > $M_1$ baseline",
+                 fmt_text=lambda c: f"{c['frac']:.1%}\n({c['wins']}/{c['n']})")
+
+    vcells2 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            res = _vmat2_cell(thr, rel)
+            if res is None:
+                vcells2[(i, j)] = {"wins": 0, "n": 0, "frac": float("nan"), "na": True}
+            else:
+                w, n, frac = res
+                vcells2[(i, j)] = {"wins": w, "n": n, "frac": frac, "na": False}
+
+    def _vmat2_fmt(c):
+        if c.get("na"):
+            return "N/A\n(val trades\nnot cached)"
+        return f"{c['frac']:.1%}\n({c['wins']}/{c['n']})"
+
+    def _vmat2_color(c):
+        if c.get("na"): return 0.5
+        return c["frac"]
+
+    _draw_matrix(ax_v2, vcells2,
+                 "Matrix 6 (Val): Profitability\n% configs with val mean ret > 0 at $\\hat{\\tau}$",
+                 cmap_name="RdYlGn",
+                 value_for_color=_vmat2_color,
+                 fmt_text=_vmat2_fmt)
+
+    # Matrix 7 (Test): % configs where M2 total return > 0 (absolute profitability)
+    def _mat7_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]
+        if not pop: return (0, 0, 0.0)
+        ret_key = "m2_total_ret_05" if thr_key == "05" else "m2_total_ret_tau"
+        wins = sum(1 for c in pop
+                   if not np.isnan(c[ret_key]) and c[ret_key] > 0)
+        return (wins, len(pop), wins / len(pop))
+
+    cells7 = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            w, n, frac = _mat7_cell(thr, rel)
+            cells7[(i, j)] = {"wins": w, "n": n, "frac": frac}
+    _draw_matrix(ax_t7, cells7,
+                 "Matrix 7 (Test): M2 Profitable\n% configs with $M_2$ Return > 0",
+                 fmt_text=lambda c: f"{c['frac']:.1%}\n({c['wins']}/{c['n']})")
+
+    # Label rows
+    fig.text(0.01, 0.73, "TEST", va="center", ha="left", fontsize=13,
+             fontweight="bold", color="#1a1a1a", rotation=90)
+    fig.text(0.01, 0.28, "VAL", va="center", ha="left", fontsize=13,
+             fontweight="bold", color="#555555", rotation=90)
+
+    # ── Matrix 8 (Test): Mean Return & Mean Sharpe per cell ─────────────────
+    def _mat8_cell(thr_key, reliab):
+        pop = [c for c in configs if (c["reliable"] if reliab else True)]
+        if thr_key == "tau":
+            pop = [c for c in pop if c["constr"]]
+        if not pop: return (float("nan"), float("nan"), [])
+        ret_key = "m2_total_ret_05" if thr_key == "05" else "m2_total_ret_tau"
+        sr_key  = "m2_sharpe_05"    if thr_key == "05" else "m2_sharpe_tau"
+        rets    = [c[ret_key] for c in pop if not np.isnan(c[ret_key])]
+        sharpes = [c[sr_key]  for c in pop if not np.isnan(c[sr_key])]
+        mean_ret = float(np.mean(rets))    if rets    else float("nan")
+        mean_sr  = float(np.mean(sharpes)) if sharpes else float("nan")
+        # store per-config detail for pickle
+        details = [{"m1": c["m1"], "m2": c["m2"], "dir": c["dir"], "gran": c["gran"],
+                    "total_ret": c[ret_key], "sharpe": c[sr_key],
+                    "constr": c["constr"], "reliable": c["reliable"]}
+                   for c in pop]
+        return (mean_ret, mean_sr, details)
+
+    cells8 = {}
+    m8_details = {}
+    for i, thr in enumerate(["05", "tau"]):
+        for j, rel in enumerate([False, True]):
+            mr, ms, dets = _mat8_cell(thr, rel)
+            ratio = mr / ms if (np.isfinite(mr) and np.isfinite(ms) and abs(ms) > 1e-9) else float("nan")
+            cells8[(i, j)] = {"mean_ret": mr, "mean_sr": ms, "ratio": ratio}
+            m8_details[f"thr={'05' if thr=='05' else 'tau'}_rel={'yes' if rel else 'no'}"] = dets
+
+    # Draw Matrix 8 — cell content = mean_ret / mean_sharpe ratio
+    ax_t8.set_xlim(-0.5, 1.5); ax_t8.set_ylim(-0.5, 1.5)
+    ax_t8.invert_yaxis()
+    cmap8 = plt.get_cmap("RdYlGn")
+    all_ratios = [v["ratio"] for v in cells8.values() if np.isfinite(v["ratio"])]
+    vmin8 = min(all_ratios) if all_ratios else -1
+    vmax8 = max(all_ratios) if all_ratios else  1
+    for (i, j), c in cells8.items():
+        ratio_val = c["ratio"]
+        norm_v = (ratio_val - vmin8) / max(vmax8 - vmin8, 1e-9) if np.isfinite(ratio_val) else 0.5
+        color = cmap8(np.clip(norm_v, 0, 1))
+        ax_t8.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1,
+                                       facecolor=color, edgecolor="black", linewidth=1.5))
+        ratio_str = f"{ratio_val:+.2f}" if np.isfinite(ratio_val) else "N/A"
+        ax_t8.text(j, i, ratio_str,
+                   ha="center", va="center", fontsize=14, fontweight="bold", color="black")
+    ax_t8.set_xticks([0, 1]); ax_t8.set_yticks([0, 1])
+    ax_t8.set_xticklabels(col_labels, fontsize=11, fontweight="bold")
+    ax_t8.set_yticklabels(row_labels, fontsize=11, fontweight="bold")
+    for sp in ax_t8.spines.values(): sp.set_visible(False)
+    ax_t8.tick_params(length=0)
+    ax_t8.set_title("Matrix 8 (Test): Return / Sharpe\n"
+                    r"Mean total return $\div$ mean Sharpe ratio",
+                    fontsize=13, fontweight="bold", pad=12)
+
+    # ── Assemble and save all matrix results to pickle ───────────────────────
+    import pickle as _pickle
+
+    def _cell_dict(wins, n, frac):
+        return {"wins": wins, "n": n, "frac": round(frac, 4)}
+
+    pickle_data = {
+        "N_configs": len(configs),
+        "matrix1_test_precision": {
+            f"thr={'05' if t=='05' else 'tau'}_rel={'yes' if r else 'no'}":
+                _cell_dict(*_mat1_cell(t, r))
+            for t in ["05","tau"] for r in [False, True]},
+        "matrix2_test_profitability_vs_m1": {
+            f"thr={'05' if t=='05' else 'tau'}_rel={'yes' if r else 'no'}":
+                _cell_dict(*_mat2_cell(t, r))
+            for t in ["05","tau"] for r in [False, True]},
+        "matrix3_test_app_vs_rej": {
+            f"thr={'05' if t=='05' else 'tau'}_rel={'yes' if r else 'no'}": {
+                "avg_app": round(avg_app, 4), "avg_rej": round(avg_rej, 4),
+                "wins": w, "n": n, "frac": round(frac, 4)}
+            for t in ["05","tau"] for r in [False, True]
+            for avg_app, avg_rej, w, n, frac in [_mat3_cell(t, r)]},
+        "matrix4_test_cv_confusion": {
+            "N": N_cpcv, "base_profitable": round(base_pos_c / N_cpcv, 4),
+            "TP": TP_c, "FP": FP_c, "TN": TN_c, "FN": FN_c,
+            "precision": round(prec_c, 4), "accuracy": round(acc_c, 4),
+            "lift": round(prec_c - base_pos_c / N_cpcv, 4)},
+        "matrix5_val_precision": {
+            f"thr={'05' if t=='05' else 'tau'}_rel={'yes' if r else 'no'}":
+                _cell_dict(*_vmat1_cell(t, r))
+            for t in ["05","tau"] for r in [False, True]},
+        "matrix6_val_profitability": {
+            f"thr=tau_rel={'yes' if r else 'no'}": (lambda res: _cell_dict(*res) if res else {"na": True})(_vmat2_cell("tau", r))
+            for r in [False, True]},
+        "matrix7_test_m2_profitable": {
+            f"thr={'05' if t=='05' else 'tau'}_rel={'yes' if r else 'no'}":
+                _cell_dict(*_mat7_cell(t, r))
+            for t in ["05","tau"] for r in [False, True]},
+        "matrix8_test_return_over_sharpe": {
+            f"thr={'05' if i==0 else 'tau'}_rel={'no' if j==0 else 'yes'}": {
+                "mean_ret":   round(v["mean_ret"], 4) if np.isfinite(v["mean_ret"]) else None,
+                "mean_sr":    round(v["mean_sr"],  4) if np.isfinite(v["mean_sr"])  else None,
+                "ratio":      round(v["ratio"],    4) if np.isfinite(v["ratio"])    else None}
+            for (i, j), v in cells8.items()},
+        "matrix8_individual_configs": m8_details,
+        "all_configs": [
+            {k: (float(v) if isinstance(v, float) and not np.isnan(v) else
+                 (None if isinstance(v, float) and np.isnan(v) else v))
+             for k, v in c.items()}
+            for c in configs],
+    }
+
+    pkl_path = save_path.parent / "results_matrices_data.pkl"
+    with open(pkl_path, "wb") as _f:
+        _pickle.dump(pickle_data, _f)
+    print(f"[plot_results_matrices] Pickle -> {pkl_path}")
+
+    fig.suptitle(
+        f"Results Matrices Summary  |  N={len(configs)} configs across "
+        f"{len(_M1_LIST)} M1 × {len(_M2_LIST)} M2 × 2 directions × {len(_GRANS_LIST)} granularities",
+        fontsize=14, fontweight="bold", y=1.02)
+
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path), dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[plot_results_matrices] Saved -> {save_path}")
+
+
+
+def plot_best_m2_per_gran(metrics_pkl: Path,
+                          save_path: Path,
+                          metric: str = "precision",
+                          which_threshold: str = "tauhat") -> None:
+    """For every (M1, granularity, direction) cell, pick the best-performing M2
+    by ``metric`` and visualise three quantities side-by-side:
+
+      • Precision bar (solid colour, primary y-axis)
+      • Coverage bar (hatched ``--``, secondary y-axis)
+      • ΔPrecision overlay (white + ``////`` hatch, on top of precision)
+
+    Two rows: top = UP, bottom = DOWN. M1 letters (T/C/F/K) are drawn only on
+    the top row; the column structure carries to the bottom row by alignment.
+
+    Parameters
+    ----------
+    metrics_pkl : Path
+        Path to ``metrics_combined_dict.pkl`` produced by
+        :func:`build_combined_metrics_dict`.
+    save_path : Path
+        Output PNG path.
+    metric : {"precision"}
+        Metric used to rank M2 candidates within each (M1, gran, direction) cell.
+    which_threshold : {"tauhat", "tau05"}
+        Whether to use the calibrated τ̂ metrics (falls back to τ=0.5 if the
+        config did not converge) or the raw τ=0.5 metrics.
+    """
+    import pickle as _pickle
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+    with open(metrics_pkl, "rb") as f:
+        metrics = _pickle.load(f)
+
+    M1_LIST    = ["Tirex", "Chronos2", "Fincast", "Kronos"]
+    M1_LETTER  = {"Tirex": "T", "Chronos2": "C", "Fincast": "F", "Kronos": "K"}
+    M2_LIST    = ["rf", "autogluon", "tabpfn", "tabicl", "ctts"]
+    M2_LABELS  = {"rf": "Random Forest", "autogluon": "AutoGluon",
+                  "tabpfn": "TabPFN", "tabicl": "TabICL", "ctts": "CTTS"}
+    GRANS      = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+    DIRS       = ["UP", "DOWN"]
+
+    # Smoother, well-separated palette (muted)
+    M2_COLOR = {
+        "rf":        "#7FB069",   # muted green
+        "autogluon": "#E89A4F",   # muted orange
+        "tabpfn":    "#6FA8DC",   # muted blue
+        "tabicl":    "#C28EC9",   # muted purple
+        "ctts":      "#D97374",   # muted red
+    }
+
+    # ── Helper: extract (precision, coverage, m1_precision) for one cell ──
+    # Reject degenerate cells (n_trades == 0): a precision computed over zero
+    # approved trades is not a meaningful 1.0 — it is undefined. We fall back
+    # from τ̂ → τ=0.5 in that case, and skip the cell entirely if both fail.
+    def _cell(m1: str, m2: str, dr: str, g: str) -> tuple:
+        e = metrics.get(m1, {}).get(m2, {}).get(dr, {}).get(g, None)
+        if e is None:
+            return None
+        prec = float("nan"); n_m2 = 0
+        if which_threshold == "tauhat" and e.get("constraint_satisfied", False):
+            n_t = int(e.get("m2_n_trades_tauhat", 0))
+            if n_t > 0:
+                prec = e.get("m2_precision_tauhat", float("nan"))
+                n_m2 = n_t
+        if n_m2 == 0:  # fall back to τ=0.5
+            n_5 = int(e.get("m2_n_trades_tau05", 0))
+            if n_5 > 0:
+                prec = e.get("m2_precision_tau05", float("nan"))
+                n_m2 = n_5
+        if n_m2 == 0:
+            return None
+        n_m1 = e.get("m1_n_trades", 0)
+        cov  = (n_m2 / n_m1) if n_m1 > 0 else float("nan")
+        m1_prec = e.get("m1_precision", float("nan"))
+        return prec, cov, m1_prec
+
+    def _is_nan(x) -> bool:
+        return isinstance(x, float) and x != x
+
+    def _delta(prec: float, m1_prec: float) -> float:
+        """Δ = M2 precision − M1 baseline precision (only positive segment shown)."""
+        if _is_nan(prec) or _is_nan(m1_prec):
+            return 0.0
+        return float(max(prec - m1_prec, 0.0))
+
+    # ── Typography (single unified font size) ─────────────────────────────
+    FS = 10  # used for ALL labels, ticks, legend, M1 letters
+    plt.rcParams["hatch.linewidth"] = 1.4
+    plt.rcParams["hatch.color"]     = "#111111"
+
+    # ── Geometry ──────────────────────────────────────────────────────────
+    # For each (M1, gran) cell we draw a doublet: precision-bar then
+    # coverage-bar, strictly side-by-side and non-overlapping.
+    bar_w      = 0.34          # individual bar width (precision = coverage)
+    pair_pitch = 2 * bar_w + 0.04   # horizontal span of one (prec, cov) doublet
+    gap_in_grp = pair_pitch + 0.10  # spacing between consecutive M1 doublets
+    grp_gap    = 0.50               # extra space between granularity groups
+    group_w    = (len(M1_LIST) - 1) * gap_in_grp + pair_pitch
+    x_gran     = np.arange(len(GRANS)) * (group_w + grp_gap)
+
+    fig, axes = plt.subplots(2, 1, figsize=(15, 5.6),
+                             sharex=True, facecolor="white")
+    axes_right = []
+
+    for row_idx, dr in enumerate(DIRS):
+        ax  = axes[row_idx]
+        ax2 = ax.twinx()
+        axes_right.append(ax2)
+
+        # Compute per-row maxima for nice y-limits
+        row_prec_max = 0.5
+        row_cov_max  = 0.0
+        for m1 in M1_LIST:
+            for g in GRANS:
+                # Find best M2 for this cell
+                best = None
+                best_v = -np.inf
+                for m2 in M2_LIST:
+                    c = _cell(m1, m2, dr, g)
+                    if c is None: continue
+                    pv = c[0]
+                    if pv is not None and not (isinstance(pv, float) and pv != pv) and pv > best_v:
+                        best_v, best = pv, c
+                if best is None: continue
+                prec, cov, _ = best
+                if prec == prec: row_prec_max = max(row_prec_max, prec)
+                if cov  == cov:  row_cov_max  = max(row_cov_max,  cov)
+
+        row_prec_max = max(row_prec_max, 0.51)
+        row_cov_max  = max(row_cov_max,  0.05)
+        # Both axes always span [0, 1] — never truncated.
+        head_prec = 1.0
+        head_cov  = 1.0
+        ax.set_ylim(0, head_prec)
+        ax2.set_ylim(0, head_cov)
+
+        # Alternating grey background per granularity group — span the FULL
+        # doublet width (precision + coverage) for every M1 in the group.
+        for i, gx in enumerate(x_gran):
+            if i % 2 == 1:
+                left  = gx - 0.10
+                right = gx + (len(M1_LIST) - 1) * gap_in_grp + pair_pitch + 0.10
+                ax.axvspan(left, right, color="#F0F0F0", zorder=0)
+
+        # 0.5 reference line on precision (left, no-skill baseline)
+        ax.axhline(0.5, color="#888888", linewidth=0.7,
+                   linestyle=":", alpha=0.8, zorder=1)
+
+        # Plot bars
+        for j, m1 in enumerate(M1_LIST):
+            for g_idx, g in enumerate(GRANS):
+                # Find best M2
+                best_m2 = None; best_v = -np.inf; best_cell = None
+                for m2 in M2_LIST:
+                    c = _cell(m1, m2, dr, g)
+                    if c is None: continue
+                    pv = c[0]
+                    if pv is not None and not (isinstance(pv, float) and pv != pv) and pv > best_v:
+                        best_v, best_m2, best_cell = pv, m2, c
+                if best_m2 is None: continue
+
+                prec, cov, m1_prec = best_cell
+                delta = _delta(prec, m1_prec)
+                col = M2_COLOR[best_m2]
+                # Doublet origin (precision bar at x_p, coverage bar at x_c)
+                doublet_x0 = x_gran[g_idx] + j * gap_in_grp
+                x_p = doublet_x0 + bar_w / 2
+                x_c = doublet_x0 + bar_w + 0.04 + bar_w / 2
+
+                # Precision bar (total height = M2 precision). The bar is split:
+                #   • bottom segment [0, M1 baseline] in solid colour
+                #   • top segment [M1 baseline, M2 precision] hatched //// to
+                #     visualise Δ = M2 − M1 (the lift contributed by M2)
+                # No stacking on top — total height never exceeds M2 precision.
+                m1_base = prec - delta if delta > 0 else prec
+                # solid base up to M1 baseline (or full bar if Δ <= 0)
+                ax.bar(x_p, m1_base, width=bar_w, color=col,
+                       edgecolor="#222222", linewidth=0.7, zorder=3)
+                # Δ band (hatched) inside the bar, between M1 and M2
+                if delta > 0:
+                    ax.bar(x_p, delta, width=bar_w, bottom=m1_base,
+                           facecolor=col, edgecolor="#222222",
+                           linewidth=0.7, hatch="////", alpha=0.95, zorder=3)
+                # coverage bar (right axis) — strictly to the right of prec
+                ax2.bar(x_c, cov, width=bar_w, color=col,
+                        edgecolor="#222222", linewidth=0.5,
+                        hatch="---", alpha=0.85, zorder=2)
+
+                # M1 letter — directly above the precision bar (BOTH rows)
+                ax.text(x_p, min(prec + 0.015, 0.985), M1_LETTER[m1],
+                        ha="center", va="bottom", fontsize=FS,
+                        color="#333333", zorder=5)
+
+        # Cosmetics
+        ax.set_ylabel("Precision", fontsize=FS, fontweight="bold")
+        ax2.set_ylabel("Coverage", fontsize=FS, fontweight="bold",
+                       color="#333333")
+        ax.tick_params(axis="y", labelsize=FS)
+        ax2.tick_params(axis="y", labelsize=FS, colors="#333333")
+        # UP/DOWN tag inside each subplot, top-RIGHT
+        # On UP, place the cheatsheet first (further left) and the UP tag at
+        # the far right so they sit side-by-side without overlap.
+        if row_idx == 0:
+            ax.text(0.005, 0.96,
+                    "T = Tirex   C = Chronos2   F = Fincast   K = Kronos",
+                    transform=ax.transAxes, ha="left", va="top",
+                    fontsize=FS, color="#222222",
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                              edgecolor="#888888", linewidth=0.6, alpha=0.95),
+                    zorder=10)
+        ax.text(0.99, 0.96, dr, transform=ax.transAxes,
+                ha="right", va="top", fontsize=FS, fontweight="bold",
+                color="#222222",
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white",
+                          edgecolor="#888888", linewidth=0.6, alpha=0.95),
+                zorder=10)
+        for spine in ("top",):
+            ax.spines[spine].set_visible(False)
+            ax2.spines[spine].set_visible(False)
+        ax.set_axisbelow(True)
+        ax.grid(axis="y", color="#DDDDDD", linewidth=0.5, alpha=0.7, zorder=0)
+
+    # ── x-axis on bottom row only ─────────────────────────────────────────
+    # Centre the x-tick under the full doublet span, not just precision
+    full_grp_w = (len(M1_LIST) - 1) * gap_in_grp + pair_pitch
+    for ax_row in axes:
+        ax_row.set_xticks(x_gran + full_grp_w / 2)
+        ax_row.set_xticklabels(GRANS, fontsize=FS, fontweight="bold")
+        ax_row.set_xlim(x_gran[0] - 0.25, x_gran[-1] + full_grp_w + 0.10)
+        ax_row.tick_params(axis="x", labelsize=FS, labelbottom=True)
+    axes[1].set_xlabel("Temporal Granularity", fontsize=FS, fontweight="bold")
+
+    # ── Single combined legend at the BOTTOM (one row) ────────────────────
+    # Order: M2 colour swatches → M1 Precision → M2 Coverage → Δ Precision.
+    # Last three patches use a white background.
+    handles = (
+        [Patch(facecolor=M2_COLOR[m2], edgecolor="#222222",
+               linewidth=0.7, label=M2_LABELS[m2]) for m2 in M2_LIST]
+        + [
+            Patch(facecolor="white", edgecolor="#222222",
+                  label="M1 Precision"),
+            Patch(facecolor="white", edgecolor="#222222", hatch="---",
+                  label="M2 Coverage"),
+            Patch(facecolor="white", edgecolor="#222222", hatch="////",
+                  label=r"$\Delta$ Precision"),
+        ]
+    )
+
+    fig.legend(handles=handles, loc="lower center",
+               bbox_to_anchor=(0.5, 0.005),
+               ncol=len(handles), frameon=True, framealpha=0.95,
+               edgecolor="#BDC3C7", fontsize=FS,
+               handlelength=2.0, handletextpad=0.6, columnspacing=1.4,
+               borderpad=0.6)
+
+    fig.subplots_adjust(top=0.96, hspace=0.20, left=0.06, right=0.95, bottom=0.17)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(str(save_path), dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    print(f"[plot_best_m2_per_gran] Saved -> {save_path}")
