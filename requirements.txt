@@ -40,7 +40,7 @@ shap
 lime
 
 # TabPFN
-tabpfn
+tabpfn==7.1.0
 tabpfn-client
 
 # TabICL (tabular in-context learning)
