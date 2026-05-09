@@ -1,0 +1,11 @@
+{
+  "dvol_btc": 37.54,
+  "dvol_btc_date": "2026-05-09",
+  "dvol_eth": 53.69,
+  "dvol_eth_date": "2026-05-09",
+  "fear_greed_idx": 38,
+  "fear_greed_date": "2026-05-09",
+  "news_sentiment": -0.0900028795003891,
+  "news_sentiment_date": "2026-05-03",
+  "last_fetched": "2026-05-09T14:46:30.717874+00:00"
+}

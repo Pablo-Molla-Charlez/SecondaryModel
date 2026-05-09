@@ -1,0 +1,18 @@
+{
+  "dvol_btc": {
+    "last_success": "2026-05-09T14:46:30.717874+00:00",
+    "stale": false
+  },
+  "dvol_eth": {
+    "last_success": "2026-05-09T14:46:30.717874+00:00",
+    "stale": false
+  },
+  "fear_greed": {
+    "last_success": "2026-05-09T14:46:30.717874+00:00",
+    "stale": false
+  },
+  "news_sentiment": {
+    "last_success": "2026-05-09T14:46:30.717874+00:00",
+    "stale": false
+  }
+}
