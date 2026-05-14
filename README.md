@@ -5,10 +5,10 @@
   <img src="https://img.shields.io/badge/Models-Utils%2Fclassifier%2F-1d4ed8?style=for-the-badge" alt="Models Utils classifier" />
   <img src="https://img.shields.io/badge/Config-config.yaml-2563eb?style=for-the-badge" alt="Config config yaml" />
   <img src="https://img.shields.io/badge/Outputs-src%2FOutput-f59e0b?style=for-the-badge" alt="Outputs src Output" />
-  <img src="https://img.shields.io/badge/OCP-SAOCP%20Diagnostics-7c3aed?style=for-the-badge" alt="OCP SAOCP Diagnostics" />
+  <img src="https://img.shields.io/badge/Diagnostics-Edge%20%7C%20Backtest%20%7C%20Analysis-7c3aed?style=for-the-badge" alt="Diagnostics" />
 </p>
 
-> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of financial foundation models: **Kronos**, **Fincast**, **Chronos2**, **Tirex**.
+> Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of foundation models: **Kronos**, **Fincast**, **Chronos2**, **Tirex**.
 > Driven by a **single unified** [src/config.yaml](src/config.yaml) and orchestrated by [src/Utils/experiments.py](src/Utils/experiments.py).
 
 <table>
@@ -17,7 +17,7 @@
     <td bgcolor="#dbeafe"><strong>Model Registry</strong><br /><code>Utils/classifier/</code></td>
     <td bgcolor="#dbeafe"><strong>Unified Config</strong><br /><code>config.yaml</code></td>
     <td bgcolor="#fef3c7"><strong>Outputs</strong><br /><code>src/Output/&lt;M1&gt;/</code></td>
-    <td bgcolor="#ede9fe"><strong>OCP Diagnostics</strong><br /><code>python -m Utils.ocp.analysis</code></td>
+    <td bgcolor="#ede9fe"><strong>Diagnostics</strong><br /><code>src/Output/Analysis/</code></td>
   </tr>
 </table>
 
@@ -29,8 +29,8 @@
   <img src="https://img.shields.io/badge/Data-Utils%2Fdata%2F-0f766e?style=flat-square" alt="Data" />
   <img src="https://img.shields.io/badge/Models-RF%20%7C%20AutoGluon%20%7C%20TabICL%20%7C%20TabPFN-2563eb?style=flat-square" alt="Models" />
   <img src="https://img.shields.io/badge/Factory-Utils%2Fclassifier%2Ffactory.py-1d4ed8?style=flat-square" alt="Factory" />
-  <img src="https://img.shields.io/badge/Selection-Utility%20or%20SAOCP-f59e0b?style=flat-square" alt="Selection" />
-  <img src="https://img.shields.io/badge/Reports-Backtests%20%7C%20Comparisons%20%7C%20OCP-7c3aed?style=flat-square" alt="Reports" />
+  <img src="https://img.shields.io/badge/Selection-Utility%20Threshold-f59e0b?style=flat-square" alt="Selection" />
+  <img src="https://img.shields.io/badge/Reports-Backtests%20%7C%20Comparisons%20%7C%20Edge-7c3aed?style=flat-square" alt="Reports" />
 </p>
 
 ```mermaid
@@ -40,11 +40,10 @@ flowchart LR
     B --> C[M1 / Kronos Signals<br/>labels, returns, dates, engineered features]
     C --> D[Utils/experiments.py<br/>Pipeline Orchestration]
     D --> K[Utils/classifier/<br/>Model Factory: RF, AutoGluon, TabPFN, TabICL]
-    K --> E[Selective Classification<br/>Utility Threshold or SAOCP]
+    K --> E[Selective Classification<br/>Utility Threshold]
     E --> G[Temporal Evaluation]
     E --> H[Backtests]
     E --> I[Comparison Tables]
-    E --> J[OCP Diagnostics]
     classDef input fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef model fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     classDef select fill:#f59e0b,stroke:#d97706,color:#111827,stroke-width:2px;
@@ -52,7 +51,7 @@ flowchart LR
     class A,B,C input;
     class D,K model;
     class E select;
-    class G,H,I,J report;
+    class G,H,I report;
     linkStyle default stroke:#64748b,stroke-width:3px;
 ```
 
@@ -76,49 +75,54 @@ flowchart TD
 
 ## Core Architecture
 
-### 1. The 3-Way Splitting Protocol
-Unlike standard Train/Test splits, our workflow enforces a 3-tuple boundary to isolate model fitting, threshold optimization, and final evaluation.
+### 1. Train / Validation / Test Split
+
+The pipeline follows the standard three-way chronological split, with temporal embargoes at each boundary to prevent label leakage.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    subgraph Validation ["Validation<br/><br/><br/><br/>"]
-        C["&nbsp;&nbsp;Optimize&nbsp;&nbsp;<br/><small>Threshold</small>"]:::opt
+    subgraph Val ["Validation<br/><br/><br/><br/>"]
+        C["&nbsp;&nbsp;Threshold&nbsp;&nbsp;<br/><small>Optimization</small>"]:::val
     end
-    style Validation fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#ffffff
+    style Val fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#ffffff
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> C
-    D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test Set&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
+    D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
     C --> D
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    classDef opt   fill:#ef4444,stroke:#b91c1c,color:#ffffff,stroke-width:2px;
+    classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     linkStyle default stroke:#0f766e,stroke-width:3px;
 ```
 
-| Window | Subset | Purpose |
-| --- | --- | --- |
-| **Train** | Training | Fitting the base classifier (RF, AutoGluon, TabPFN, or TabICL). |
-| **Val-Opt** | Optimization | Searching for the optimal financial utility threshold (Selective Classification). |
-| **Test** | Evaluation | Final, isolated out-of-sample backtest and performance monitoring. |
+| Window | Purpose |
+| --- | --- |
+| **Train** | Fitting the base classifier (RF, AutoGluon, TabPFN, TabICL, or TabM). |
+| **Validation** | Searching for the optimal financial utility threshold via grid search. |
+| **Test** | Final, isolated out-of-sample backtest — never touched during training or tuning. |
 
 ### 2. Leakage Elimination & Embargo
 We enforce **Temporal Embargoes** at every boundary. A purge window (based on the forecast horizon) is removed between `Train`, `Val`, and `Test` sets to prevent information leakage from overlapping labels in the financial time series.
 
 ---
 
-### 3. Threshold Optimization — `utility` mode
+### 3. Threshold Optimization
 
-> **Source**: `Utils/selective_classification/thresholds.py::_find_best_utility_threshold`  
-> **Triggered when**: `runtime.training.thres: "utility"` (the default)
+> **Source**: `Utils/selective_classification/thresholds.py::_find_best_utility_threshold`
 
-The threshold τ is chosen on **Val-Opt** via a single-stage grid search. The winning τ is then applied **fixed** to Test.
+Two modes are available via `runtime.training.thres`:
 
-#### Stage A — Utility-Opt ✅
+- **`utility`** — optimizes τ on raw model probabilities directly.
+- **`utility_nocal`** — same grid search but skips any probability post-processing. **In our experiments this mode consistently produced better selective-classification results** and is the recommended setting.
+
+The threshold τ is chosen on the **Validation** split via a single-stage grid search. The winning τ is then applied fixed to Test.
+
+#### Stage A — Grid Search
 Grid-searches τ ∈ [0.50, 0.95] over a hybrid grid (200 linspace points + all unique emitted probabilities ≥ 0.5). A candidate τ is accepted only when **all** of the following hold simultaneously:
 
 | Gate | Condition |
 |------|-----------|
-| Coverage floor | Selected trades ≥ max(50, 5 % of Val-Opt) |
+| Coverage floor | Selected trades ≥ max(50, 5 % of Validation) |
 | Positive return | Mean net-of-fee return μ > 0 |
 | Precision gate | Precision(τ) ≥ max(precision(τ=0.5), M1 precision) |
 | Statistical gate | Regularized t-stat t\* ≥ 1.0 (shrinkage prior n=50 toward base variance) |
@@ -162,7 +166,7 @@ src/Utils/
 │   └── __init__.py
 │
 ├── selective_classification/          # SELECTIVE CLASSIFICATION
-│   ├── calibration.py                 # probability calibration (Isotonic, Platt)
+│   ├── calibration.py                 # probability post-processing utilities
 │   ├── thresholds.py                  # utility-threshold search and application
 │   └── __init__.py
 │
@@ -190,13 +194,7 @@ src/Utils/
 │   ├── __main__.py                    # entrypoint: python -m Utils.hpo
 │   └── __init__.py
 │
-└── ocp/                               # ONLINE CONFORMAL PREDICTION
-    ├── saocp.py                       # SAOCP core logic
-    ├── plots.py                       # OCP diagnostic plots
-    ├── analysis.py                    # CLI dispatcher: python -m Utils.ocp.analysis
-    ├── theory.py                      # CLI dispatcher: python -m Utils.ocp.theory
-    ├── _analysis_impl.py              # full OCP practical diagnostics CLI
-    ├── _theory_impl.py                # full OCP theory/simulation CLI
+└── ocp/                               # threshold & diagnostics support module
     └── __init__.py
 ```
 
@@ -214,7 +212,6 @@ from Utils.hpo import run_hpo
 
 # Also correct (for internal helpers not re-exported at package level)
 from Utils.classifier.factory import _AG_TIME_LIMIT, _AG_PRESETS
-from Utils.ocp.saocp import _run_saocp_online
 ```
 
 Legacy import paths (`Utils.data_preprocessing`, `Utils.models`, etc.) are aliased in `Utils/__init__.py` via `sys.modules` for pickle-cache compatibility, but should not be used in new code.
@@ -226,7 +223,7 @@ Legacy import paths (`Utils.data_preprocessing`, `Utils.models`, etc.) are alias
 All classifiers are `BaseClassifier` subclasses (sklearn-compatible: `fit` / `predict` / `predict_proba` / `get_params` / `save_model` / `load_model`). The `factory.py` module builds the correct classifier from a model name string.
 
 ### 1. Ensemble Tree Models
-- **Random Forest (`rf`)**: Canonical baseline. Supports OOB predictions for streamlined probability calibration without a held-out val set.
+- **Random Forest (`rf`)**: Canonical baseline. Supports OOB predictions for out-of-bag probability estimation without a held-out validation set.
 
 ### 2. AutoGluon (`autogluon`)
 Automated ML suite: multi-layer stacking and ensembling (Trees, KNN, Linear Models) within a time budget. Useful when no single architecture is known to dominate.
@@ -258,13 +255,13 @@ All models share a 50 000-row soft sub-sampling guard (`_TABPFN_MAX_ROWS`) that 
 All scripts must run inside the `S2` conda environment. Activate it once per terminal session:
 
 ```bash
-conda activate CTTS
+conda activate S2
 ```
 
-Or prefix any command with `conda run -n CTTS` to run it without activating:
+Or prefix any command with `conda run -n S2` to run it without activating:
 
 ```bash
-conda run -n CTTS python Utils/experiments.py --config config.yaml
+conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
 ### 2. Working directory
@@ -273,7 +270,7 @@ All commands below assume you are in `Secondary-Model/src/`:
 
 ```bash
 cd /home/pablo/M2_DS/Secondary-Model/src
-conda activate CTTS
+conda activate S2
 ```
 
 ---
@@ -285,7 +282,7 @@ conda activate CTTS
 There is **one** entry point and **one** config. To switch M1 backbones, models, directions, granularities, or which phases run, edit [config.yaml](src/config.yaml) — no CLI flags.
 
 ```bash
-conda run -n CTTS python Utils/experiments.py --config config.yaml
+conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
 `experiments.py` reads the YAML and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`), passing the **YAML file path** via `--config` plus the CLI selectors `--m2 / --direction / --granularity` per iteration. Workers reload the same YAML, so there is no drift between orchestrator and workers.
@@ -302,7 +299,7 @@ conda run -n CTTS python Utils/experiments.py --config config.yaml
 | `experiment` | `granularity` | List of granularities from `GRAN_ORDER` (`1d`, `12h`, `8h`, `6h`, `4h`, `2h`, `1h`, `30m`, `15m`, `5m`). |
 | `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
 | `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
-| `runtime.training` | `thres`, `ocp_alpha`, `ocp_costs`, `ocp_window_days`, `all_grans` | Training-phase knobs: threshold selection mode, OCP cost vector, and unified-vs-per-gran mode. |
+| `runtime.training` | `thres`, `all_grans` | Training-phase knobs: threshold selection mode (`utility` or `utility_nocal`) and unified-vs-per-gran mode. |
 | `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — `n_trials` seeds (RF/XGBoost only) + CPCV shape (`n_blocks`, `k_test`). |
 | `runtime.combined` | `combined_backtest` | Populated automatically by `experiments.py`; leave as-is. |
 | `runtime.feature_selection` | `cv_strategy`, `n_blocks`, `k_test`, `method`, `scoring`, `min_features`, `max_features`, `take_n_best_combinations` | SFS+/RFECV feature-selection knobs. |
@@ -312,7 +309,7 @@ conda run -n CTTS python Utils/experiments.py --config config.yaml
 | Phase | What it runs | Enable via |
 | --- | --- | --- |
 | **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}` are skipped automatically. | `runtime.skip.hpo: false` |
-| **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — 4-way split → train → calibrate → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
+| **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — train → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
 | **2. Edge** | `python -m Utils.edge` — runs CPCV for all models; additionally runs `seeds` → `convergence` for RF/XGBoost only. CPCV splits reuse HPO best_params (RF/TabPFN/TabICL) and Phase 1 best hyperparameters (AutoGluon). | `runtime.skip.edge: false` |
 | **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
 | **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
@@ -357,14 +354,14 @@ To force a full rebuild: delete the existing `.pt` files under `Output/<M1>/cach
 
 #### Final production-model persistence
 
-Each completed training run persists a single production model — the one trained on Train+Cal and used for Test predictions. Saved per `(m2, direction, granularity)` at:
+Each completed training run persists a single production model — the one trained on Train and used for Test predictions. Saved per `(m2, direction, granularity)` at:
 
 ```
 Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<mode>/final_model/
 ├── model{.pkl or native serialized files}   # native save_model with pickle fallback
 ├── ag_model/                                # AutoGluon-only: full predictor directory
 ├── ag_best_hyperparameters.json             # AutoGluon-only: best model type + params for CPCV reuse
-└── bundle.pkl                               # scaler, isotonic calibrator, col_indices, val_op threshold,
+└── bundle.pkl                               # scaler, col_indices, threshold,
                                              # features_used, model_name, best_params, meta
 ```
 
@@ -398,7 +395,7 @@ HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip
 
 ```bash
 # HPO for RF — up direction, 4h granularity, 50 trials
-conda run -n CTTS python -m Utils.hpo \
+conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models rf \
   --directions up \
@@ -406,7 +403,7 @@ conda run -n CTTS python -m Utils.hpo \
   --n-trials 50
 
 # HPO for TabPFN + TabICL — both directions, multiple granularities
-conda run -n CTTS python -m Utils.hpo \
+conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models tabpfn tabicl \
   --directions up down \
@@ -467,7 +464,7 @@ Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.jso
 
 | Path | Role |
 | --- | --- |
-| `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, OCP knobs, edge/feature-selection parameters. |
+| `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, edge/feature-selection parameters. |
 | `Utils/experiments.py` | **User entry point.** Reads `config.yaml`, orchestrates training → edge → combined → feature-selection phases across every `(m2 × direction × granularity)` combination. |
 | `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with `--config <yaml> --m2 <x> --direction <up\|down> --granularity <gran>`. Supports direct invocation with the same CLI for targeted runs. |
 | `Utils/feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
@@ -477,8 +474,7 @@ Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.jso
 | `Utils/feature_selection/` | Feature diagnostic plots (correlation heatmap, pointbiserial, MI, confusion matrix, risk-coverage curve). Meta-label and M2 result plots live in `Utils/analysis/`; CPCV/edge plots in `Utils/edge/plots.py`. |
 | `Utils/backtest/` | Backtest helpers, equity construction, Sharpe/drawdown, reporting, combined UP+DOWN backtest, comparison tables. |
 | `Utils/hpo/` | Optuna-based HPO — Phase 0 of `experiments.py`. Results consumed by both Phase 1 training and Phase 2 CPCV. CLI: `python -m Utils.hpo`. |
-| `Utils/ocp/` | SAOCP core logic + OCP diagnostic CLI. CLI: `python -m Utils.ocp.analysis`, `python -m Utils.ocp.theory`. |
-| `Utils/selective_classification/` | Probability calibration (Isotonic, Platt) and utility-threshold selection. |
+| `Utils/selective_classification/` | Utility-threshold selection (`utility` / `utility_nocal` modes). |
 | `Data_MLA/` | Per-M1 dataset assets and technical indicator computation (one subfolder per backbone: `Kronos/`, `Fincast/`, `Chronos2/`, `Tirex/`). |
 
 ---
@@ -542,14 +538,11 @@ runtime:
     seed:     42        # TPE sampler seed
 
   training:
-    ocp_costs:           [0, 10, 2]
-    ocp_alpha:           0.10
-    ocp_window_days:     25
     paradigm_comparison: null
     combined_backtest:   null
     comparison:          null
     all_grans:           false
-    thres:               "utility"   # utility | OCP | OCP-W | OCP-cost | OCP-cost-mondrian
+    thres:               "utility"   # utility | utility_nocal
 
   edge:
     n_trials: 100
@@ -558,7 +551,6 @@ runtime:
 
   combined:
     combined_backtest: ["place_holder_up", "place_holder_down"]   # populated by experiments.py
-    ocp_costs:         [0, 10, 2]
 
   feature_selection:
     cv_strategy:              "cpcv"    # cpcv | tscv | pecv
@@ -596,12 +588,12 @@ runtime:
 | `data.load.meta_label_mode` | Meta-label variant (`tp` is the active setup). |
 | `data.load.direction` | Vestigial — kept for backward-compat. Cache selection is driven by the CLI `--direction`; `_resolve_caches` auto-builds both `up` and `down` caches on first run. |
 | `data.load.granularity` | `"all"` enables multi-granularity cache assembly. |
-| `data.load.forecast_horizon` | Prediction horizon; drives return alignment, backtests, and OCP delayed feedback. |
+| `data.load.forecast_horizon` | Prediction horizon; drives return alignment and backtests. |
 
 #### `data.split`
 | Key | Meaning |
 | --- | --- |
-| `start_date` / `train_end` / `val_end` / `end_date` | Chronological boundaries for Train / Val-Cal / Val-Opt / Test with embargo gaps. |
+| `start_date` / `train_end` / `val_end` / `end_date` | Chronological boundaries for Train / Validation / Test with embargo gaps. |
 
 #### `data.features`
 | Key | Meaning |
@@ -619,7 +611,7 @@ runtime:
 Flip each flag to `false` to enable its phase. `experiments.py` iterates phases 1→4 in order, skipping any that are `true`.
 
 #### `runtime.training`
-Threshold mode (`utility`, `OCP`, `OCP-W`, `OCP-cost`, `OCP-cost-mondrian`), OCP cost vector + coverage target + calibration window, and the `all_grans` toggle for unified-vs-per-gran mode.
+Threshold mode (`utility` or `utility_nocal`) and the `all_grans` toggle for unified-vs-per-gran mode.
 
 #### `runtime.edge`
 Seeds trial count (`n_trials`, RF/XGBoost only — ignored for AutoGluon/TabPFN/TabICL), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
@@ -636,19 +628,16 @@ CV strategy (`cpcv`, `tscv`, `pecv`), SFS+/RFECV shape (`method`, `n_blocks`, `k
 
 ```text
 src/Output/
-├── Analysis/
-│   ├── Edge/
-│   └── Theory/
 └── Kronos/
     ├── autogluon/
-    │   ├── DOWN/  {OCP/, Utility_Score/}
-    │   └── UP/    {OCP/, Utility_Score/}
+    │   ├── DOWN/  {Utility_Score/}
+    │   └── UP/    {Utility_Score/}
     ├── cache/
     ├── HPO/                                    # Phase 0 outputs — best_params.json per (m2, dir, gran)
     │   └── <m2>/<DIR>/<gran>/best_params.json
     └── rf/
-        ├── DOWN/  {OCP/, Utility_Score/<gran>_<mode>/final_model/}
-        └── UP/    {OCP/, Utility_Score/<gran>_<mode>/final_model/}
+        ├── DOWN/  {Utility_Score/<gran>_<mode>/final_model/}
+        └── UP/    {Utility_Score/<gran>_<mode>/final_model/}
 ```
 
 - `src/Output/<M1>/` is the active result tree for the currently configured M1 backbone.
@@ -667,7 +656,7 @@ src/Output/
 - `Utils/feature_selection/` and `Utils/backtest/comparison.py` are library modules; they are reached via the training / feature-selection phases in `experiments.py`, not standalone CLI.
 - Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally. The scaler bypass is controlled by `MODELS_NO_SCALING` in `Utils/classifier/factory.py`.
 - The M2 model list in `experiment.m2` is resolved to concrete classifiers in `Utils/classifier/factory.py` via `_build_tree_model()`.
-- `Utils/hpo` is integrated as Phase 0 of `experiments.py` (toggle via `runtime.skip.hpo`); it also supports a standalone CLI with `--config config.yaml`. `Utils/ocp.analysis` / `Utils/ocp.theory` are **standalone** — they take `--config config.yaml` as a path and run independently of `experiments.py`.
+- `Utils/hpo` is integrated as Phase 0 of `experiments.py` (toggle via `runtime.skip.hpo`); it also supports a standalone CLI with `--config config.yaml`.
 - Only `rf`, `tabpfn`, `tabicl` are HPO-supported (`HPO_SUPPORTED_M2` in `Utils/utils.py`). Other M2 models skip Phase 0 and use the defaults in `Utils/classifier/factory.py::_build_tree_model`.
 
 ---
@@ -676,9 +665,15 @@ src/Output/
 
 ### Dataset & Return Quality Overview
 
+**Meta-label dataset size across M1 models and granularities.** Each bar shows the number of labeled samples available to train the M2 classifier for a given (M1, granularity) pair. Imbalance across granularities is expected — shorter bars at finer granularities reflect stricter label quality filters.
+
 ![Meta-Label Dataset Size](src/Images/Meta_Label_Dataset_Size.png)
 
+**Return quality boxplot — True Positives vs False Positives, aggregated across M1 models.** Each box pair shows the distribution of trade returns for correctly predicted (TP) and incorrectly predicted (FP) signals. A clear positive separation between TP and FP return distributions is the prerequisite for meta-labeling to add value.
+
 ![Found Models Return Boxplot](src/Images/Found_Models_Return_Boxplot.png)
+
+**Return distribution histograms per model and direction.** Overlaid kernel density estimates of TP and FP returns for each M1/direction combination. The further apart the TP and FP modes, the stronger the discriminative signal the M2 can exploit.
 
 ![Found Models Return Distribution](src/Images/Found_Models_Return_Dist.png)
 
@@ -686,13 +681,21 @@ src/Output/
 
 ### TabPFN — 4h UP Example Run
 
-Four diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity, UP direction):
+Diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity, UP direction), illustrating the full selective classification and backtest pipeline.
+
+**Validation risk-coverage curve.** Plots precision against coverage as the threshold τ is swept from 0.5 to 1.0 on the validation split. The selected τ (marked) is the point that maximises coverage-penalised utility while satisfying all acceptance gates. A steep precision gain at low coverage indicates a well-discriminating model.
 
 ![TabPFN Val Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Val_Risk_Coverage_final.png)
 
+**Test risk-coverage curve.** Same plot applied to the held-out test set using the τ fixed on validation. Consistency between validation and test curves confirms that the threshold generalises out-of-sample rather than overfitting to the validation window.
+
 ![TabPFN Test Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Test_Risk_Coverage_final.png)
 
+**Test selective return distribution.** Histogram of per-trade returns for accepted trades (those with predicted probability ≥ τ) on the test set, split by true outcome (TP vs FP). A right-shifted TP distribution with a heavier positive tail compared to FP indicates the classifier is successfully filtering high-quality trades.
+
 ![TabPFN Test Selective Return Distribution](src/Images/TabPFN_4h_UP/TabPFN_Test_Selective_Return_Dist.png)
+
+**Combined UP+DOWN backtest equity curve.** Cumulative strategy return over the test period when both UP and DOWN signals are merged into a single portfolio. Shown alongside the buy-and-hold benchmark. Outperformance with lower drawdown validates that the selective classification threshold adds real economic value.
 
 ![TabPFN Combined Backtest](src/Images/TabPFN_4h_UP/TabPFN_Combined_Backtest.png)
 
@@ -791,4 +794,4 @@ The two tables below are the full result tables from the paper's appendix. Colum
 
 ## One-Line Summary
 
-This repository is a modular M2 research workspace for tree-based meta-label filtering, selective-classification tooling, SAOCP diagnostics, backtesting, and comparison reporting, all driven by `config.yaml` and organized as a clean `Utils/` package tree.
+This repository is a modular M2 research workspace for tree-based meta-label filtering, selective-classification with utility-based threshold optimization, backtesting, and comparison reporting, all driven by `config.yaml` and organized as a clean `Utils/` package tree.
