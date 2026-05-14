@@ -14,8 +14,11 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+import warnings
 
 from Utils.classifier._classifier import BaseClassifier
+
+_TABICL_MAX_ROWS = 100_000
 
 
 class TabICL(BaseClassifier):
@@ -40,6 +43,20 @@ class TabICL(BaseClassifier):
 
         X = np.asarray(X_train, dtype=np.float32)
         y = np.asarray(y_train)
+
+        # ┏━━━━━━━━━━ Cap row count to prevent OOM ━━━━━━━━━━┓
+        if len(X) > _TABICL_MAX_ROWS:
+            warnings.warn(f"TabICL: training set has {len(X):,} rows (recommended ≤ {_TABICL_MAX_ROWS:,}). "
+                          f"Randomly sub-sampling to {_TABICL_MAX_ROWS:,} rows.")
+            rng = np.random.default_rng(self.random_state)
+            idx = rng.choice(len(X), _TABICL_MAX_ROWS, replace=False)
+            
+            # Subsample X, y, and sample_weight if provided
+            X = X[idx]
+            y = y[idx]
+            if sample_weight is not None:
+                sample_weight = np.asarray(sample_weight)[idx]
+
         self.n_features_in_ = X.shape[1]
 
         self.classes_ = np.unique(y)

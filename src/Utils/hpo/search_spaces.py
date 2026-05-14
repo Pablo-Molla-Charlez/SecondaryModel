@@ -1,9 +1,9 @@
 """Optuna suggest functions per model + param->model builder."""
-import optuna
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Search spaces per model
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+import optuna
 
 # ┏━━━━━━━━━━ Random Forest ━━━━━━━━━━┓
 def _suggest_rf(trial: optuna.Trial) -> dict:

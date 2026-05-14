@@ -16,16 +16,16 @@ Invocation contract:
     build the multi-gran cache for both directions automatically.
 """
 
-import argparse, hashlib, sys, json, pickle
-from pathlib import Path
 import yaml
+import torch
 import numpy as np
 import pandas as pd
-import torch
 import matplotlib
-
 matplotlib.use("Agg")
+from pathlib import Path
 import matplotlib.pyplot as plt
+import argparse, hashlib, sys, json, pickle
+
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
 
@@ -39,7 +39,8 @@ from Utils.data import (ENG_FEATURE_NAMES,
                         load_dataset_from_config,
                         prepare_multi_asset_dataset,
                         prepare_multi_gran_dataset,
-                        GRAN_SEQ_LEN)
+                        GRAN_SEQ_LEN,
+                        GRAN_ORDER)
 
 # ┏━━━━━━━━━━ Financial Backtesting ━━━━━━━━━━┓
 from Utils.backtest import (_annualization_factor,
@@ -52,31 +53,23 @@ from Utils.backtest import (_annualization_factor,
                             run_combined_backtest)
 
 # ┏━━━━━━━━━━ Comparison of results between models and granularities ━━━━━━━━━━┓
-from Utils.backtest import (GRAN_ORDER,
-                            run_comparison,
+from Utils.backtest import (run_comparison,
                             run_paradigm_comparison)
 
 # ┏━━━━━━━━━━ Feature analysis ━━━━━━━━━━┓
-from Utils.feature_selection import (_plot_prob_distribution,
-                                     plot_class_distributions,
-                                     plot_correlation_heatmap,
-                                     plot_mutual_information,
-                                     plot_confusion_matrix,
-                                     plot_ocp_threshold_evolution,
-                                     plot_pointbiserial,
-                                     plot_temporal_risk_coverage_curve,
-                                     plot_temporal_risk_coverage_curve_final,
-                                     plot_tree_importance,
-                                     compute_top_features,
-                                     run_feature_selection,
-                                     plot_selective_return_distribution)
+from Utils.feature_selection import (plot_confusion_matrix,
+                                     plot_temporal_risk_coverage_curve_final)
+
+# ┏━━━━━━━━━━ Analysis ━━━━━━━━━━┓
+from Utils.analysis import plot_selective_return_distribution
 
 # ┏━━━━━━━━━━ Online Conformal Prediction ━━━━━━━━━━┓
 from Utils.ocp import (_ocp_threshold_to_op,
                        _run_saocp_online,
                        _run_cost_deferral_online,
                        calib_window_for_gran,
-                       plot_mondrian_diagnostics)
+                       plot_mondrian_diagnostics,
+                       plot_ocp_threshold_evolution)
 
 # ┏━━━━━━━━━━ Utility-based Selective Classification [risk-coverage analysis] ━━━━━━━━━━┓   
 from Utils.selective_classification import (_find_best_utility_threshold,
@@ -96,7 +89,9 @@ from Utils.utils import (NumpyJSONEncoder,
                          _class_names,
                          _infer_direction,
                          _load_multi_cache,
-                         _load_best_params)
+                         _load_best_params,
+                         build_dataframe)
+
 # ┏━━━━━━━━━━ Models ━━━━━━━━━━┓
 from Utils.classifier import (MODEL_CHOICES,
                               MODELS_NO_SCALING,
@@ -106,32 +101,9 @@ from Utils.classifier.factory import (_AG_TIME_LIMIT,
                                       _AG_PRESETS)
 
 
-def _build_dataframe(dataset) -> tuple[pd.DataFrame, np.ndarray]:
-    # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
-    eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
-    if isinstance(eng, torch.Tensor):
-        eng = eng.numpy()
-
-    # ┏━━━━━━━━━━ Get labels ━━━━━━━━━━┓
-    labels = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
-    
-    # ┏━━━━━━━━━━ Convert labels to numpy ━━━━━━━━━━┓
-    if isinstance(labels, torch.Tensor):
-        labels = labels.numpy()
-    
-    # ┏━━━━━━━━━━ Filter out NaN labels ━━━━━━━━━━┓
-    valid = ~np.isnan(labels)
-    eng = eng[valid]
-    labels = labels[valid].astype(int)
-    
-    # ┏━━━━━━━━━━ Create dataframe ━━━━━━━━━━┓
-    df = pd.DataFrame(eng, columns=resolve_feature_names(eng.shape[1]))
-    return df, labels
 
 
-# ------------------------------------------------------------------------------
-# 
-# ------------------------------------------------------------------------------
+# ┏━━━━━━━━━━ Temporal train, validation, test evaluation ━━━━━━━━━━┓
 def temporal_eval(dataset: dict,
                   feature_cols: list,
                   save_dir: Path,
@@ -149,13 +121,22 @@ def temporal_eval(dataset: dict,
                   ocp_costs: tuple = (0.0, 10.0, 2.0),
                   ocp_window_days: int = 25,
                   best_params: dict | None = None) -> dict:
-    """Train on Train, calibrate on Val-Cal, sweep threshold on Val-Opt, evaluate on Test.
+    """
+    Fit an M2 classifier and select a decision threshold on the validation split.
 
-    4-way split: Train / Val-Cal / Val-Opt / Test with embargo gaps.
-    Calibration → Threshold → Evaluation all operate in calibrated probability space.
+    Supports two probability modes controlled by ``thres_mode``:
+    - **Calibrated** (default): isotonic calibration on Val-Cal, utility-optimal
+      threshold selection on Val-Opt, final evaluation on Test.
+    - **NoCal**: skips calibration; raw model probabilities are used directly
+      for threshold selection and evaluation.
+    - **OCP** variants: online conformal threshold updated sequentially over
+      the test period instead of a fixed utility-optimised τ.
+
+    If no threshold satisfies the utility constraints, defaults to τ = 0.5
+    with ``constraint_satisfied = False``.
 
     Args:
-        split_indices: (idx_train, idx_cal, idx_opt, idx_test) with embargo.
+        split_indices: (idx_train, idx_cal, idx_opt, idx_test) with embargo gaps.
         direction: 'up' or 'down' — used to flip returns for short strategies.
         fee: per-trade fee (decimal, e.g. 0.002 for 0.2%).
     """
@@ -445,15 +426,7 @@ def temporal_eval(dataset: dict,
                               meta_mode=meta_mode,
                               m1_acc=m1_a,
                               m1_prec=m1_p)
-        
-        # ┏━━━━━━━━━━ Probability Distribution ━━━━━━━━━━┓
-        _plot_prob_distribution(y_split,
-                                probs,
-                                class_names,
-                                save_dir,
-                                file_prefix=f"{file_prefix}_{split_name}_Prob_Dist",
-                                title=f"{mlabel} {split_name} ({desc})")
-        
+
         # ┏━━━━━━━━━━ Risk-coverage curve (all in calibrated space) ━━━━━━━━━━┓
         if split_name == "Test" and not _is_ocp:
             score_probs = _cal_test_probs
@@ -586,11 +559,8 @@ def temporal_eval(dataset: dict,
                       "mean_ret": mu_test,
                       "t_stat": t_test}
         
-        # ┏━━━━━━━━━━ Plot risk-coverage with return overlay (business-level) ━━━━━━━━━━┓
-        rc_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage.png"
-        rc_final_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage_final.png"
-        
         # ┏━━━━━━━━━━ Plot risk-coverage (paper-level) ━━━━━━━━━━┓
+        rc_final_path = save_dir / f"{file_prefix}_{split_name}_Risk_Coverage_final.png"
         plot_temporal_risk_coverage_curve_final(save_path         = rc_final_path,
                                                 curve             = curve,
                                                 probs             = score_probs,
@@ -613,25 +583,6 @@ def temporal_eval(dataset: dict,
                                                 granularity       = granularity,
                                                 m1_precision      = m1_prec_val if split_name == "Val" else m1_prec_test)
 
-        # ┏━━━━━━━━━━ Plot temporal risk coverage curve (basic) ━━━━━━━━━━┓
-        plot_temporal_risk_coverage_curve(save_path         = rc_path,
-                                          curve             = curve,
-                                          probs             = score_probs,
-                                          y_true            = y_split,
-                                          split_rets        = split_rets,
-                                          fee               = fee,
-                                          op                = op,
-                                          split_name        = split_name,
-                                          model_label       = mlabel,
-                                          thres_mode        = thres_mode,
-                                          ocp_alpha         = ocp_alpha,
-                                          val_threshold     = val_thresholds.get("thr"),
-                                          val_op            = val_op,
-                                          is_ocp            = _is_ocp,
-                                          test_approved_ocp = test_approved_ocp if (split_name == "Test" and _is_ocp) else None,
-                                          direction         = direction,
-                                          granularity       = granularity)
-        
         # ┏━━━━━━━━━━ OCP threshold evolution plot (test only) ━━━━━━━━━━┓
         if split_name == "Test" and _is_ocp:
             thr_evo_path = save_dir / f"{file_prefix}_Test_OCP_Threshold_Evolution.png"
@@ -735,13 +686,11 @@ def temporal_eval(dataset: dict,
     return results, artifacts
 
 
-# ------------------------------------------------------------------------------
-# Run analysis for a Single M2 (each granularity independently)
-# ------------------------------------------------------------------------------
+# ┏━━━━━━━━━━ Run analysis for a Single M2 (each granularity independently) ━━━━━━━━━━┓
 def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, output_root: Path,
                  train_end: str = None, val_end: str = None, model_name: str = "rf",
-                 cfg: dict = None, run_top5: bool = True,
-                 run_features: bool = True, thres_mode: str = "utility",
+                 cfg: dict = None,
+                 thres_mode: str = "utility",
                  ocp_alpha: float = 0.10,
                  ocp_costs: tuple = (0.0, 10.0, 2.0),
                  ocp_window_days: int = 25,
@@ -790,33 +739,19 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     dataset = _filter_dataset_by_granularity(dataset, granularity)
     
     # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
-    df_all, labels_all = _build_dataframe(dataset)
+    df_all, labels_all = build_dataframe(dataset)
     
-    # ┏━━━━━━━━━━ Get train-only subset for feature analysis (no val/test leakage in feature selection) ━━━━━━━━━━┓
-    df_val_fs = None  # validation DataFrame for MDA/SHAP/LIME (None if no split)
-    labels_val_fs = None
+    # ┏━━━━━━━━━━ Build train subset ━━━━━━━━━━┓
     if train_end and val_end:
-        # ┏━━━━━━━━━━ Split by global time ━━━━━━━━━━┓
         idx_train, _, idx_val, _ = split_by_global_time(dataset, train_end=train_end, val_end=val_end)
-        
-        # ┏━━━━━━━━━━ Convert eng_features to numpy ━━━━━━━━━━┓
         _eng_f = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
         _lbl_f = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
-        eng_raw = _eng_f.numpy() if isinstance(_eng_f, torch.Tensor) else _eng_f
+        eng_raw    = _eng_f.numpy() if isinstance(_eng_f, torch.Tensor) else _eng_f
         labels_raw = _lbl_f.numpy() if isinstance(_lbl_f, torch.Tensor) else _lbl_f
-        
-        # ┏━━━━━━━━━━ Build dataframe ━━━━━━━━━━┓
-        _feat_names = resolve_feature_names(eng_raw.shape[1])
-        df_train = pd.DataFrame(eng_raw[idx_train], columns=_feat_names)
+        _feat_names  = resolve_feature_names(eng_raw.shape[1])
+        df_train     = pd.DataFrame(eng_raw[idx_train], columns=_feat_names)
         labels_train = labels_raw[idx_train].astype(int)
-        
-        # ┏━━━━━━━━━━ Validation set for MDA/SHAP/LIME feature selection ━━━━━━━━━━┓
-        if len(idx_val) > 0:
-            df_val_fs = pd.DataFrame(eng_raw[idx_val], columns=_feat_names)
-            labels_val_fs = labels_raw[idx_val].astype(int)
-        
-        print(f"[kronos_tree] Total samples: {len(df_all)} | Train-only for feature analysis: {len(df_train)}"
-              f" | Val for FS: {len(idx_val)}")
+        print(f"[kronos_tree] Total samples: {len(df_all)} | Train: {len(df_train)} | Val: {len(idx_val)}")
     else:
         # ┏━━━━━━━━━━ No temporal split dates, using all data ━━━━━━━━━━┓
         df_train = df_all
@@ -834,102 +769,10 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         print(f"[kronos_tree] Dropping zero-variance/all-NaN features: {to_drop}\n")
         df_train = df_train.drop(columns=to_drop)
     
-    # ┏━━━━━━━━━━ Steps 1-6: feature analysis (correlation, MI, importance, rank aggregation) ━━━━━━━━━━┓
-    tree_metrics = {}
-    tree_top5_metrics = {}
-    top_result = {}
-    top5 = []
     
-    if run_features:
-        # ┏━━━━━━━━━━ Create features analysis directory ━━━━━━━━━━┓
-        features_dir = save_dir / "Features_Analysis"
-        features_dir.mkdir(parents=True, exist_ok=True)
-        
-        # ┏━━━━━━━━━━ Plot correlation heatmap ━━━━━━━━━━┓
-        plot_correlation_heatmap(df_train, features_dir)
-        
-        # ┏━━━━━━━━━━ Plot pointbiserial ━━━━━━━━━━┓
-        pb_scores = plot_pointbiserial(df_train, labels_train, class_names, features_dir)
-        
-        # ┏━━━━━━━━━━ Plot class distributions ━━━━━━━━━━┓
-        plot_class_distributions(df_train, labels_train, class_names, features_dir)
-        
-        # ┏━━━━━━━━━━ Plot mutual information ━━━━━━━━━━┓
-        mi_scores = plot_mutual_information(df_train, labels_train, features_dir)
-        
-        # ┏━━━━━━━━━━ Plot tree importance ━━━━━━━━━━┓
-        tree_scores, tree_metrics = plot_tree_importance(df_train,
-                                                         labels_train,
-                                                         features_dir,
-                                                         model_name=model_name,
-                                                         class_names=class_names,
-                                                         meta_mode=mode,
-                                                         model_builder=lambda name,
-                                                                              n_samples,
-                                                                              ratio: _build_tree_model(name, n_samples,
-                                                                                                       ratio),
-                                                         model_labeler=_model_label)
-        
-        # ┏━━━━━━━━━━ Compute top features ━━━━━━━━━━┓
-        corr_matrix = df_train.corr()
-        top_result = compute_top_features(pb_scores, mi_scores, tree_scores, corr_matrix, features_dir)
-        top5 = top_result["top_5_features"]
-        
-        # ┏━━━━━━━━━━ Tree-model on top-5 only (train only) ━━━━━━━━━━┓
-        if run_top5:
-            # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
-            top_features_dir = save_dir / "Top_Features"
-            top_features_dir.mkdir(parents=True, exist_ok=True)
-            
-            # ┏━━━━━━━━━━ Build dataframe with top-5 features ━━━━━━━━━━┓
-            df_top5 = df_train[top5]
-            
-            # ┏━━━━━━━━━━ Plot tree importance on top-5 features ━━━━━━━━━━┓
-            _, tree_top5_metrics = plot_tree_importance(df_top5,
-                                                        labels_train,
-                                                        top_features_dir,
-                                                        model_name=model_name,
-                                                        step_label="7/9",
-                                                        desc="top-5 only",
-                                                        file_prefix="7_top5_feature_importance",
-                                                        class_names=class_names,
-                                                        meta_mode=mode,
-                                                        model_builder=lambda name, n_samples, ratio: _build_tree_model(
-                                                            name, n_samples, ratio),
-                                                        model_labeler=_model_label)
-        
-        # ┏━━━━━━━━━━ MDA / SHAP / LIME Feature Selection (requires val split) ━━━━━━━━━━┓
-        fs_result = {}
-        fs_cfg = cfg.get("data", {}).get("features", {}).get("feature_selection", {}) if cfg else {}
-        fs_methods = fs_cfg.get("methods", ["mda", "shap", "lime"])
-        fs_top_k = fs_cfg.get("top_k", None)
-        run_fs = fs_cfg.get("enabled", True)
-        
-        if run_fs and df_val_fs is not None and len(df_val_fs) > 0:
-            fs_dir = features_dir / "Feature_Selection"
-            fs_dir.mkdir(parents=True, exist_ok=True)
-            fs_result = run_feature_selection(df_train=df_train,
-                                              labels_train=labels_train,
-                                              df_val=df_val_fs,
-                                              labels_val=labels_val_fs,
-                                              save_dir=fs_dir,
-                                              model_builder=lambda name, n_samples, ratio: _build_tree_model(name,
-                                                                                                             n_samples,
-                                                                                                             ratio),
-                                              model_name=model_name,
-                                              fs_methods=fs_methods,
-                                              top_k=fs_top_k,
-                                              verbose=True)
-        elif run_fs:
-            print("  [FS] Skipping MDA/SHAP/LIME — no validation split available (need train_end + val_end).")
-    else:
-        print(f"  [--features=false] Skipping feature analysis (steps 1-7)")
-    
-    # ┏━━━━━━━━━━ Steps 8-9: temporal train/val/test evaluation ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Steps 6-7: temporal train/val/test evaluation ━━━━━━━━━━┓
     temporal_all = {}
-    temporal_top5 = {}
     backtest_all = {}
-    backtest_top5 = {}
     if train_end and val_end:
         ((idx_train_t, idx_train_raw),
          (idx_meta_t, idx_meta_raw),
@@ -976,7 +819,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         
         # ┏━━━━━━━━━━ Active features ━━━━━━━━━━┓
         active_features = list(df_train.columns)
-        print(f"\n  [8/9] {mlabel} temporal split ({len(active_features)} feats, train<={train_end}, val<={val_end}):")
+        print(f"\n  [6/7] {mlabel} temporal split ({len(active_features)} feats, train<={train_end}, val<={val_end}):")
         
         # ┏━━━━━━━━━━ Temporal evaluation on all features ━━━━━━━━━━┓
         temporal_all, artifacts_all = temporal_eval(dataset,
@@ -1011,39 +854,9 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                 "thres_mode":      thres_mode,
                                 "m1":              cfg.get("data", {}).get("load", {}).get("m1") if cfg else None})
 
-        # TODO: Change the selection when Till creates pipeline
-        if run_top5:
-            # ┏━━━━━━━━━━ Create top features directory ━━━━━━━━━━┓
-            top_features_dir = save_dir / "Top_Features"
-            top_features_dir.mkdir(parents=True, exist_ok=True)
-            print(f"  [9/9] {mlabel} temporal split (top-5, train<={train_end}, val<={val_end}):")
-            
-            # ┏━━━━━━━━━━ Temporal evaluation on top-5 features ━━━━━━━━━━┓
-            temporal_top5, artifacts_top5 = temporal_eval(dataset,
-                                                          top5,
-                                                          top_features_dir,
-                                                          class_names=class_names,
-                                                          meta_mode=mode,
-                                                          split_indices=split_indices,
-                                                          direction=direction,
-                                                          fee=fee,
-                                                          model_name=model_name,
-                                                          desc="top-5 only",
-                                                          file_prefix="9_top5",
-                                                          thres_mode=thres_mode,
-                                                          ocp_alpha=ocp_alpha,
-                                                          forecast_horizon=fh,
-                                                          split_indices_raw=split_indices_raw,
-                                                          granularity=granularity,
-                                                          ocp_costs=ocp_costs,
-                                                          ocp_window_days=ocp_window_days,
-                                                          best_params=best_params)
-        
         # ┏━━━━━━━━━━ Financial Backtest (Equity Curves + ROI Reports) ━━━━━━━━━━┓
         if cfg is not None:
-            print(f"\n  [10/11] {mlabel} financial backtest (all features):")
-            
-            # ┏━━━━━━━━━━ Financial backtest on all features ━━━━━━━━━━┓
+            print(f"\n  [7/7] {mlabel} financial backtest (all features):")
             backtest_all = run_feature_backtest(dataset,
                                                 split_indices,
                                                 artifacts_all,
@@ -1059,26 +872,6 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                 fee=fee,
                                                 thres_mode=thres_mode,
                                                 ocp_alpha=ocp_alpha)
-            
-            if run_top5:
-                print(f"\n  [11/11] {mlabel} financial backtest (top-5):")
-                
-                # ┏━━━━━━━━━━ Financial backtest on top-5 features ━━━━━━━━━━┓
-                backtest_top5 = run_feature_backtest(dataset,
-                                                     split_indices,
-                                                     artifacts_top5,
-                                                     cfg,
-                                                     top_features_dir,
-                                                     class_names=class_names,
-                                                     meta_mode=mode,
-                                                     granularity=granularity,
-                                                     direction=direction,
-                                                     model_name=model_name,
-                                                     desc="top-5 only",
-                                                     file_prefix="11_backtest_top5",
-                                                     fee=fee,
-                                                     thres_mode=thres_mode,
-                                                     ocp_alpha=ocp_alpha)
     
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     summary = {"cache": str(cache_path),
@@ -1094,13 +887,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                             class_names[1]: int((labels_train == 1).sum())},
                "features_used": list(df_train.columns),
                "dropped_features": to_drop,
-               f"{model_name}_all_features_5fold_cv": tree_metrics,
-               f"{model_name}_top5_features_5fold_cv": tree_top5_metrics,
                f"{model_name}_temporal_all_features": temporal_all,
-               f"{model_name}_temporal_top5_features": temporal_top5,
-               f"{model_name}_backtest_all_features": backtest_all,
-               f"{model_name}_backtest_top5_features": backtest_top5,
-               **top_result}
+               f"{model_name}_backtest_all_features": backtest_all}
     
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     with open(save_dir / "analysis_summary.json", "w") as f:
@@ -1111,9 +899,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     print(f"\nDone ({direction}). Outputs in: {save_dir}")
 
 
-# ------------------------------------------------------------------------------
-# Run analysis for Unified M2 (all granularities together but separate evaluation)
-# ------------------------------------------------------------------------------
+# ┏━━━━━━━━━━ Run analysis for Unified M2 (all granularities together but separate evaluation) ━━━━━━━━━━┓
 def run_unified_analysis(cache_path: Path,
                          multi: bool,
                          direction: str,
@@ -1140,7 +926,7 @@ def run_unified_analysis(cache_path: Path,
         thres_folder = "Utility_Score_NoCal"
     else:
         thres_folder = "Utility_Score"
-    save_dir = output_root / _m1_output_bucket(
+    save_dir = Path(output_root) / _m1_output_bucket(
         cfg) / model_name / direction.upper() / thres_folder / f"unified_{mode}"
     save_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1157,7 +943,8 @@ def run_unified_analysis(cache_path: Path,
     print(f"{'=' * 60}\n")
     
     # ┏━━━━━━━━━━ Collect data from all granularities with one-hot encoding ━━━━━━━━━━┓
-    gran_list = list(multi.grans)
+    # Filter the cache's granularities to strictly respect GRAN_ORDER from data.py
+    gran_list = [g for g in multi.grans if g in GRAN_ORDER]
     gran_onehot_names = [f"is_{g}" for g in gran_list]
     
     # ┏━━━━━━━━━━ Initialize lists ━━━━━━━━━━┓
@@ -1756,7 +1543,9 @@ def run_unified_analysis(cache_path: Path,
 def main():
     # ┏━━━━━━━━━━ Parse Arguments ━━━━━━━━━━┓
     parser = argparse.ArgumentParser(
-        description="Kronos Tree — M2 Meta-Labeling with RF/XGBoost/AutoGluon")  # TODO change description
+        description="M2 reliability estimator: trains a meta-labeling classifier"
+                    "(RF/TabPFN/TabICL/AutoGluon/CTTS) on top of M1 signals, applies utility-optimal threshold "
+                    "selection, and runs temporal evaluation and financial backtesting.")
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
     parser.add_argument("--config", type=_load_config, help="Experiment config", required=True)
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
@@ -1772,13 +1561,13 @@ def main():
 
     # ┏━━━━━━━━━━ Phase 1: Training ━━━━━━━━━━┓
     if args.phase == "training":
-        # ┏━━━━━━━━━━ Analysis Comparison between Models ━━━━━━━━━━┓ # NOTE this is not actively used?!
+        # ┏━━━━━━━━━━ Analysis Comparison between Models ━━━━━━━━━━┓
         if args.config["runtime"][args.phase]["paradigm_comparison"]:
             run_paradigm_comparison(args.config["runtime"][args.phase]["paradigm_comparison"])
             print(f"\nParadigm comparison complete.")
             return
 
-        # ┏━━━━━━━━━━ Analysis Comparison between all-grans vs per-gran ━━━━━━━━━━┓ # NOTE this is not actively used?!
+        # ┏━━━━━━━━━━ Analysis Comparison between all-grans vs per-gran ━━━━━━━━━━┓
         if args.config["runtime"][args.phase]["comparison"]:
             per_gran_dir = Path(args.config["runtime"][args.phase]["comparison"][0])
             unified_dir = Path(args.config["runtime"][args.phase]["comparison"][1])
@@ -1786,7 +1575,7 @@ def main():
             print(f"\nComparison complete.")
             return
 
-        # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓ # NOTE this is phase 1
+        # ┏━━━━━━━━━━ Unified model ━━━━━━━━━━┓
         # One model trained on all granularities, evaluated per-gran
         if args.config["runtime"][args.phase]["all_grans"]:
             # ┏━━━━━━━━━━ Resolve caches (builds both directions if missing) ━━━━━━━━━━┓
@@ -1800,7 +1589,7 @@ def main():
             print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {cache_path.name}")
             multi = _load_multi_cache(cache_path)
 
-            # ┏━━━━━━━━━━ Run Analysis for each granularity ━━━━━━━━━━┓
+            # ┏━━━━━━━━━━ Unified model pipeline for each granularity (one model for all granularities) ━━━━━━━━━━┓
             run_unified_analysis(cache_path,
                                  multi,
                                  args.direction,
@@ -1815,8 +1604,9 @@ def main():
                                  ocp_costs=ocp_costs,
                                  ocp_window_days=args.config['runtime'][args.phase]["ocp_window_days"])
             return
-        # ┏━━━━━━━━━━ Single granularity — run ONLY the CLI-specified direction ━━━━━━━━━━┓
+        
         else:
+            # ┏━━━━━━━━━━ Single granularity — run ONLY the CLI-specified direction ━━━━━━━━━━┓
             # Build/discover both direction caches once (so the other is ready for future runs),
             # but only run analysis for args.direction.
             direction_caches = _resolve_caches(args.config, args.cache_path)
@@ -1826,6 +1616,8 @@ def main():
 
             cache_path = direction_caches[args.direction]
             best_params = _load_best_params(args.config, args.m2, args.direction, args.granularity)
+
+            # ┏━━━━━━━━━━ Single Granularity Pipeline (One model per granularity) ━━━━━━━━━━┓
             run_analysis(cache_path=cache_path,
                          direction=args.direction,
                          mode=args.config['data']['load']['meta_label_mode'],
@@ -1835,8 +1627,6 @@ def main():
                          val_end=args.config['data']['split']['val_end'],
                          model_name=args.m2,
                          cfg=args.config,
-                         run_top5=args.config['runtime'][args.phase]["top5"],
-                         run_features=args.config['runtime'][args.phase]["run_features"],
                          thres_mode=args.config['runtime'][args.phase]["thres"],
                          ocp_alpha=args.config['runtime'][args.phase]["ocp_alpha"],
                          ocp_costs=ocp_costs,
@@ -1845,7 +1635,7 @@ def main():
             print(f"\nAnalysis complete ({args.m2}/{args.direction}/{args.granularity}).")
             return
 
-    # ┏━━━━━━━━━━ Phase 3: Combined ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Phase 2: Combined ━━━━━━━━━━┓
     if args.phase == "combined":
         # ┏━━━━━━━━━━ Combined UP+DOWN Backtest ━━━━━━━━━━┓
         combined_pair = args.config["runtime"]["combined"]["combined_backtest"]

@@ -7,10 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 from Utils.utils import model_label as _model_label
-
-# ┏━━━━━━━━━━ Granularity Order ━━━━━━━━━━┓
-GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m"]
-
+from Utils.data import GRAN_ORDER
 
 __all__ = ["GRAN_ORDER", "run_comparison", "run_paradigm_comparison"]
 

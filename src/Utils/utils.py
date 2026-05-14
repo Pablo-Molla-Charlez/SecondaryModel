@@ -6,11 +6,13 @@ import torch
 import yaml
 import hashlib
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from typing import Any
 from Utils.data import (load_dataset_from_config,
                         prepare_multi_gran_dataset,
                         prepare_multi_asset_dataset,
+                        resolve_feature_names,
                         GRAN_SEQ_LEN,
                         GRAN_TO_ID)
 
@@ -411,3 +413,21 @@ def _load_multi_cache(cache_path: Path):
     if not hasattr(multi, "sub") or not hasattr(multi, "grans"):
         raise ValueError(f"Cache {cache_path.name} is not a multi-granularity cache (missing 'sub'/'grans').")
     return multi
+
+
+def build_dataframe(dataset) -> tuple[pd.DataFrame, np.ndarray]:
+    """Convert a dataset dict/object to a feature DataFrame and label array.
+
+    Extracts ``eng_features`` and ``labels``, drops NaN-labelled rows, and
+    returns a DataFrame with resolved feature names alongside integer labels.
+    """
+    eng = dataset["eng_features"] if isinstance(dataset, dict) else dataset.eng_features
+    if isinstance(eng, torch.Tensor):
+        eng = eng.numpy()
+    labels = dataset["labels"] if isinstance(dataset, dict) else dataset.labels
+    if isinstance(labels, torch.Tensor):
+        labels = labels.numpy()
+    valid  = ~np.isnan(labels)
+    eng    = eng[valid]
+    labels = labels[valid].astype(int)
+    return pd.DataFrame(eng, columns=resolve_feature_names(eng.shape[1])), labels

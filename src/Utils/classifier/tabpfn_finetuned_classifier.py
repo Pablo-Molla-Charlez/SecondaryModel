@@ -22,6 +22,7 @@ _TABPFN_MAX_ROWS = 50_000
 class TabPFNFineTuned(BaseClassifier):
     """Sklearn-compatible wrapper around FinetunedTabPFNClassifier."""
 
+    # ┏━━━━━━━━━━ Constructor ━━━━━━━━━━┓
     def __init__(self,
                  device:                  str   = "cuda",
                  epochs:                  int   = 40,

@@ -6,6 +6,8 @@
 # 2) Create a conda environment in terminal: conda create -n S2 python=3.11
 # 3) Activate the environment: conda activate S2
 # 4) Install all requirements (from right path) in such environment: pip install -r requirements.txt
+
+# ┏━━━━━━━━━━ PyTorch ━━━━━━━━━━┓
 torch>=1.13.0
 torchinfo>=1.7.0
 numpy>=1.21.0
@@ -24,28 +26,28 @@ optuna-dashboard
 seaborn
 xgboost
 
-# Kronos forecasting stack
+# ┏━━━━━━━━━━ Kronos forecasting stack ━━━━━━━━━━┓
 yfinance
 statsmodels
 tables
 
-# AutoGluon (M2 ensemble classifier)
+# ┏━━━━━━━━━━ AutoGluon (M2 ensemble classifier) ━━━━━━━━━━┓
 autogluon.tabular
 
-# Online conformal prediction (SAOCP adaptive threshold)
+# ┏━━━━━━━━━━ Online conformal prediction (SAOCP adaptive threshold) ━━━━━━━━━━┓
 online_conformal
 
-# Feature selection (MDA/SHAP/LIME ranking)
+# ┏━━━━━━━━━━ Feature selection (MDA/SHAP/LIME ranking) ━━━━━━━━━━┓
 shap
 lime
 
-# TabPFN
+# ┏━━━━━━━━━━ TabPFN ━━━━━━━━━━┓
 tabpfn==7.1.0
 tabpfn-client
 
-# TabICL (tabular in-context learning)
+# ┏━━━━━━━━━━ TabICL (tabular in-context learning) ━━━━━━━━━━┓
 tabicl
 
-# TabM (tabular MLP-Mixer ensemble — deep-learning M2 baseline)
+# ┏━━━━━━━━━━ TabM (tabular MLP-Mixer ensemble — deep-learning M2 baseline) ━━━━━━━━━━┓
 tabm
 rtdl_num_embeddings

@@ -165,9 +165,6 @@ def _compute_embargo_splits(dates_valid, train_end, val_end, horizon, granularit
             "cal_end":   t_cal_end,
             "purge_td":  purge_td}
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Shared: M1 baselines and model builder
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # ┏━━━━━━━━━━ Build model for edge analysis ━━━━━━━━━━┓
 def _build_edge_model(model_key: str,

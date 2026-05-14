@@ -7,14 +7,14 @@
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Tirex/Crypto/TP/horizon_7"
+  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
   output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
   load:
     symbol: null              # or null for multi-asset or ["BTC", "ETH", "XRP", ...]
-    m1: "tirex"              # MUST match experiment.m1 above
+    m1: "kronos"              # MUST match experiment.m1 above
     target_col: "meta_label"  # "meta_label" or "close" or "ground_truth"
     meta_label_mode: "tp"     # "fp" or "tp" or "og"
     direction: "up"           # "up" or "down"
@@ -44,7 +44,7 @@ evaluation:
 
 # ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
 experiment:
-  m1: "tirex"                                                       # choice:  ["chronos2", "fincast", "tirex", "kronos"]
+  m1: "kronos"                                                       # choice:  ["chronos2", "fincast", "tirex", "kronos"]
   m2: ["autogluon"]              # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm"]
   direction: [ "up", "down" ]                                       # choices: ["up", "down"]
   granularity: [ "1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]  # choices: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
@@ -71,8 +71,6 @@ runtime:
     combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs (e.g. Output/Kronos/rf/UP/Utility_Score Output/Kronos/rf/DOWN/Utility_Score
     comparison: null           # [str, str]; Build comparison table from existing per-gran and unified result dirs
     all_grans: false           # Unified model trained on all granularities, evaluated per-gran
-    top5: false                # TODO check how to use this properly; Whether to run top-5 feature analysis/backtest
-    run_features: false        # TODO check how to use this properly; Whether to run feature importance analysis (MDA/SHAP/LIME) on top-k features (if top_k is set) or all features (if top_k is null)
     thres: "utility_nocal"     # "Threshold selection: 'utility' (financial utility on val), "
                                # 'OCP' (SAOCP, unbounded history), "
                                # 'OCP-W' (SAOCP, windowed calibration), "

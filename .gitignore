@@ -7,37 +7,26 @@ __pycache__/
 src/Analysis/**
 src/Output/**
 
-# Deep Learning isolate
+# Deep Learning isolates
 src/Bi_FAST/
+src/Interpretability/
 
-# Data folders (keep structure only)
-src/Data_MLA/Kronos/Crypto/*
-!src/Data_MLA/Kronos/Crypto/.gitkeep
-src/Data_MLA/Kronos/Stocks/*
-!src/Data_MLA/Kronos/Stocks/.gitkeep
-src/Data_MLA/Kronos/Commodities/*
-!src/Data_MLA/Kronos/Commodities/.gitkeep
+# Images folder — keep in git (used in README)
+!src/Images/
 
-src/Data_MLA/Fincast/Crypto/*
-!src/Data_MLA/Fincast/Crypto/.gitkeep
-src/Data_MLA/Fincast/Stocks/*
-!src/Data_MLA/Fincast/Stocks/.gitkeep
-src/Data_MLA/Fincast/Commodities/*
-!src/Data_MLA/Fincast/Commodities/.gitkeep
-
-src/Data_MLA/Tirex/Crypto/*
-!src/Data_MLA/Tirex/Crypto/.gitkeep
-src/Data_MLA/Tirex/Stocks/*
-!src/Data_MLA/Tirex/Stocks/.gitkeep
-src/Data_MLA/Tirex/Commodities/*
-!src/Data_MLA/Tirex/Commodities/.gitkeep
-
-src/Data_MLA/Chronos2/Crypto/*
-!src/Data_MLA/Chronos2/Crypto/.gitkeep
-src/Data_MLA/Chronos2/Stocks/*
-!src/Data_MLA/Chronos2/Stocks/.gitkeep
-src/Data_MLA/Chronos2/Commodities/*
-!src/Data_MLA/Chronos2/Commodities/.gitkeep
+# Data folders — exclude all model output CSVs (Crypto, Stocks, Commodities); keep XFeatures
+src/Data_MLA/Kronos/Crypto/
+src/Data_MLA/Kronos/Stocks/
+src/Data_MLA/Kronos/Commodities/
+src/Data_MLA/Chronos2/Crypto/
+src/Data_MLA/Chronos2/Stocks/
+src/Data_MLA/Chronos2/Commodities/
+src/Data_MLA/Fincast/Crypto/
+src/Data_MLA/Fincast/Stocks/
+src/Data_MLA/Fincast/Commodities/
+src/Data_MLA/Tirex/Crypto/
+src/Data_MLA/Tirex/Stocks/
+src/Data_MLA/Tirex/Commodities/
 
 # IDE specific files
 .idea

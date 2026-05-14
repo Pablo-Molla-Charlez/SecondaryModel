@@ -9,19 +9,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
 from pathlib import Path
 from typing import Dict, List, Optional
-
 from scipy.stats import spearmanr
-from sklearn.metrics import accuracy_score, fbeta_score, matthews_corrcoef, precision_recall_fscore_support
 from sklearn.preprocessing import StandardScaler
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Rank Aggregation → Top-K feature selection
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CORR_THRESHOLD = 0.85
-TOP_K = 5
+from Utils.analysis.analysis_meta_labels import plot_asset_correlation
+from sklearn.metrics import accuracy_score, fbeta_score, matthews_corrcoef, precision_recall_fscore_support
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -32,7 +26,6 @@ _RNG = np.random.default_rng(42)
 
 __all__ = ["compute_classification_metrics",
            "extract_time_features",
-           "compute_top_features",
            "mda_rank",
            "shap_rank",
            "lime_rank",
@@ -56,7 +49,6 @@ def extract_time_features(timestamps: pd.DatetimeIndex) -> Dict[str, np.ndarray]
             'dow': timestamps.dayofweek.values.astype(np.int64),
             'dom': (timestamps.day - 1).values.astype(np.int64),
             'month': (timestamps.month - 1).values.astype(np.int64)}
-
 
 
 # ┏━━━━━━━━━━ Classification Metrics ━━━━━━━━━━┓
@@ -89,130 +81,6 @@ def compute_classification_metrics(targets: np.ndarray, preds: np.ndarray) -> di
             'f1': f1,
             'fbeta': fbeta,
             'mcc': mcc}
-
-
-# ┏━━━━━━━━━━ Rank Features ━━━━━━━━━━┓
-def _rank_dict(scores: dict, higher_is_better: bool = True) -> dict:
-    """Rank features by score. Rank 1 = best."""
-    sorted_feats = sorted(scores.keys(), key=lambda f: scores[f], reverse=higher_is_better)
-    return {f: rank + 1 for rank, f in enumerate(sorted_feats)}
-
-
-
-# ┏━━━━━━━━━━ Dominant Metric ━━━━━━━━━━┓
-def _dominant_metric(feat: str, ranks: dict) -> str:
-    """Return which metric this feature ranks best in."""
-    best_metric = min(ranks, key=lambda m: ranks[m].get(feat, 999))
-    return best_metric
-
-
-
-# ┏━━━━━━━━━━ Compute Top Features ━━━━━━━━━━┓
-def compute_top_features(pb_scores: dict, mi_scores: dict, rf_scores: dict,
-                         corr_matrix: pd.DataFrame, save_dir: Path) -> dict:
-    """
-    Rank aggregation across metrics + correlation-aware deduplication.
-    Returns the top-K dict for inclusion in analysis_summary.json.
-    """
-    features = list(pb_scores.keys())
-
-    # ┏━━━━━━━━━━ Rank Features ━━━━━━━━━━┓
-    ranks = {"point_biserial": _rank_dict(pb_scores, higher_is_better=True),
-             "mutual_info":    _rank_dict(mi_scores, higher_is_better=True),
-             "rf_importance":  _rank_dict(rf_scores, higher_is_better=True)}
-
-    # ┏━━━━━━━━━━ Average Rank per Feature ━━━━━━━━━━┓
-    avg_ranks = {}
-    for f in features:
-        r_pb = ranks["point_biserial"].get(f, len(features))
-        r_mi = ranks["mutual_info"].get(f, len(features))
-        r_rf = ranks["rf_importance"].get(f, len(features))
-        avg_ranks[f] = (r_pb + r_mi + r_rf) / 3.0
-
-    # ┏━━━━━━━━━━ Sort by Avg Rank ━━━━━━━━━━┓
-    sorted_features = sorted(features, key=lambda f: (avg_ranks[f], ranks["mutual_info"].get(f, 999)))
-
-    # ┏━━━━━━━━━━ Greedy Selection with Correlation Check ━━━━━━━━━━┓
-    selected = []
-    correlation_warnings = []
-
-    # ┏━━━━━━━━━━ Iterate through sorted features ━━━━━━━━━━┓
-    for feat in sorted_features:
-        if len(selected) >= TOP_K:
-            break
-
-        # ┏━━━━━━━━━━ Check Correlation with Already-Selected Features ━━━━━━━━━━┓
-        highly_correlated_with = None
-        for sel in selected:
-            if feat in corr_matrix.index and sel in corr_matrix.columns:
-                r = abs(corr_matrix.loc[feat, sel])
-                if r >= CORR_THRESHOLD:
-                    highly_correlated_with = (sel, r)
-                    break
-        
-        # ┏━━━━━━━━━━ Check if they bring different strengths ━━━━━━━━━━┓
-        if highly_correlated_with:
-            sel_feat, r_val = highly_correlated_with
-            feat_best = _dominant_metric(feat, ranks)
-            sel_best = _dominant_metric(sel_feat, ranks)
-
-            # ┏━━━━━━━━━━ Different Strengths — Keep Both ━━━━━━━━━━┓
-            if feat_best != sel_best:
-                selected.append(feat)
-                correlation_warnings.append({"pair": [sel_feat, feat],
-                                             "pearson_r": round(float(r_val), 3),
-                                             "action": "kept_both",
-                                             "reason": f"{sel_feat} dominates {sel_best}, {feat} dominates {feat_best}"})
-            else:
-                # ┏━━━━━━━━━━ Same Dominant Metric — Skip, Try Next ━━━━━━━━━━┓
-                correlation_warnings.append({"pair": [sel_feat, feat],
-                                             "pearson_r": round(float(r_val), 3),
-                                             "action": "skipped",
-                                             "reason": f"both dominate {feat_best}, kept {sel_feat} (better avg rank)"})
-        else:
-            selected.append(feat)
-
-    # ┏━━━━━━━━━━ Build Detailed Output ━━━━━━━━━━┓
-    top_details = []
-    for f in selected:
-        top_details.append({"feature": f,
-                            "avg_rank": round(avg_ranks[f], 2),
-                            "pb_rank": ranks["point_biserial"].get(f),
-                            "mi_rank": ranks["mutual_info"].get(f),
-                            "rf_rank": ranks["rf_importance"].get(f),
-                            "pb_score": round(pb_scores.get(f, 0), 6),
-                            "mi_score": round(mi_scores.get(f, 0), 6),
-                            "rf_score": round(rf_scores.get(f, 0), 6),
-                            "dominant_metric": _dominant_metric(f, ranks)})
-
-    result = {"top_5_features": selected,
-              "top_5_details": top_details,
-              "correlation_warnings": correlation_warnings}
-
-    # ┏━━━━━━━━━━ Print to Terminal ━━━━━━━━━━┓
-    print(f"  [6/9] Top-{TOP_K} features (rank aggregation + correlation check):")
-    for d in top_details:
-        print(f"    {d['feature']:20s}  avg_rank={d['avg_rank']:.1f}  "
-              f"PB={d['pb_rank']}  MI={d['mi_rank']}  RF={d['rf_rank']}  "
-              f"dominant={d['dominant_metric']}")
-    if correlation_warnings:
-        print(f"  Correlation warnings:")
-        for w in correlation_warnings:
-            print(f"    {w['pair'][0]} <-> {w['pair'][1]}  |r|={w['pearson_r']}  → {w['action']} ({w['reason']})")
-
-    # ┏━━━━━━━━━━ Save standalone CSV of full ranking ━━━━━━━━━━┓
-    full_rank_rows = []
-    for f in sorted_features:
-        full_rank_rows.append({"feature": f,
-                               "avg_rank": round(avg_ranks[f], 2),
-                               "pb_rank": ranks["point_biserial"].get(f),
-                               "mi_rank": ranks["mutual_info"].get(f),
-                               "rf_rank": ranks["rf_importance"].get(f),
-                               "selected": f in selected})
-
-    pd.DataFrame(full_rank_rows).to_csv(save_dir / "6_rank_aggregation.csv", index=False)
-
-    return result
 
 
 # ┏━━━━━━━━━━ MDA (Mean Decrease in Accuracy) ━━━━━━━━━━┓
@@ -506,6 +374,7 @@ def combine_rankings(all_scores: Dict[str, dict],
     return combined
 
 
+
 # ┏━━━━━━━━━━ OG Feature Selection ━━━━━━━━━━┓
 def run_feature_selection(df_train: pd.DataFrame,
                           labels_train: np.ndarray,
@@ -611,10 +480,13 @@ def run_feature_selection(df_train: pd.DataFrame,
             "per_method_scores": per_method}
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CROSS-ASSET CORRELATION ANALYSIS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+All four following functions are part of a cross-asset return correlation diagnostic — 
+a one-off analysis that justifies training M2 on all assets together 
+(rather than per-asset models) by showing assets share systematic risk factors.
+"""
 
+# ┏━━━━━━━━━━ Build return matrix ━━━━━━━━━━┓
 def _build_return_matrix(dataset: dict) -> pd.DataFrame:
     """Pivot dataset returns into a (date x asset) DataFrame.
 
@@ -657,6 +529,7 @@ def _build_return_matrix(dataset: dict) -> pd.DataFrame:
     return pivot
 
 
+# ┏━━━━━━━━━━ Permutation significance ━━━━━━━━━━┓
 def _permutation_significance(pivot: pd.DataFrame, n_permutations: int = 5_000, seed: int = 42) -> dict:
     """Test whether the mean pairwise Pearson correlation is significantly > 0.
 
@@ -705,6 +578,7 @@ def _permutation_significance(pivot: pd.DataFrame, n_permutations: int = 5_000, 
             "z_score":         float((observed - null_means.mean()) / (null_means.std() + 1e-12))}
 
 
+# ┏━━━━━━━━━━ Lead-lag matrix ━━━━━━━━━━┓
 def _lead_lag_matrix(pivot: pd.DataFrame, max_lag: int = 3) -> pd.DataFrame:
     """Compute peak cross-correlation lag between every ordered asset pair.
 
@@ -756,6 +630,7 @@ def _lead_lag_matrix(pivot: pd.DataFrame, max_lag: int = 3) -> pd.DataFrame:
     return lag_matrix
 
 
+# ┏━━━━━━━━━━ Compute Asset Correlation ━━━━━━━━━━┓
 def compute_asset_correlation(dataset: dict,
                               save_dir: Path,
                               gran: str = "",
@@ -909,5 +784,3 @@ def compute_asset_correlation(dataset: dict,
             "n_observations": n_obs,
             "summary_path":   summary_path}
 
-
-from .plots import plot_asset_correlation

@@ -63,6 +63,7 @@ class TabMClassifier(BaseClassifier):
         - Patience = 16 epochs, max 200 epochs, batch size 256
     """
 
+    # ┏━━━━━━━━━━ Constructor ━━━━━━━━━━┓
     def __init__(self,
                  k:             int   = 32,
                  n_blocks:      int   = 2,
@@ -279,7 +280,7 @@ class TabMClassifier(BaseClassifier):
         self._model.eval()
         return self
 
-    # ┏━━━━━━━━━━ predict_proba ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Predict Probabilities ━━━━━━━━━━┓
     def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         if self._model is None:
             raise AttributeError("The model has not been fitted yet.")
@@ -299,7 +300,7 @@ class TabMClassifier(BaseClassifier):
                 chunks.append(probs.cpu().numpy())
         return np.concatenate(chunks, axis=0).astype(np.float64)
 
-    # ┏━━━━━━━━━━ predict ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
     def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         probs = self.predict_proba(X_test)
         idx   = probs.argmax(axis=1)

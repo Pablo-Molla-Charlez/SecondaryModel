@@ -12,6 +12,7 @@ except ImportError:
 # ┏━━━━━━━━━━ Random Forest Classifier ━━━━━━━━━━┓
 class RFClassifier(BaseClassifier):
 
+    # ┏━━━━━━━━━━ Constructor ━━━━━━━━━━┓
     def __init__(self, random_state=None, **kwargs) -> None:
         super().__init__(random_state)
 
@@ -28,27 +29,32 @@ class RFClassifier(BaseClassifier):
 
         self._fitted_clf = None
 
+    # ┏━━━━━━━━━━ Predict ━━━━━━━━━━┓
     def predict(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         if self._fitted_clf is None:
             raise AttributeError("The model has not been fitted yet.")
         return self._fitted_clf.predict(X_test)
 
+    # ┏━━━━━━━━━━ Predict Probabilities ━━━━━━━━━━┓
     def predict_proba(self, X_test: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         if self._fitted_clf is None:
             raise AttributeError("The model has not been fitted yet.")
         return self._fitted_clf.predict_proba(X_test)
 
-    def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray) -> object:
-        self._fitted_clf = self._clf.fit(X_train, y_train)
+    # ┏━━━━━━━━━━ Fit ━━━━━━━━━━┓
+    def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: np.ndarray, **kwargs) -> object:
+        self._fitted_clf = self._clf.fit(X_train, y_train, **kwargs)
 
         return self._fitted_clf
 
+    # ┏━━━━━━━━━━ Get Params ━━━━━━━━━━┓
     def get_params(self, deep: bool = True) -> dict:
         params = super().get_params(deep)
         if deep:
             params.update(self._clf.get_params(deep))
         return params
 
+    # ┏━━━━━━━━━━ Save Model ━━━━━━━━━━┓
     def save_model(self, model_path: str) -> None:
         if self._fitted_clf is None:
             raise AttributeError("The model has not been fitted yet.")
@@ -56,6 +62,7 @@ class RFClassifier(BaseClassifier):
             raise ImportError("skops is required for RFClassifier.save_model()")
         sio.dump(self._fitted_clf, f"{model_path}.skops")
 
+    # ┏━━━━━━━━━━ Load Model ━━━━━━━━━━┓
     def load_model(self, model_path: str) -> None:
         if sio is None:
             raise ImportError("skops is required for RFClassifier.load_model()")

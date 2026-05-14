@@ -38,6 +38,7 @@ class TabPFN(BaseClassifier):
     _TABPFN_MAX_ROWS are randomly sub-sampled with a warning.
     """
 
+    # ┏━━━━━━━━━━ Constructor ━━━━━━━━━━┓
     def __init__(self,
                  device:                 str   = "cuda",
                  n_estimators:           int   = 16,

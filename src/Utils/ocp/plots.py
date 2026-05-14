@@ -14,8 +14,13 @@ All functions return the same 4-tuple
     "(test_thresholds, test_approved, val_thresholds, conformal_stats)"
 so they are drop-in replacements for one another.
 """
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pathlib import Path
+from typing import Optional
 
 
 # ┏━━━━━━━━━━ Granularity → candles per day mapping ━━━━━━━━━━┓
@@ -27,7 +32,7 @@ _CANDLES_PER_DAY = {"1d": 1, "12h": 2, "8h": 3, "6h": 4, "4h": 6,
 _TAU_GRID = np.arange(0.50, 0.96, 0.01)  # search grid for deferral threshold
 
 
-__all__ = ["plot_mondrian_diagnostics"]
+__all__ = ["plot_mondrian_diagnostics", "plot_ocp_threshold_evolution"]
 
 
 def plot_mondrian_diagnostics(conformal_stats, save_dir, gran_label="", thres_mode="OCP-cost-mondrian"):
@@ -181,3 +186,41 @@ def plot_mondrian_diagnostics(conformal_stats, save_dir, gran_label="", thres_mo
     # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
     fig.savefig(str(save_dir / "mondrian_wr_regimes.png"), dpi=200, facecolor="white")
     plt.close(fig)
+
+
+# ━━━━━━━━━━ Migrated from Utils/feature_selection/plots.py (2026-05-14) ━━━━━━━━━━
+def plot_ocp_threshold_evolution(save_path: Path,
+                                 test_s_hats: np.ndarray,
+                                 utility_threshold: float,
+                                 model_label: str,
+                                 thres_mode: str,
+                                 ocp_alpha: float,
+                                 conformal_coverage: float,
+                                 n_set_1: int,
+                                 n_set_0: int,
+                                 n_set_both: int,
+                                 n_set_empty: int,
+                                 split_name: str = "Test"):
+    """Plot OCP threshold evolution for temporal_eval."""
+    fig_thr, ax_thr = plt.subplots(figsize=(10, 4), facecolor="white")
+    ax_thr.set_facecolor("#FAFAFA")
+    eff_tau = np.maximum(test_s_hats, 1.0 - test_s_hats)
+    ax_thr.plot(eff_tau, color="#8B008B", linewidth=0.8, alpha=0.9, label=f"τ_t ({thres_mode})")
+    ax_thr.axhline(y=utility_threshold, color="#34495E", linestyle="--", linewidth=1.2, alpha=0.7, label=f"τ Utility = {utility_threshold:.3f}")
+    ax_thr.axhline(y=0.5, color="#BDC3C7", linestyle=":", linewidth=0.8, alpha=0.6)
+    ax_thr.set_xlabel("Test sample index", fontsize=10)
+    ax_thr.set_ylabel("Threshold τ_t", fontsize=10)
+    ax_thr.set_title(f"{thres_mode} Threshold Evolution  |  {split_name}  |  {model_label}  (α={ocp_alpha})\n"
+                     f"Conformal Cov={conformal_coverage:.1%} (target≥{1-ocp_alpha:.0%})  |  "
+                     f"{{1}}={n_set_1}  {{0}}={n_set_0}  {{0,1}}={n_set_both}  {{}}={n_set_empty}",
+                     fontsize=11, fontweight="bold", color="#2C3E50")
+    ax_thr.legend(fontsize=8, loc="upper right")
+    ax_thr.set_ylim(0.4, 1.0)
+    ax_thr.grid(True, alpha=0.3)
+    fig_thr.tight_layout()
+    fig_thr.savefig(str(save_path), dpi=200, facecolor="white")
+    plt.close(fig_thr)
+
+
+# ┏━━━━━━━━━━ M2 Selective Return Distribution (TP/FP vs M1) ━━━━━━━━━━┓
+

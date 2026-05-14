@@ -63,8 +63,7 @@ from Utils.classifier import (MODELS_NO_SCALING,
 
 # ┏━━━━━━━━━━ Feature-selection / plotting hot symbols ━━━━━━━━━━┓
 from Utils.feature_selection import (plot_confusion_matrix,
-                                     run_feature_selection,
-                                     compute_top_features)
+                                     run_feature_selection)
 
 # ┏━━━━━━━━━━ Time-series CV (CPCV default is mode="datetime") ━━━━━━━━━━┓
 from Utils.ts_cross_validation import (BaseTimeSeriesCV,
@@ -113,7 +112,6 @@ __all__ = [
     # ┏━━━━━━━━━━ Feature selection ━━━━━━━━━━┓
     "plot_confusion_matrix",
     "run_feature_selection",
-    "compute_top_features",
     
     # ┏━━━━━━━━━━ CV ━━━━━━━━━━┓
     "BaseTimeSeriesCV",

@@ -13,10 +13,10 @@ from typing import List, Tuple, Union, Sequence, Optional, Dict, Any
 # Granularity → sequence length (context window for M2).
 # Must match the seq_len used by M1 when generating tokens / meta-labels.
 GRAN_SEQ_LEN = {"1d": 40, "12h": 60, "8h": 65, "6h": 75, "4h": 90,  
-                "2h": 60, "1h": 80, "30m": 90, "15m": 160, "5m": 480}
+                "2h": 60, "1h": 80, "30m": 90} #"15m": 160, "5m": 480}
 
 # Canonical ordering (coarsest → finest) and integer IDs
-GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m", "5m"]
+GRAN_ORDER = ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
 GRAN_TO_ID = {g: i for i, g in enumerate(GRAN_ORDER)}
 
 
@@ -31,7 +31,6 @@ ENG_FEATURE_GROUPS = {
     'volume':       ['vol_spike_ratio', 'vol_trend_slope', 'vol_cv'],
     'momentum':     ['rsi_last', 'macd_last', 'roc_5_last', 'roc_20_last', 'momentum_align'],
     'regime':       ['adx_last', 'hurst', 'choppiness_idx'],
-    # Crypto external + 30-day volatility features (last value per window)
     'xfeatures':    ['dvol_last', 'fear_greed_last', 'news_sentiment_last',
                      'r_vol_30_last', 'r_vol_30_ann_last', 'atr_w30_last', 
                      'rvi_30_last', 'massi_30_last', 'log_return_last', 'dcr_last'],
@@ -221,6 +220,7 @@ class MultiGranDataset(torch.utils.data.Dataset):
 
         return output
 
+
 # ┏━━━━━━━━━━ Build MultiGranDataset from a DataFrame containing multiple granularities ━━━━━━━━━━┓
 def prepare_multi_gran_dataset(combined_df: pd.DataFrame,
                                column_features: Sequence[str],
@@ -359,7 +359,7 @@ def resolve_feature_names(n_cols: int) -> list:
     return list(ENG_FEATURE_NAMES) + [f"feat_{i}" for i in range(len(ENG_FEATURE_NAMES), n_cols)]
 
 
-
+# ┏━━━━━━━━━━ Compute Window Features ━━━━━━━━━━┓
 def compute_window_features(ohlcv_window: np.ndarray,
                             extrinsic_window: np.ndarray,
                             extrinsic_cols: list) -> np.ndarray:
@@ -521,7 +521,7 @@ def compute_window_features(ohlcv_window: np.ndarray,
                      dtype=np.float32)
 
 
-
+# ┏━━━━━━━━━━ Prepare Multi Asset Dataset ━━━━━━━━━━┓
 def prepare_multi_asset_dataset(df: pd.DataFrame,
                                 seq_len: int = 96,
                                 column_features: Sequence[str] = ("open", "high", "low", "close", "volume"),
@@ -804,6 +804,7 @@ def prepare_multi_asset_dataset(df: pd.DataFrame,
 
 
 
+# ┏━━━━━━━━━━ Split by Global Time (Train/Val/Test Split) ━━━━━━━━━━┓
 def split_by_global_time(dataset,
                          train_frac: float = 0.60,
                          meta_frac:  float = 0.10,
@@ -922,6 +923,7 @@ def split_by_global_time(dataset,
 
 
 
+# ┏━━━━━━━━━━ Load Dataset from Config ━━━━━━━━━━┓
 def load_dataset_from_config(config: dict) -> pd.DataFrame:
     """
     Load dataset based on config options.
