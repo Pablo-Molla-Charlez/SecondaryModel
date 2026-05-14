@@ -10,6 +10,7 @@ src/Output/**
 # Deep Learning isolates
 src/Bi_FAST/
 src/Interpretability/
+src/Utils/ts_cross_validation/
 
 # Images folder — keep in git (used in README)
 !src/Images/

@@ -52,10 +52,8 @@ flowchart LR
     class A,B,C input;
     class D,K model;
     class E select;
-    class F,G,H,I,J report;
-    linkStyle 0,1,2 stroke:#0f766e,stroke-width:6px;
-    linkStyle 3,4 stroke:#2563eb,stroke-width:6px;
-    linkStyle 5,6,7,8,9 stroke:#f59e0b,stroke-width:6px;
+    class G,H,I,J report;
+    linkStyle default stroke:#64748b,stroke-width:3px;
 ```
 
 ```mermaid
@@ -71,40 +69,35 @@ flowchart TD
     classDef group fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     class A root;
     class B,C,D,E,F,G group;
-    linkStyle 0,1,2,3,4,5 stroke:#2563eb,stroke-width:6px;
+    linkStyle default stroke:#2563eb,stroke-width:3px;
 ```
 
 ---
 
 ## Core Architecture
 
-### 1. The 4-Way Splitting Protocol
-Unlike standard Train/Test splits, our workflow enforces a 4-tuple boundary to isolate model fitting, probability calibration, and threshold optimization.
+### 1. The 3-Way Splitting Protocol
+Unlike standard Train/Test splits, our workflow enforces a 3-tuple boundary to isolate model fitting, threshold optimization, and final evaluation.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
     subgraph Validation ["Validation<br/><br/><br/><br/>"]
-        B["&nbsp;&nbsp;Calibrate&nbsp;&nbsp;<br/><small>Calibrator</small>"]:::opt
         C["&nbsp;&nbsp;Optimize&nbsp;&nbsp;<br/><small>Threshold</small>"]:::opt
-        B --> C
     end
     style Validation fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#ffffff
-    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> B
+    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> C
     D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test Set&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
     C --> D
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef opt   fill:#ef4444,stroke:#b91c1c,color:#ffffff,stroke-width:2px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
-    linkStyle 0 stroke:#ef4444,stroke-width:6px;
-    linkStyle 1 stroke:#0f766e,stroke-width:6px;
-    linkStyle 2 stroke:#ef4444,stroke-width:6px;
+    linkStyle default stroke:#0f766e,stroke-width:3px;
 ```
 
 | Window | Subset | Purpose |
 | --- | --- | --- |
 | **Train** | Training | Fitting the base classifier (RF, AutoGluon, TabPFN, or TabICL). |
-| **Val-Cal** | Calibration | Fitting the probability calibrator (Isotonic Regression or Platt Scaling). |
 | **Val-Opt** | Optimization | Searching for the optimal financial utility threshold (Selective Classification). |
 | **Test** | Evaluation | Final, isolated out-of-sample backtest and performance monitoring. |
 
@@ -162,14 +155,6 @@ src/Utils/
 │   ├── autogluon_classifier.py        # AutoGluon multi-stack wrapper
 │   ├── factory.py                     # _build_tree_model(), MODEL_CHOICES, MODELS_NO_SCALING
 │   └── __init__.py                    # re-exports all classifiers + factory symbols
-│
-├── ts_cross_validation/               # TIME-SERIES CV PRIMITIVES
-│   ├── _ts_cross_validation.py        # base CV logic
-│   ├── combinatorial_purged_cv.py     # CombinatorialPurgedCV (datetime-based default, mode="index" compat)
-│   ├── purged_embargo_cv.py           # PurgedEmbargoCV
-│   ├── embargo_splits.py              # compute_embargo_splits helpers
-│   ├── sklearn_ts_cv.py               # sklearn-compatible wrappers
-│   └── __init__.py
 │
 ├── feature_selection/                 # FEATURE ANALYSIS
 │   ├── feature_selection.py           # MDI/MDA/SFI importance, selection logic
@@ -257,127 +242,14 @@ Transformer-based foundation model from INRIA/Soda. Same ICL principle as TabPFN
 - **Reference**: [soda-inria/tabicl](https://github.com/soda-inria/tabicl)
 - **Zero-Shot (`tabicl`)**: Pre-trained checkpoint. Internally normalises features — do not pre-scale inputs.
 
+### 5. TabM
+MLP with weight-sharing across k parallel "mini-models" (Yandex Research). Trained from scratch on each dataset slice.
+- **Reference**: [yandex-research/tabm](https://github.com/yandex-research/tabm)
+- **(`tabm`)**: Configurable `k`, `n_blocks`, `d_block`, `lr`, `weight_decay`. Supports optional **Piecewise Linear Embeddings** (`use_plr=True`) which add `n_bins` and `d_embedding` to the search space.
+
 All models share a 50 000-row soft sub-sampling guard (`_TABPFN_MAX_ROWS`) that warns and randomly sub-samples when exceeded.
 
 ---
-
-## Edge Convergence: The Gate Keeper
-
-Model performance on a single test set is often a "lucky" snapshot. `Utils/edge/` provides a statistically robust protocol to determine if a model is truly ready for deployment.
-
-### Model-Dependent Edge Modes
-
-Not every M2 model benefits from multi-seed stability testing. Seed variation only produces meaningful variance in models with internal stochastic components (bootstrap sampling, feature subsets). For frozen-weight foundation models (TabPFN, TabICL) and AutoGluon (where the seed is not forwarded to the internal predictor), repeating 100 seed trials produces near-identical outputs — a waste of compute. The edge protocol therefore adapts to the model:
-
-| M2 Model | Seeds Mode | CPCV Mode | Convergence Score |
-| --- | --- | --- | --- |
-| **RF, XGBoost** | ✅ 100 seed trials | ✅ CPCV | 60% CPCV + 40% Seeds |
-| **AutoGluon, TabPFN, TabICL** | ❌ Skipped | ✅ CPCV | 100% CPCV |
-
-For AutoGluon / TabPFN / TabICL, the CPCV summary embeds a **standalone GREEN / AMBER / RED verdict** directly — no convergence-score step is needed.
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#2563eb', 'primaryBorderColor': '#1d4ed8', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dcfce7', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
-flowchart TD
-    A[Cache] --> B{Edge Engine}
-    B --> C["Seeds<br/>Stability<br/><small>RF / XGBoost only</small>"]
-    B --> D[CPCV<br/>Regime]
-    C --> E[Score: 40%]
-    D --> F[Score: 60%]
-    E & F --> G[Convergence]
-    G --> H{Verdict}
-    H --> I["&nbsp;&nbsp;&nbsp;GREEN: Pass&nbsp;&nbsp;&nbsp;<br/><small>Both gates</small>"]
-    H --> J["&nbsp;&nbsp;&nbsp;AMBER: Risk&nbsp;&nbsp;&nbsp;<br/><small>One gate</small>"]
-    H --> K["&nbsp;&nbsp;&nbsp;&nbsp;RED: Reject&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Neither gate</small>"]
-    classDef green fill:#22c55e,stroke:#15803d,color:#ffffff;
-    classDef amber fill:#f59e0b,stroke:#b45309,color:#ffffff;
-    classDef red fill:#ef4444,stroke:#b91c1c,color:#ffffff;
-    classDef gate fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
-    class B,H gate;
-    class I green;
-    class J amber;
-    class K red;
-    linkStyle default stroke:#2563eb,stroke-width:6px;
-```
-
-CPCV uses **datetime-based block partitioning** by default (`CombinatorialPurgedCV(mode="datetime")`), where blocks are defined by equal calendar spans and purge windows match `horizon × bar_width`. Index-based partitioning is available as `mode="index"` for backward compatibility.
-
-### Convergence Gate Conditions
-
-The convergence verdict is **not** a handcrafted heuristic — it's the outcome of quantitative gates (see [`Utils/edge/edge.py`](src/Utils/edge/edge.py)).
-
-**Gate 1 — CPCV (Regime Sensitivity).** Evaluated across all CPCV back-test paths (applies to **all** M2 models):
-
-```
-cpcv_pass  ⇔  median_path_sharpe > 0   AND   fraction_profitable ≥ 0.60
-```
-
-`fraction_profitable` is the share of CPCV paths with positive total return; `median_path_sharpe` is the median of per-path Sharpe ratios.
-
-**Gate 2 — Seeds (Model Stability).** Only for RF and XGBoost. Evaluated over N random-seed replicas (default `N = 100`) on a held-out **Val-Eval** split:
-
-```
-sharpe_ci_lower = mean_sharpe − z₀.₉₇₅ · std_sharpe / √N     # z₀.₉₇₅ = 1.96 (95% CI)
-seeds_pass      ⇔  fraction_profitable > 0.70   AND   sharpe_ci_lower > 0
-```
-
-**Val-Eval split for seeds mode (test-set integrity).** To keep the real test window fully unseen during stability measurement, `seeds` mode carves a 4-way split **entirely inside the Train+Val timeline** — the real test window is never touched. Ratios (of the Train+Val span) are:
-
-```
-[ Train 65% | purge | Val-Cal 12% | purge | Val-Opt 10% | purge | Val-Eval 13% ]   ( | Test — untouched | )
-```
-
-Each boundary is separated by a purge of `horizon × bar_width` to prevent label leakage. See [`Utils/ts_cross_validation/embargo_splits.py::compute_seeds_embargo_splits`](src/Utils/ts_cross_validation/embargo_splits.py).
-
----
-
-**Final verdict.**
-
-```
-# RF / XGBoost (2-stage)
-verdict = GREEN  if cpcv_pass ∧ seeds_pass
-          AMBER  if cpcv_pass ⊕ seeds_pass
-          RED    otherwise
-final_score = 0.6 · cpcv_score + 0.4 · seeds_score
-
-# AutoGluon / TabPFN / TabICL (CPCV-only)
-verdict = GREEN  if cpcv_pass (both conditions)
-          AMBER  if exactly one condition passes
-          RED    otherwise
-```
-
-## Probability Calibration — Design, Degeneracy, and Empirical Findings
-
-> **Source**: `Utils/selective_classification/calibration.py`  
-> **Study outputs**: `Output/Analysis/Calibration/`  
-> **CLI**: `python -m Utils.calibration --study all --m1 Kronos --m2 rf tabpfn tabicl`
-
-### How calibration works in the pipeline
-
-After the classifier is trained on **Train**, its raw `predict_proba` outputs are passed to an **Isotonic Regression** calibrator fitted on **Val-Cal**. The calibrated probabilities are then used on **Val-Opt** for threshold optimisation and, with the chosen τ*, on **Test** for final evaluation.
-
-```
-Train → fit classifier
-Val-Cal → fit isotonic(raw_probs, labels)    ← calibration happens here
-Val-Opt → calibrated_probs → sweep τ*
-Test    → calibrated_probs ≥ τ*  →  trade / no-trade
-```
-
-The calibration step is designed to map raw model scores to **empirical win-frequencies**, so the threshold sweep operates on a meaningful probability scale rather than on arbitrary model scores.
-
-### Degeneracy and the safety fallback
-
-Isotonic regression can collapse to a near-constant mapping when Val-Cal is imbalanced or small. The production code (`calibrate_probabilities`) evaluates three degeneracy checks on the fitted calibrator's output image:
-
-| Trigger | Condition | Root cause |
-|---------|-----------|------------|
-| **(a) Too few distinct outputs** | < 5 unique calibrated values | Isotonic collapsed to a step function |
-| **(b) Output range too narrow** | max − min < 0.10 | All probs squashed into a tiny band |
-| **(c) Positive-mass squash** | raw fraction ≥ 0.50 had ≥ 5 % of samples above 0.5, but calibrated fraction fell below 25 % of that | Calibrator destroyed the decision boundary by pushing most probs below 0.5 |
-
-If **any** trigger fires, the calibrator is discarded and replaced with the identity map `g(x) = clip(x, 0, 1)` — i.e. raw probabilities are used unchanged. This is the **safety fallback**.
-
-**Important note for the calibration study.** The `best_probs.npz` files produced by HPO and Phase 1 training already have this fallback baked in: in degenerate configs, `opt_probs_cal` is bit-for-bit identical to `opt_probs_raw`. The `Utils/calibration` study therefore re-derives true isotonic calibration unconditionally (no fallback) to produce a fair "what does calibration actually do" baseline, while keeping the degeneracy study (task 2) as a separate layer that reports when the production pipeline would reject the calibration.
 
 ## Setup
 
@@ -544,23 +416,50 @@ conda run -n CTTS python -m Utils.hpo \
 
 Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.json`.
 
----
+#### Search spaces
 
-### `Utils/ocp/` — OCP Diagnostics (standalone)
+**Random Forest** (`rf`)
 
-Post-hoc analysis of completed OCP runs. Requires a result folder produced by the training phase with `runtime.training.thres` set to an OCP mode.
+| Parameter | Type | Range / Choices |
+|-----------|------|-----------------|
+| `n_estimators` | int | 100 – 1000 (step 100) |
+| `max_depth` | int | 3 – 12 |
+| `min_samples_leaf` | int | 5 – 50 |
+| `min_samples_split` | int | 5 – 50 |
+| `max_features` | categorical | `sqrt`, `log2`, 0.5, 0.7, 0.9 |
+| `class_weight` | categorical | `balanced`, `balanced_subsample` |
 
-```bash
-# Practical diagnostics — per-granularity result folder
-conda run -n CTTS python -m Utils.ocp.analysis \
-  --folder Output/Kronos/rf/UP/OCP/4h_up_tp
+**TabPFN** (`tabpfn`)
 
-# Theory / simulation studies (requires a cache .pt file)
-conda run -n CTTS python -m Utils.ocp.theory \
-  --cache Output/Kronos/cache/multi_kronos_7_fee_up_<hash>.pt
-```
+| Parameter | Type | Range / Choices |
+|-----------|------|-----------------|
+| `n_estimators` | int | 4 – 32 (step 4) |
+| `softmax_temperature` | categorical | 0.75, 0.8, 0.9, 0.95, 1.0, 1.05 |
+| `balance_probabilities` | categorical | True, False |
+| `average_before_softmax` | categorical | True, False |
+| `preprocess_transform` | categorical | `quantile_uni_coarse`, `quantile_norm_coarse`, `kdi_alpha_0.3`, `kdi_alpha_3.0`, `none`, `safepower+quantile_uni`, `squashing_scaler_default` |
+| `fingerprint_feature` | categorical | True, False |
+| `outlier_removal_std` | categorical | None, 7.0, 12.0 |
+| `min_unique_for_numerical` | categorical | 1, 5, 10, 30 |
 
-> Replace `<hash>` with the actual MD5 suffix emitted by `_build_cache_from_config` when the cache is first created.
+**TabICL** (`tabicl`)
+
+| Parameter | Type | Range / Choices |
+|-----------|------|-----------------|
+| `n_estimators` | int | 4 – 32 (step 4) |
+| `softmax_temperature` | float | 0.3 – 1.5 (step 0.1) |
+
+**TabM** (`tabm`)
+
+| Parameter | Type | Range / Choices |
+|-----------|------|-----------------|
+| `d_block` | int | 64 – 1024 (step 16) |
+| `lr` | float (log) | 1e-4 – 5e-3 |
+| `weight_decay` | float (log) | 0 or 1e-4 – 1e-1 |
+| `use_plr` | categorical | True, False |
+| `n_blocks` | int | 1 – 5 (1 – 4 with PLE) |
+| `n_bins` *(PLE only)* | int | 2 – 128 |
+| `d_embedding` *(PLE only)* | int | 8 – 32 (step 4) |
 
 ---
 
@@ -580,7 +479,6 @@ conda run -n CTTS python -m Utils.ocp.theory \
 | `Utils/hpo/` | Optuna-based HPO — Phase 0 of `experiments.py`. Results consumed by both Phase 1 training and Phase 2 CPCV. CLI: `python -m Utils.hpo`. |
 | `Utils/ocp/` | SAOCP core logic + OCP diagnostic CLI. CLI: `python -m Utils.ocp.analysis`, `python -m Utils.ocp.theory`. |
 | `Utils/selective_classification/` | Probability calibration (Isotonic, Platt) and utility-threshold selection. |
-| `Utils/ts_cross_validation/` | CPCV, PurgedEmbargoCV, embargo-split helpers for financial time-series CV. |
 | `Data_MLA/` | Per-M1 dataset assets and technical indicator computation (one subfolder per backbone: `Kronos/`, `Fincast/`, `Chronos2/`, `Tirex/`). |
 
 ---
@@ -762,29 +660,6 @@ src/Output/
 
 ---
 
-## Reporting and Diagnostics
-
-### Comparison Utilities
-
-`Utils/backtest/comparison.py` builds polished summary tables and CSV exports for:
-- separate vs unified model structure
-- validation and test performance panels
-- paradigm-level side-by-side reports
-
-### OCP Diagnostics
-
-`Utils/ocp/analysis.py` (CLI: `python -m Utils.ocp.analysis`) covers:
-- fixed-threshold comparison
-- random baseline checks
-- shuffled-label sanity checks
-- rolling conformal coverage
-- trade overlap versus utility threshold
-- probability calibration inspection
-
-`Utils/ocp/theory.py` (CLI: `python -m Utils.ocp.theory`) covers theoretical/simulation OCP studies.
-
----
-
 ## Practical Notes
 
 - The canonical output location for run results is `src/Output/<M1>/` (M1 taken from `experiment.m1`).
@@ -799,9 +674,29 @@ src/Output/
 
 ## Results
 
-| Meta-Label Dataset Size | Return Quality (TP vs FP) | Return Distribution |
-|:-:|:-:|:-:|
-| ![Meta-Label Dataset Size](src/Images/Meta_Label_Dataset_Size.png) | ![Found Models Return Boxplot](src/Images/Found_Models_Return_Boxplot.png) | ![Found Models Return Dist](src/Images/Found_Models_Return_Dist.png) |
+### Dataset & Return Quality Overview
+
+![Meta-Label Dataset Size](src/Images/Meta_Label_Dataset_Size.png)
+
+![Found Models Return Boxplot](src/Images/Found_Models_Return_Boxplot.png)
+
+![Found Models Return Distribution](src/Images/Found_Models_Return_Dist.png)
+
+---
+
+### TabPFN — 4h UP Example Run
+
+Four diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity, UP direction):
+
+![TabPFN Val Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Val_Risk_Coverage_final.png)
+
+![TabPFN Test Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Test_Risk_Coverage_final.png)
+
+![TabPFN Test Selective Return Distribution](src/Images/TabPFN_4h_UP/TabPFN_Test_Selective_Return_Dist.png)
+
+![TabPFN Combined Backtest](src/Images/TabPFN_4h_UP/TabPFN_Combined_Backtest.png)
+
+---
 
 The two tables below are the full result tables from the paper's appendix. Columns: RF = Random Forest, AG = AutoGluon, TPFN = TabPFN, TICL = TabICL, CNNT = CNN-Transformer. Each cell shows `↑ / ↓` for UP/DOWN directions. Negative values are shown in <span style="color:red">red</span>. The **Winner** column reports the per-granularity best (M2, Direction) pair, averaged across the four M1 backbones using **pure mean** (no convergence weighting). The bottom **Mean** row averages across all granularities.
 
