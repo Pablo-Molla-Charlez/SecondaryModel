@@ -86,7 +86,7 @@ flowchart LR
     V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
     
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
+    classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:5px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     linkStyle default stroke:#0f766e,stroke-width:3px;
 ```
