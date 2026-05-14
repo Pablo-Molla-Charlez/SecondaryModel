@@ -82,13 +82,11 @@ The pipeline follows the standard three-way chronological split, with temporal e
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    subgraph Val ["Validation<br/><br/><br/><br/>"]
-        C["&nbsp;&nbsp;Threshold&nbsp;&nbsp;<br/><small>Optimization</small>"]:::val
-    end
-    style Val fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:#ffffff
-    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> C
-    D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
-    C --> D
+    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;"]:::val
+    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
+    
+    V --> Opt["&nbsp;&nbsp;Risk-Profitability&nbsp;&nbsp;<br/><small>Threshold Optimization</small>"]:::val
+    
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
