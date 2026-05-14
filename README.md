@@ -82,11 +82,11 @@ The pipeline follows the standard three-way chronological split, with temporal e
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
-    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;<br/><small>Risk-Profitability <i>τ</i></small>"]:::val
+    A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;<br/><small>Risk-Profi <i>τ</i></small>"]:::val
     V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance</small>"]:::test
     
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
-    classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:5px;
+    classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
     classDef test  fill:#2563eb,stroke:#1d4ed8,color:#ffffff,stroke-width:2px;
     linkStyle default stroke:#0f766e,stroke-width:3px;
 ```
