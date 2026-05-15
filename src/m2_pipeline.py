@@ -9,7 +9,7 @@ Invocation contract:
     per-slice invocations of this module.
 
     Example (direct invocation):
-        python kronos_tree.py --config config.yaml --phase training \\
+        python m2_pipeline.py --config config.yaml --phase training \\
             --m2 rf --direction up --granularity 1d
 
     `--config` accepts a YAML file path. On first run `_resolve_caches` will
@@ -720,10 +720,10 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     
     # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
     print(f"\n{'=' * 60}")
-    print(f"[kronos_tree] Direction: {direction} | Mode: {mode} | Granularity: {granularity}")
-    print(f"[kronos_tree] Model: {mlabel} | Classes: {class_names}")
-    print(f"[kronos_tree] Cache: {cache_path.name}")
-    print(f"[kronos_tree] Output: {save_dir}")
+    print(f"[m2_pipeline] Direction: {direction} | Mode: {mode} | Granularity: {granularity}")
+    print(f"[m2_pipeline] Model: {mlabel} | Classes: {class_names}")
+    print(f"[m2_pipeline] Cache: {cache_path.name}")
+    print(f"[m2_pipeline] Output: {save_dir}")
     print(f"{'=' * 60}\n")
     
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
@@ -751,22 +751,22 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         _feat_names  = resolve_feature_names(eng_raw.shape[1])
         df_train     = pd.DataFrame(eng_raw[idx_train], columns=_feat_names)
         labels_train = labels_raw[idx_train].astype(int)
-        print(f"[kronos_tree] Total samples: {len(df_all)} | Train: {len(df_train)} | Val: {len(idx_val)}")
+        print(f"[m2_pipeline] Total samples: {len(df_all)} | Train: {len(df_train)} | Val: {len(idx_val)}")
     else:
         # ┏━━━━━━━━━━ No temporal split dates, using all data ━━━━━━━━━━┓
         df_train = df_all
         labels_train = labels_all
-        print(f"[kronos_tree] Samples: {len(df_all)} (no temporal split dates, using all data)")
+        print(f"[m2_pipeline] Samples: {len(df_all)} (no temporal split dates, using all data)")
     
     # ┏━━━━━━━━━━ Print train statistics ━━━━━━━━━━┓
     print(
-        f"[kronos_tree] Train: {len(df_train)} (class 0: {(labels_train == 0).sum()}, class 1: {(labels_train == 1).sum()})")
-    print(f"[kronos_tree] Features: {len(df_train.columns)}\n")
+        f"[m2_pipeline] Train: {len(df_train)} (class 0: {(labels_train == 0).sum()}, class 1: {(labels_train == 1).sum()})")
+    print(f"[m2_pipeline] Features: {len(df_train.columns)}\n")
     
     # ┏━━━━━━━━━━ Drop features that are all-NaN or zero-variance (based on train) ━━━━━━━━━━┓
     to_drop = [c for c in df_train.columns if df_train[c].isna().all() or df_train[c].std() == 0]
     if to_drop:
-        print(f"[kronos_tree] Dropping zero-variance/all-NaN features: {to_drop}\n")
+        print(f"[m2_pipeline] Dropping zero-variance/all-NaN features: {to_drop}\n")
         df_train = df_train.drop(columns=to_drop)
     
     
@@ -936,10 +936,10 @@ def run_unified_analysis(cache_path: Path,
     
     # ┏━━━━━━━━━━ Print Info ━━━━━━━━━━┓
     print(f"\n{'=' * 60}")
-    print(f"[kronos_tree] UNIFIED MODEL — Direction: {direction} | Mode: {mode}")
-    print(f"[kronos_tree] Granularities: {multi.grans}")
-    print(f"[kronos_tree] Model: {mlabel} | Classes: {class_names}")
-    print(f"[kronos_tree] Output: {save_dir}")
+    print(f"[m2_pipeline] UNIFIED MODEL — Direction: {direction} | Mode: {mode}")
+    print(f"[m2_pipeline] Granularities: {multi.grans}")
+    print(f"[m2_pipeline] Model: {mlabel} | Classes: {class_names}")
+    print(f"[m2_pipeline] Output: {save_dir}")
     print(f"{'=' * 60}\n")
     
     # ┏━━━━━━━━━━ Collect data from all granularities with one-hot encoding ━━━━━━━━━━┓
@@ -1586,7 +1586,7 @@ def main():
             cache_path = direction_caches[args.direction]
 
             # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-            print(f"[kronos_tree] Loading multi-gran cache for UNIFIED model: {cache_path.name}")
+            print(f"[m2_pipeline] Loading multi-gran cache for UNIFIED model: {cache_path.name}")
             multi = _load_multi_cache(cache_path)
 
             # ┏━━━━━━━━━━ Unified model pipeline for each granularity (one model for all granularities) ━━━━━━━━━━┓

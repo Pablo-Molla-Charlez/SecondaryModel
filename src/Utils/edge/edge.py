@@ -216,7 +216,7 @@ def _compute_m1_baselines(sub: dict,
     """Compute M1 accuracy, precision, and mean return on val/test splits.
 
     M1 acc/prec use RAW indices (all windows, including NaN meta-labels)
-    to match kronos_tree behavior. M1 mean return uses the valid-filtered
+    to match m2_pipeline behavior. M1 mean return uses the valid-filtered
     returns at idx_val/idx_test.
     """
     # ┏━━━━━━━━━━ Get M1 predictions and true labels ━━━━━━━━━━┓

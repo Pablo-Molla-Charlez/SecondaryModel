@@ -1,4 +1,4 @@
-"""Feature analysis and plotting helpers extracted from kronos_tree.py."""
+"""Feature analysis and plotting helpers extracted from m2_pipeline.py."""
 
 import json
 import warnings

@@ -1,4 +1,4 @@
-"""Financial backtest helpers extracted from kronos_tree.py."""
+"""Financial backtest helpers extracted from m2_pipeline.py."""
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt

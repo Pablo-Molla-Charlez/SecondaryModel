@@ -13,7 +13,7 @@ and CPCV runners share substantial helper machinery (``_run_single_trial``,
 to separate cleanly.
 
 Backward-compat: ``_compute_embargo_splits`` and ``_gran_to_timedelta``
-remain importable from ``Utils.edge`` for ``kronos_tree.py`` callers.
+remain importable from ``Utils.edge`` for ``m2_pipeline.py`` callers.
 """
 # ┏━━━━━━━━━━ Edge ━━━━━━━━━━┓
 from Utils.edge.edge import (_compute_embargo_splits,

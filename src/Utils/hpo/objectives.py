@@ -164,7 +164,7 @@ def _create_objective(model_name: str,
     NoCal (nocal=True):
       1. Fit model on Train
       2. Skip calibration — use raw probs directly
-      3. Optimize threshold on merged Val-Cal + Val-Opt (same as kronos_tree nocal)
+      3. Optimize threshold on merged Val-Cal + Val-Opt (same as m2_pipeline nocal)
       4. Return utility score as the objective
     """
     suggest_fn = _SUGGEST_FN[model_name]
@@ -217,7 +217,7 @@ def _create_objective(model_name: str,
         # ┏━━━━━━━━━━ Threshold optimization ━━━━━━━━━━┓
         try:
             if nocal and _merged_y is not None:
-                # ┏━━━━━━━━━━ NoCal: raw probs on merged Val-Cal + Val-Opt (mirrors kronos_tree nocal) ━━━━━━━━━━┓
+                # ┏━━━━━━━━━━ NoCal: raw probs on merged Val-Cal + Val-Opt (mirrors m2_pipeline nocal) ━━━━━━━━━━┓
                 raw_cal_probs = model.predict_proba(X_cal_s)[:, 1]
                 raw_opt_probs = model.predict_proba(X_opt_s)[:, 1]
                 merged_probs  = np.concatenate([raw_cal_probs, raw_opt_probs])

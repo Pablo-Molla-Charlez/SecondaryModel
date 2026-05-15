@@ -1,11 +1,10 @@
 # Secondary-Model
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Kronos-M2%20Tree%20Stack-0f766e?style=for-the-badge" alt="Kronos M2 Tree Stack" />
   <img src="https://img.shields.io/badge/Models-Utils%2Fclassifier%2F-1d4ed8?style=for-the-badge" alt="Models Utils classifier" />
   <img src="https://img.shields.io/badge/Config-config.yaml-2563eb?style=for-the-badge" alt="Config config yaml" />
   <img src="https://img.shields.io/badge/Outputs-src%2FOutput-f59e0b?style=for-the-badge" alt="Outputs src Output" />
-  <img src="https://img.shields.io/badge/Diagnostics-Edge%20%7C%20Backtest%20%7C%20Analysis-7c3aed?style=for-the-badge" alt="Diagnostics" />
+  <img src="https://img.shields.io/badge/Diagnostics-Backtest%20%7C%20Analysis-7c3aed?style=for-the-badge" alt="Diagnostics" />
 </p>
 
 > Current `src/` workspace for the Secondary Model of the Meta-Labeling architecture, which operates on top of foundation models: **Kronos**, **Fincast**, **Chronos2**, **Tirex**.
@@ -83,7 +82,7 @@ The pipeline follows the standard three-way chronological split, with temporal e
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;<br/><small>Risk-Profi <i>τ</i></small>"]:::val
-    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>Performance   </small>"]:::test
+    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>and Backtest</small>"]:::test
     
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
@@ -93,7 +92,7 @@ flowchart LR
 
 | Window | Purpose |
 | --- | --- |
-| **Train** | Fitting the base classifier (RF, AutoGluon, TabPFN, TabICL, or TabM). |
+| **Train** | Fitting the base classifier (Random Forest, AutoGluon, TabPFN, TabICL, or TabM). |
 | **Validation** | Searching for the optimal financial utility threshold via grid search. |
 | **Test** | Final, isolated out-of-sample backtest — never touched during training or tuning. |
 
@@ -108,8 +107,8 @@ We enforce **Temporal Embargoes** at every boundary. A purge window (based on th
 
 Two modes are available via `runtime.training.thres`:
 
-- **`utility`** — optimizes τ on raw model probabilities directly.
-- **`utility_nocal`** — same grid search but skips any probability post-processing. **In our experiments this mode consistently produced better selective-classification results** and is the recommended setting.
+- **`utility`** — fits an Isotonic Regression calibrator on Val-Cal, then optimizes τ on the **calibrated** Val-Opt probabilities.
+- **`utility_nocal`** — skips calibration, merges Val-Cal + Val-Opt into a single Validation window, and optimizes τ directly on the model's raw probabilities. **In our experiments this mode consistently produced better selective-classification results** and is the recommended setting.
 
 The threshold τ is chosen on the **Validation** split via a single-stage grid search. The winning τ is then applied fixed to Test.
 
@@ -136,7 +135,7 @@ If no threshold satisfies all Stage A constraints, the function returns τ = 0.5
 
 ---
 
-## Utils/ Package Architecture
+## Utils Architecture
 
 The `Utils/` directory is a fully modular Python package tree. Each subdirectory is a standalone package with a curated public API in its `__init__.py`.
 
@@ -148,13 +147,27 @@ src/Utils/
 │
 ├── classifier/                        # MODEL REGISTRY — single source of truth for all classifiers
 │   ├── _classifier.py                 # BaseClassifier ABC (fit/predict/predict_proba/get_params/save/load)
-│   ├── random_forest_classifier.py    # RFClassifier (sklearn RF with OOB support)
-│   ├── tabpfn_classifier.py           # TabPFN zero-shot wrapper (full HPO search space)
+│   ├── random_forest_classifier.py    # RFClassifier (sklearn Random Forest with OOB support)
+│   ├── tabpfn_classifier.py           # TabPFN zero-shot wrapper
 │   ├── tabpfn_finetuned_classifier.py # TabPFNFineTuned gradient-based fine-tuning wrapper
 │   ├── tabicl_classifier.py           # TabICL in-context learning wrapper
+│   ├── tabm_classifier.py             # TabM wrapper (parallel MLPs, optional PLE embeddings)
+│   ├── ctts_classifier.py             # CTTS (CNN + Transformer) classifier
+│   ├── ctts/                          # CTTS internal modules (cnn / transformer / mlp blocks)
 │   ├── autogluon_classifier.py        # AutoGluon multi-stack wrapper
 │   ├── factory.py                     # _build_tree_model(), MODEL_CHOICES, MODELS_NO_SCALING
 │   └── __init__.py                    # re-exports all classifiers + factory symbols
+│
+├── analysis/                          # META-LABEL & M2 RESULT ANALYSIS
+│   ├── analysis_meta_labels.py        # meta-label distributions, dataset-size plots, return quality
+│   ├── analysis_m2.py                 # M2 result matrices, radars, selective-return distributions
+│   └── __init__.py
+│
+├── calibration/                       # PROBABILITY CALIBRATION STUDIES
+│   ├── analysis.py                    # isotonic / Platt calibration evaluation
+│   ├── plots.py                       # reliability diagrams, calibration metrics
+│   ├── __main__.py                    # entrypoint: python -m Utils.calibration
+│   └── __init__.py
 │
 ├── feature_selection/                 # FEATURE ANALYSIS
 │   ├── feature_selection.py           # MDI/MDA/SFI importance, selection logic
@@ -176,7 +189,16 @@ src/Utils/
 │   ├── data.py                        # MultiGranDataset, split_by_global_time, load_dataset_from_config
 │   └── __init__.py
 │
-├── edge/                              # EDGE CONVERGENCE (Gate Keeper)
+├── data_loaders/                      # FRAMEWORK-SPECIFIC DATA LOADERS
+│   └── tabular_data_loader.py         # PyTorch DataLoader for tabular models (TabM / CTTS)
+│
+├── ts_cross_validation/               # TIME-SERIES CROSS-VALIDATION PRIMITIVES
+│   ├── combinatorial_purged_cv.py     # CPCV (datetime-based default)
+│   ├── purged_embargo_cv.py           # PurgedEmbargoTimeSeriesCV
+│   ├── embargo_splits.py              # compute_embargo_splits helpers
+│   └── __init__.py
+│
+├── edge/                              # EDGE CONVERGENCE (CPCV regime + seeds stability)
 │   ├── edge.py                        # seeds stability + CPCV regime analysis, convergence scoring
 │   ├── plots.py                       # edge report visualizations
 │   ├── __main__.py                    # entrypoint: python -m Utils.edge
@@ -185,13 +207,15 @@ src/Utils/
 ├── hpo/                               # HYPERPARAMETER OPTIMIZATION (Optuna)
 │   ├── runner.py                      # trial execution, study management
 │   ├── objectives.py                  # per-model objective functions
-│   ├── search_spaces.py               # suggest_* functions (rf, tabpfn, tabicl, autogluon)
+│   ├── search_spaces.py               # suggest_* functions (rf, tabpfn, tabicl, tabm, ctts)
 │   ├── main.py                        # CLI argument parsing
 │   ├── __main__.py                    # entrypoint: python -m Utils.hpo
 │   └── __init__.py
 │
-└── ocp/                               # threshold & diagnostics support module
-    └── __init__.py
+├── ocp/                               # threshold & diagnostics support module
+│   └── __init__.py
+│
+└── feature_selection_experiment.py    # standalone SFS+/RFECV worker (Phase 4)
 ```
 
 ### Import conventions
@@ -223,6 +247,7 @@ All classifiers are `BaseClassifier` subclasses (sklearn-compatible: `fit` / `pr
 
 ### 2. AutoGluon (`autogluon`)
 Automated ML suite: multi-layer stacking and ensembling (Trees, KNN, Linear Models) within a time budget. Useful when no single architecture is known to dominate.
+- **Reference**: [autogluon/autogluon](https://github.com/autogluon/autogluon)
 
 ### 3. TabPFN (Prior-Data Fitted Networks)
 Foundation model for tabular data. Uses In-Context Learning (ICL) — a Transformer pre-trained on synthetic datasets performs zero-shot classification in a single forward pass.
@@ -265,7 +290,7 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 All commands below assume you are in `Secondary-Model/src/`:
 
 ```bash
-cd /home/pablo/M2_DS/Secondary-Model/src
+cd Secondary-Model/src
 conda activate S2
 ```
 
@@ -281,9 +306,9 @@ There is **one** entry point and **one** config. To switch M1 backbones, models,
 conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
-`experiments.py` reads the YAML and fans out subprocesses (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`), passing the **YAML file path** via `--config` plus the CLI selectors `--m2 / --direction / --granularity` per iteration. Workers reload the same YAML, so there is no drift between orchestrator and workers.
+`experiments.py` reads the YAML and fans out subprocesses (`m2_pipeline.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`), passing the **YAML file path** via `--config` plus the CLI selectors `--m2 / --direction / --granularity` per iteration. Workers reload the same YAML, so there is no drift between orchestrator and workers.
 
-**CLI vs config contract.** The config defines *what a slice is made of* (data signature, splits, threshold/HPO knobs, output root). CLI args define *which slice a given invocation runs* (`--m2`, `--direction`, `--granularity`, `--phase`). The `experiment.{m2, direction, granularity}` lists in the config are read only by `experiments.py`, which explodes them into per-slice invocations. Each subprocess honours its CLI selectors *exactly* — `--direction up --granularity 1d` trains only up/1d, nothing else.
+**CLI vs config contract.** The config defines *what a slice is made of* (data signature, splits, threshold/HPO knobs, output root). CLI args define *which slice a given invocation runs* (`--m2`, `--direction`, `--granularity`, `--phase`). The `experiment.{m2, direction, granularity}` lists in the config are read only by `experiments.py`, which expands them into per-slice invocations. Each subprocess honours its CLI selectors *exactly* — `--direction up --granularity 1d` trains only up/1d, nothing else.
 
 #### Config knobs that drive the run
 
@@ -296,7 +321,7 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 | `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
 | `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
 | `runtime.training` | `thres`, `all_grans` | Training-phase knobs: threshold selection mode (`utility` or `utility_nocal`) and unified-vs-per-gran mode. |
-| `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — `n_trials` seeds (RF/XGBoost only) + CPCV shape (`n_blocks`, `k_test`). |
+| `runtime.edge` | `n_trials`, `n_blocks`, `k_test` | Edge convergence protocol — `n_trials` seeds (Random Forest/XGBoost only) + CPCV shape (`n_blocks`, `k_test`). |
 | `runtime.combined` | `combined_backtest` | Populated automatically by `experiments.py`; leave as-is. |
 | `runtime.feature_selection` | `cv_strategy`, `n_blocks`, `k_test`, `method`, `scoring`, `min_features`, `max_features`, `take_n_best_combinations` | SFS+/RFECV feature-selection knobs. |
 
@@ -304,23 +329,23 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 
 | Phase | What it runs | Enable via |
 | --- | --- | --- |
-| **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl"}` are skipped automatically. | `runtime.skip.hpo: false` |
-| **1. Train** | `kronos_tree.py` per `(m2 × direction × granularity)` — train → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
-| **2. Edge** | `python -m Utils.edge` — runs CPCV for all models; additionally runs `seeds` → `convergence` for RF/XGBoost only. CPCV splits reuse HPO best_params (RF/TabPFN/TabICL) and Phase 1 best hyperparameters (AutoGluon). | `runtime.skip.edge: false` |
-| **3. Combined** | `kronos_tree.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: false` |
-| **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: false` |
+| **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm", "ctts"}` are skipped automatically. | `runtime.skip.hpo: false` |
+| **1. Train** | `m2_pipeline.py` per `(m2 × direction × granularity)` — train → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
+| **2. Edge** | `python -m Utils.edge` — runs CPCV for all models; additionally runs `seeds` → `convergence` for Random Forest/XGBoost only. CPCV splits reuse HPO best_params (Random Forest/TabPFN/TabICL) and Phase 1 best hyperparameters (AutoGluon). | `runtime.skip.edge: true` **(disabled for the paper results — flip to `false` only to re-run the edge convergence study)** |
+| **3. Backtest Combined** | `m2_pipeline.py` in `combined` phase — merges each model's UP+DOWN backtests. | `runtime.skip.combined: true` **(disabled for the paper results — flip to `false` only to regenerate the combined-direction backtests)** |
+| **4. Feature selection** | `Utils/feature_selection_experiment.py` — SFS+/RFECV driven by `runtime.feature_selection`. | `runtime.skip.feature_selection: true` **(disabled for the paper results — flip to `false` only to re-run feature selection)** |
 
 #### Hyperparameter reuse chain
 
 Phases run sequentially (0 → 1 → 2 → 3 → 4). HPO results propagate downstream automatically:
 
 ```
-Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train)  ──ag_best_hyperparameters.json──▸  Phase 2 (CPCV)
-                                                                                              ▲
-                        └──────────────────── best_params.json ───────────────────────────────┘
+Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train) ──▸  Phase 2 (CPCV)
+                                                                 ▲
+                        └───── best_params.json ─────────────────┘
 ```
 
-- **RF / TabPFN / TabICL**: `best_params.json` from Phase 0 is loaded by both Phase 1 (`kronos_tree.py` via `_load_best_params`) and Phase 2 (`run_cpcv_analysis` via the same function). Each CPCV split uses `_build_edge_model(..., best_params=...)` → `_build_tree_model(params=...)` so the HPO-tuned hyperparameters are applied consistently.
+- **Random Forest / TabPFN / TabICL**: `best_params.json` from Phase 0 is loaded by both Phase 1 (`m2_pipeline.py` via `_load_best_params`) and Phase 2 (`run_cpcv_analysis` via the same function). Each CPCV split uses `_build_edge_model(..., best_params=...)` → `_build_tree_model(params=...)` so the HPO-tuned hyperparameters are applied consistently.
 - **AutoGluon**: No HPO phase (not in `HPO_SUPPORTED_M2`). Instead, Phase 1 training runs the full AutoML search (`time_limit=3600s, presets=best_quality`) and saves the winning model's type and hyperparameters to `ag_best_hyperparameters.json` via `AutoGluon.save_best_hyperparameters()`. Phase 2 CPCV loads this file via `_load_ag_best_hyperparameters()` and calls `model.fit_with_hyperparameters(X, y, ag_hyperparameters={...})` — training only the known-best model type with locked hyperparameters, no search overhead.
 - **XGBoost / TabPFN_ft**: Use hard-coded defaults from `factory.py` (no HPO, no reuse).
 
@@ -332,9 +357,7 @@ Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train)  ──ag_best_h
 | --- | --- | --- |
 | **0. HPO** | `best_params.json` | `Output/<M1>/HPO/<m2>/<DIR>/<gran>/best_params.json` |
 | **1. Train** | `analysis_summary.json` | `Output/<M1>/<m2>/<DIR>/Utility_Score/<gran>_<mode>/analysis_summary.json` |
-| **2. Edge (Seeds)** | `edge_trials.csv` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/edge_trials.csv` |
-| **2. Edge (CPCV)** | `cpcv_paths.csv` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/cpcv_paths.csv` |
-| **2. Edge (Convergence)** | `convergence_scores_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/convergence_scores_<gran>.json` |
+| **2. Edge (Seeds + CPCV)** | `edge_trials.csv` / `cpcv_paths.csv` / `convergence_scores_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/{edge_trials.csv, cpcv_paths.csv}` and `Output/Analysis/Edge/<M1>/<m2>/<DIR>/convergence_scores_<gran>.json` |
 
 To **force re-execution** of a specific granularity, delete its skip file and re-run `experiments.py`. Global `runtime.skip.<phase>: true` overrides all per-granularity checks — the entire phase is skipped.
 
@@ -342,11 +365,11 @@ To **force re-execution** of a specific granularity, delete its skip file and re
 
 Caches are **always multi-granularity**, one `.pt` per direction. Filename pattern: `multi_<m1>_<forecast_horizon>_fee_<direction>_<hash>.pt`, under `Output/<M1>/cache/`. The hash signs `data.load.*`, `data.window.*`, `data.features.*` and `m1` — any change invalidates the hash and a fresh cache is built on the next run.
 
-- `_resolve_caches` (in [Utils/utils.py](src/Utils/utils.py)) auto-discovers both direction caches on every `kronos_tree.py` invocation; missing directions are built from the config automatically. Both directions are always built on first run, so the next call for the opposite direction is a cache hit.
+- `_resolve_caches` (in [Utils/utils.py](src/Utils/utils.py)) auto-discovers both direction caches on every `m2_pipeline.py` invocation; missing directions are built from the config automatically. Both directions are always built on first run, so the next call for the opposite direction is a cache hit.
 - `_filter_dataset_by_granularity` (also in `Utils/utils.py`) subsets the multi-gran cache to `--granularity` immediately after `torch.load` inside `run_analysis`. Every downstream step (split, HPO-resolved params, temporal eval, backtest) sees only that granularity's rows.
 - `run_combined_backtest` and `run_unified_analysis` intentionally **do not** apply the per-gran filter — they are designed to operate across granularity folders / all granularities respectively.
 
-To force a full rebuild: delete the existing `.pt` files under `Output/<M1>/cache/` and rerun any `kronos_tree.py` command.
+To force a full rebuild: delete the existing `.pt` files under `Output/<M1>/cache/` and rerun any `m2_pipeline.py` command.
 
 #### Final production-model persistence
 
@@ -363,7 +386,7 @@ Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<mode>/final_model/
 
 `<DIR>` is `UP` or `DOWN` (from `--direction`); `<gran>` is the CLI `--granularity`; `<mode>` is `data.load.meta_label_mode` (`tp`/`fp`/`og`).
 
-CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py::_save_final_model`](src/Utils/classifier/factory.py). For AutoGluon, `save_best_hyperparameters()` additionally writes a JSON file that Phase 2 CPCV reads to avoid re-running the 3600s AutoML search per split.
+CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py:_save_final_model`](src/Utils/classifier/factory.py). For AutoGluon, `save_best_hyperparameters()` additionally writes a JSON file with such parameters.
 
 #### Switching M1 backbone
 
@@ -371,12 +394,12 @@ Edit three fields together, then run `experiments.py`:
 
 ```yaml
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Fincast/Crypto/TP/horizon_7"
+  csv_dir: "Data_MLA/Fincast/Crypto/TP/horizon_7"   # <-- model name with uppercase first letter
 experiment:
-  m1: "fincast"
+  m1: "fincast"       <--- Change the name of the model (lowercase)
 data:
   load:
-    m1: "fincast"
+    m1: "fincast"     <--- Change the name of the model (lowercase)
 ```
 
 `_load_config` validates that `data.load.m1` is consistent with `paths.csv_dir` and aborts with a clear error if they disagree.
@@ -387,10 +410,10 @@ data:
 
 ### `Utils/hpo/` — Hyperparameter Optimization
 
-HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip.hpo: false`). Both Phase 1 (training) and Phase 2 (CPCV) read the resulting `best_params.json` automatically via `Utils.utils._load_best_params`, so HPO-tuned hyperparameters are consistently applied across the main training run and all 15 CPCV splits. You can also invoke HPO directly as a standalone CLI when you want to tune a specific `(model, direction, granularity)` combination without running the full pipeline — it reads the same `config.yaml` for paths, splits, and fees.
+HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip.hpo: false`). Both Phase 1 (training) and Phase 2 read the resulting `best_params.json` automatically via `Utils.utils._load_best_params`, so HPO-tuned hyperparameters are consistently applied across the main training run and for Phase 2. You can also invoke HPO directly as a standalone CLI when you want to tune a specific `(model, direction, granularity)` combination without running the full pipeline — it reads the same `config.yaml` for paths, splits, and fees.
 
 ```bash
-# HPO for RF — up direction, 4h granularity, 50 trials
+# ┏━━━━━━━━━━ HPO for Random Forest — up direction, 4h granularity, 50 trials ━━━━━━━━━━┓
 conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models rf \
@@ -398,7 +421,7 @@ conda run -n S2 python -m Utils.hpo \
   --grans 4h \
   --n-trials 50
 
-# HPO for TabPFN + TabICL — both directions, multiple granularities
+# ┏━━━━━━━━━━ TabPFN + TabICL — both directions, multiple granularities ━━━━━━━━━━┓
 conda run -n S2 python -m Utils.hpo \
   --config config.yaml \
   --models tabpfn tabicl \
@@ -462,12 +485,16 @@ Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.jso
 | --- | --- |
 | `config.yaml` | **Single source of truth** — paths, dates, features, M1 backbone, M2 model list, phase toggles, edge/feature-selection parameters. |
 | `Utils/experiments.py` | **User entry point.** Reads `config.yaml`, orchestrates training → edge → combined → feature-selection phases across every `(m2 × direction × granularity)` combination. |
-| `kronos_tree.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with `--config <yaml> --m2 <x> --direction <up\|down> --granularity <gran>`. Supports direct invocation with the same CLI for targeted runs. |
+| `m2_pipeline.py` | Worker for training and combined phases; invoked as a subprocess by `experiments.py` with `--config <yaml> --m2 <x> --direction <up\|down> --granularity <gran>`. Supports direct invocation with the same CLI for targeted runs. |
 | `Utils/feature_selection_experiment.py` | Worker for the feature-selection phase; invoked as a subprocess by `experiments.py`. |
 | `Utils/classifier/` | Central model registry: `BaseClassifier` ABC, all classifier wrappers, `_build_tree_model` factory, `MODEL_CHOICES`, `MODELS_NO_SCALING`. |
-| `Utils/edge/` | Worker for the edge phase — CPCV regime sensitivity (all models) + optional seeds stability (RF/XGBoost only). CPCV splits reuse HPO best_params and AutoGluon best hyperparameters from Phase 1. Invoked as `python -m Utils.edge` by `experiments.py`. |
+| `Utils/edge/` | Worker for the edge phase — CPCV regime sensitivity (all models) + optional seeds stability (Random Forest/XGBoost only). CPCV splits reuse HPO best_params and AutoGluon best hyperparameters from Phase 1. Invoked as `python -m Utils.edge` by `experiments.py`. |
 | `Utils/data/` | Dataset loading, multi-asset assembly, multi-granularity wrapping, chronological splitting, embargo/purge logic. |
-| `Utils/feature_selection/` | Feature diagnostic plots (correlation heatmap, pointbiserial, MI, confusion matrix, risk-coverage curve). Meta-label and M2 result plots live in `Utils/analysis/`; CPCV/edge plots in `Utils/edge/plots.py`. |
+| `Utils/data_loaders/` | Framework-specific data loaders (PyTorch `DataLoader` for tabular models such as TabM and CTTS). |
+| `Utils/ts_cross_validation/` | CPCV, PurgedEmbargoTimeSeriesCV, and embargo-split helpers consumed by `Utils/edge/` and `Utils/feature_selection_experiment.py`. |
+| `Utils/feature_selection/` | Feature diagnostic plots (correlation heatmap, pointbiserial, MI, confusion matrix, risk-coverage curve). |
+| `Utils/analysis/` | Meta-label and M2 result analysis plots (dataset-size, return-quality, selective-return, results matrices, radars). |
+| `Utils/calibration/` | Probability-calibration study CLI (`python -m Utils.calibration`) — reliability diagrams, isotonic vs Platt comparisons. |
 | `Utils/backtest/` | Backtest helpers, equity construction, Sharpe/drawdown, reporting, combined UP+DOWN backtest, comparison tables. |
 | `Utils/hpo/` | Optuna-based HPO — Phase 0 of `experiments.py`. Results consumed by both Phase 1 training and Phase 2 CPCV. CLI: `python -m Utils.hpo`. |
 | `Utils/selective_classification/` | Utility-threshold selection (`utility` / `utility_nocal` modes). |
@@ -482,8 +509,8 @@ The project has exactly **one** config file: [src/config.yaml](src/config.yaml).
 ```yaml
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir:     "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
-  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
+  csv_dir:     "Data_MLA/Kronos/Crypto/TP/horizon_7"
+  output_root: "Output"
 
 # ┏━━━━━━━━━━ Experiment matrix — the cross product that experiments.py sweeps ━━━━━━━━━━┓
 experiment:
@@ -582,7 +609,7 @@ runtime:
 | `data.load.m1` | Must match `experiment.m1` and `paths.csv_dir`. Validated at load time. |
 | `data.load.target_col` | Target column the M2 classifier predicts. |
 | `data.load.meta_label_mode` | Meta-label variant (`tp` is the active setup). |
-| `data.load.direction` | Vestigial — kept for backward-compat. Cache selection is driven by the CLI `--direction`; `_resolve_caches` auto-builds both `up` and `down` caches on first run. |
+| `data.load.direction` | Vestigial — `m2_pipeline.py` requires `--direction` on the CLI (no default fallback to this field). Cache selection is driven by `--direction`; `_resolve_caches` auto-builds both `up` and `down` caches on first run. |
 | `data.load.granularity` | `"all"` enables multi-granularity cache assembly. |
 | `data.load.forecast_horizon` | Prediction horizon; drives return alignment and backtests. |
 
@@ -610,7 +637,7 @@ Flip each flag to `false` to enable its phase. `experiments.py` iterates phases 
 Threshold mode (`utility` or `utility_nocal`) and the `all_grans` toggle for unified-vs-per-gran mode.
 
 #### `runtime.edge`
-Seeds trial count (`n_trials`, RF/XGBoost only — ignored for AutoGluon/TabPFN/TabICL), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
+Seeds trial count (`n_trials`, Random Forest/XGBoost only — ignored for AutoGluon/TabPFN/TabICL), CPCV block count (`n_blocks`), and CPCV test-block count per split (`k_test`).
 
 #### `runtime.combined`
 `combined_backtest` is **auto-populated** by `experiments.py` from the training phase outputs — don't edit the placeholder pair by hand.
@@ -629,11 +656,15 @@ src/Output/
     │   ├── DOWN/  {Utility_Score/}
     │   └── UP/    {Utility_Score/}
     ├── cache/
-    ├── HPO/                                    # Phase 0 outputs — best_params.json per (m2, dir, gran)
+    ├── HPO/   # Phase 0 outputs — best_params.json per (m2, dir, gran)
     │   └── <m2>/<DIR>/<gran>/best_params.json
     └── rf/
-        ├── DOWN/  {Utility_Score/<gran>_<mode>/final_model/}
-        └── UP/    {Utility_Score/<gran>_<mode>/final_model/}
+        ├── DOWN/
+        │   ├── Utility_Score/<gran>_<mode>/final_model/            # thres = "utility"
+        │   └── Utility_Score_NoCal/<gran>_<mode>/final_model/      # thres = "utility_nocal"
+        └── UP/
+            ├── Utility_Score/<gran>_<mode>/final_model/            # thres = "utility"
+            └── Utility_Score_NoCal/<gran>_<mode>/final_model/      # thres = "utility_nocal"
 ```
 
 - `src/Output/<M1>/` is the active result tree for the currently configured M1 backbone.
@@ -648,12 +679,12 @@ src/Output/
 ## Practical Notes
 
 - The canonical output location for run results is `src/Output/<M1>/` (M1 taken from `experiment.m1`).
-- **Normal runs go through `Utils/experiments.py`**, which orchestrates the `(m2 × direction × granularity)` sweep. Workers (`kronos_tree.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`) accept `--config` as a YAML file path plus CLI selectors (`--m2 / --direction / --granularity`), so they can also be invoked directly for targeted debugging. Each direct invocation runs *exactly* the slice its CLI describes — `--direction up --granularity 1d` does up/1d only.
+- **You can run the pipeline either through `Utils/experiments.py` (full sweep) or by invoking the workers directly.** `experiments.py` orchestrates the `(m2 × direction × granularity)` sweep. The workers — `m2_pipeline.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py` — accept `--config` as a YAML file path plus CLI selectors (`--m2 / --direction / --granularity`) and can be launched on their own for targeted runs or debugging. Each direct invocation runs *exactly* the slice its CLI describes — `--direction up --granularity 1d` does up/1d only.
 - `Utils/feature_selection/` and `Utils/backtest/comparison.py` are library modules; they are reached via the training / feature-selection phases in `experiments.py`, not standalone CLI.
 - Do **not** pre-scale inputs for TabPFN or TabICL — both models normalize features internally. The scaler bypass is controlled by `MODELS_NO_SCALING` in `Utils/classifier/factory.py`.
 - The M2 model list in `experiment.m2` is resolved to concrete classifiers in `Utils/classifier/factory.py` via `_build_tree_model()`.
 - `Utils/hpo` is integrated as Phase 0 of `experiments.py` (toggle via `runtime.skip.hpo`); it also supports a standalone CLI with `--config config.yaml`.
-- Only `rf`, `tabpfn`, `tabicl` are HPO-supported (`HPO_SUPPORTED_M2` in `Utils/utils.py`). Other M2 models skip Phase 0 and use the defaults in `Utils/classifier/factory.py::_build_tree_model`.
+- `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm", "ctts"}` (defined in `Utils/utils.py`). Other M2 models (AutoGluon, XGBoost, TabPFN_ft) skip Phase 0 and use the defaults in `Utils/classifier/factory.py::_build_tree_model`.
 
 ---
 
@@ -661,15 +692,15 @@ src/Output/
 
 ### Dataset & Return Quality Overview
 
-**Meta-label dataset size across M1 models and granularities.** Each bar shows the number of labeled samples available to train the M2 classifier for a given (M1, granularity) pair. Imbalance across granularities is expected — shorter bars at finer granularities reflect stricter label quality filters.
+**Meta-label dataset size across M1 models and granularities.** Each bar shows the number of labeled samples available to train the M2 classifier for a given (M1, granularity) pair. Slight imbalance across granularities is expected — shorter bars at finer granularities reflect stricter label quality filters.
 
 ![Meta-Label Dataset Size](src/Images/Meta_Label_Dataset_Size.png)
 
-**Return quality boxplot — True Positives vs False Positives, aggregated across M1 models.** Each box pair shows the distribution of trade returns for correctly predicted (TP) and incorrectly predicted (FP) signals. A clear positive separation between TP and FP return distributions is the prerequisite for meta-labeling to add value.
+**Return quality boxplot — True Positives vs False Positives, aggregated across M1 models.** Each box pair shows the distribution of trade returns for correctly predicted (TP) and incorrectly predicted (FP) signals for the given M1 model across all granularities (1d, 12h, 8h, 6h, 4h, 2h, 1h, 30m). A clear positive separation between TP and FP return distributions is the prerequisite for meta-labeling to add value.
 
 ![Found Models Return Boxplot](src/Images/Found_Models_Return_Boxplot.png)
 
-**Return distribution histograms per model and direction.** Overlaid kernel density estimates of TP and FP returns for each M1/direction combination. The further apart the TP and FP modes, the stronger the discriminative signal the M2 can exploit.
+**Split violin plots of TP vs FP returns per model and direction.** Each model bar shows a single violin split into TP (green, left half) and FP (red, right half), with inner quartile lines marking the 25th/50th/75th percentiles. The further apart the TP and FP modes are within a violin, the stronger the discriminative signal the M2 can exploit.
 
 ![Found Models Return Distribution](src/Images/Found_Models_Return_Dist.png)
 
@@ -677,9 +708,9 @@ src/Output/
 
 ### TabPFN — 4h UP Example Run
 
-Diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity, UP direction), illustrating the full selective classification and backtest pipeline.
+Diagnostic plots from a representative TabPFN run (Kronos as M1, 4-hour granularity, UP direction), illustrating the full selective classification and backtest pipeline.
 
-**Validation risk-coverage curve.** Plots precision against coverage as the threshold τ is swept from 0.5 to 1.0 on the validation split. The selected τ (marked) is the point that maximises coverage-penalised utility while satisfying all acceptance gates. A steep precision gain at low coverage indicates a well-discriminating model.
+**Validation risk-coverage curve.** Plots precision against coverage as the threshold τ is swept from 0.5 to 0.95 on the validation split. The selected τ (marked) is the threshold value on the x-axis that maximizes the coverage-penalized utility while satisfying all acceptance gates. A steep precision gain at low coverage indicates a well-discriminating model.
 
 ![TabPFN Val Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Val_Risk_Coverage_final.png)
 
@@ -687,7 +718,7 @@ Diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity
 
 ![TabPFN Test Risk Coverage](src/Images/TabPFN_4h_UP/TabPFN_Test_Risk_Coverage_final.png)
 
-**Test selective return distribution.** Histogram of per-trade returns for accepted trades (those with predicted probability ≥ τ) on the test set, split by true outcome (TP vs FP). A right-shifted TP distribution with a heavier positive tail compared to FP indicates the classifier is successfully filtering high-quality trades.
+**Test selective return distribution.** Histogram of per-trade returns for accepted trades (those with predicted probability ≥ τ*) on the test set, split by true outcome (TP vs FP). A right-shifted TP distribution with a heavier positive tail compared to FP indicates the classifier is successfully filtering lower-quality trades leading to loss (false positives) and keeping higher-quality trades leading to gain (true positives).
 
 ![TabPFN Test Selective Return Distribution](src/Images/TabPFN_4h_UP/TabPFN_Test_Selective_Return_Dist.png)
 
@@ -700,6 +731,22 @@ Diagnostic plots from a representative TabPFN run (Kronos M1, 4-hour granularity
 The two tables below are the full result tables from the paper's appendix. Columns: RF = Random Forest, AG = AutoGluon, TPFN = TabPFN, TICL = TabICL, CNNT = CNN-Transformer. Each cell shows `↑ / ↓` for UP/DOWN directions. Negative values are shown in <span style="color:red">red</span>. The **Winner** column reports the per-granularity best (M2, Direction) pair, averaged across the four M1 backbones using **pure mean** (no convergence weighting). The bottom **Mean** row averages across all granularities.
 
 ---
+
+### Table 1 — Selective Classification Performance (M2 Precision, Δ Precision, Coverage)
+
+![M2 Classification Performance Table](src/Images/M2_Classification_Table.png)
+
+---
+
+### Table 2 — Portfolio Performance (M2 Return, Δ Return, Δ Sharpe, N Trades)
+
+![M2 Portfolio Returns Table](src/Images/M2_Returns_Table.png)
+
+---
+
+<!--
+<details>
+<summary>Legacy Markdown tables (kept for reference)</summary>
 
 ### Table 1 — Selective Classification Performance (M2 Precision, Δ Precision, Coverage)
 
@@ -746,6 +793,7 @@ The two tables below are the full result tables from the paper's appendix. Colum
 <summary>Expand full table</summary>
 
 | Gran. | Metric | TiRex RF | TiRex AG | TiRex TPFN | TiRex TICL | TiRex CNNT | Chronos-2 RF | Chronos-2 AG | Chronos-2 TPFN | Chronos-2 TICL | Chronos-2 CNNT | Fincast RF | Fincast AG | Fincast TPFN | Fincast TICL | Fincast CNNT | Kronos RF | Kronos AG | Kronos TPFN | Kronos TICL | Kronos CNNT | Winner (M2↑/M2↓) | Avg value |
+
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 1d | M2 Return | <span style="color:red">-2.2</span> / 66.0 | 0.6 / 97.5 | <span style="color:red">-10.4</span> / 82.0 | <span style="color:red">-13.9</span> / 63.4 | <span style="color:red">-2.2</span> / 6.2 | 25.2 / 123.8 | 0.7 / 111.0 | 5.5 / 66.2 | 15.2 / 70.7 | <span style="color:red">-31.3</span> / <span style="color:red">-19.1</span> | <span style="color:red">-2.1</span> / 74.8 | <span style="color:red">-2.8</span> / 92.1 | <span style="color:red">-15.1</span> / 69.9 | <span style="color:red">-14.4</span> / 76.7 | <span style="color:red">-20.6</span> / 42.0 | 17.9 / 124.3 | 17.9 / 150.6 | 18.2 / 122.4 | 13.9 / 117.8 | <span style="color:red">-1.0</span> / 81.8 | **RF↑ / AG↓** | ↑+9.7 / ↓+112.8 |
 |  | Δ Return | 27.0 / 30.8 | 29.8 / 62.3 | 18.9 / 46.8 | 15.4 / 28.1 | 27.0 / <span style="color:red">-29.0</span> | 58.2 / 101.2 | 33.7 / 88.3 | 38.5 / 43.5 | 48.2 / 48.0 | 1.7 / <span style="color:red">-41.8</span> | 31.7 / 40.3 | 31.0 / 57.6 | 18.7 / 35.4 | 19.5 / 42.2 | 13.2 / 7.5 | 15.5 / 64.0 | 15.5 / 90.4 | 15.9 / 62.2 | 11.5 / 57.6 | <span style="color:red">-3.4</span> / 21.6 |  |  |
@@ -786,7 +834,8 @@ The two tables below are the full result tables from the paper's appendix. Colum
 
 </details>
 
----
+</details>
+-->
 
 ## One-Line Summary
 

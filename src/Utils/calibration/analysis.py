@@ -4,7 +4,7 @@ Each ``collect_*`` function returns a long-format ``pandas.DataFrame`` keyed by
 (m1, m2, direction, granularity, ...). Plotting consumes these DataFrames.
 
 Splits are computed with the exact 4-way embargo split used by
-``kronos_tree.temporal_eval`` and ``Utils.edge`` — see
+``m2_pipeline.temporal_eval`` and ``Utils.edge`` — see
 ``Utils.ts_cross_validation.compute_embargo_splits``.
 """
 from __future__ import annotations

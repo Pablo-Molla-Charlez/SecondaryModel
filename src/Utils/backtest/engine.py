@@ -1,4 +1,4 @@
-"""Financial backtest helpers extracted from kronos_tree.py."""
+"""Financial backtest helpers extracted from m2_pipeline.py."""
 
 from pathlib import Path
 

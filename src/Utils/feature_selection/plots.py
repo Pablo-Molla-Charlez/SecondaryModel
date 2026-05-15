@@ -1,4 +1,4 @@
-"""Feature analysis and plotting helpers extracted from kronos_tree.py.
+"""Feature analysis and plotting helpers extracted from m2_pipeline.py.
 
 After the 2026-05-14 cleanup, this module only contains feature-level
 diagnostics and the final risk-coverage plot. Meta-label diagnostics and

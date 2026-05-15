@@ -3,9 +3,9 @@
 Iterates over the (m2 x direction x granularity) cross product defined in
 `experiment:` and dispatches subprocesses for each enabled phase in `runtime.skip`:
   0. Hyperparameter optimization   → python -m Utils.hpo    (phase=hpo; rf/tabpfn/tabicl/tabm only)
-  1. Per-granularity training      → kronos_tree.py         (phase=training)
+  1. Per-granularity training      → m2_pipeline.py         (phase=training)
   2. Edge convergence protocol     → python -m Utils.edge   (phase=edge)
-  3. Combined UP+DOWN backtest     → kronos_tree.py         (phase=combined)
+  3. Combined UP+DOWN backtest     → m2_pipeline.py         (phase=combined)
   4. Feature selection experiment  → Utils/feature_selection_experiment.py (phase=feature_selection)
 
 Usage:
@@ -125,7 +125,7 @@ def run_experiments(config: dict, config_path: str):
         print(f"{'#' * 70}")
         
         mode = config["data"]["load"]["meta_label_mode"]   # e.g. "tp"
-        # Mirror the folder layout chosen inside kronos_tree.py::run_analysis.
+        # Mirror the folder layout chosen inside m2_pipeline.py::run_analysis.
         _training_thres = config["runtime"]["training"].get("thres", "utility")
         
         # ┏━━━━━━━━━━ Determine thresholding folder based on mode ━━━━━━━━━━┓
@@ -162,7 +162,7 @@ def run_experiments(config: dict, config_path: str):
                         continue
 
                     label = f"Train {m2.upper()} {direction.upper()} {granularity.upper()}"
-                    cmd = [python, "kronos_tree.py",
+                    cmd = [python, "m2_pipeline.py",
                            "--cache_path", cache_path,
                            "--config", config_path,
                            "--phase", "training",
@@ -311,7 +311,7 @@ def run_experiments(config: dict, config_path: str):
                 
                 # ┏━━━━━━━━━━ Run combined backtest ━━━━━━━━━━┓
                 label = f"Combined Backtest {m2.upper()} {granularity.upper()}"
-                cmd = [python, "kronos_tree.py",
+                cmd = [python, "m2_pipeline.py",
                        "--cache_path", "not_needed_here",
                        "--config", json.dumps(config),
                        "--phase", "combined",
