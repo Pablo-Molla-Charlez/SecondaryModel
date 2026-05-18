@@ -14,7 +14,7 @@
   <tr>
     <td bgcolor="#ccfbf1"><strong>Main Entry</strong><br /><code>Utils/experiments.py</code></td>
     <td bgcolor="#dbeafe"><strong>Model Registry</strong><br /><code>Utils/classifier/</code></td>
-    <td bgcolor="#dbeafe"><strong>Unified Config</strong><br /><code>config.yaml</code></td>
+    <td bgcolor="#dbeafe"><strong>Config</strong><br /><code>config.yaml</code></td>
     <td bgcolor="#fef3c7"><strong>Outputs</strong><br /><code>src/Output/&lt;M1&gt;/</code></td>
     <td bgcolor="#ede9fe"><strong>Diagnostics</strong><br /><code>src/Output/Analysis/</code></td>
   </tr>
@@ -82,7 +82,7 @@ The pipeline follows the standard three-way chronological split, with temporal e
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;<br/><small>Risk-Profi <i>τ</i></small>"]:::val
-    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>and Backtest</small>"]:::test
+    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>& Backtest</small>"]:::test
     
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
@@ -317,7 +317,7 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 | `experiment` | `m1` | M1 backbone — one of `kronos`, `fincast`, `chronos2`, `tirex`. **Must also update `paths.csv_dir` and `data.load.m1` to match.** |
 | `experiment` | `m2` | List of M2 models to run (`rf`, `xgboost`, `autogluon`, `tabpfn`, `tabpfn_ft`, `tabicl`). |
 | `experiment` | `direction` | List of directions (`up`, `down`, or both). |
-| `experiment` | `granularity` | List of granularities from `GRAN_ORDER` (`1d`, `12h`, `8h`, `6h`, `4h`, `2h`, `1h`, `30m`, `15m`, `5m`). |
+| `experiment` | `granularity` | List of granularities from `GRAN_ORDER` (`1d`, `12h`, `8h`, `6h`, `4h`, `2h`, `1h`, `30m`). |
 | `runtime.skip` | `hpo` / `training` / `edge` / `combined` / `feature_selection` | Flip to `false` to enable each phase. `true` skips it. |
 | `runtime.hpo` | `n_trials`, `seed` | Phase 0 Optuna knobs — number of trials per `(m2 × direction × granularity)` and TPE sampler seed. Only `rf`, `tabpfn`, `tabicl` are HPO-supported; others skip HPO. |
 | `runtime.training` | `thres`, `all_grans` | Training-phase knobs: threshold selection mode (`utility` or `utility_nocal`) and unified-vs-per-gran mode. |
@@ -517,12 +517,12 @@ experiment:
   m1:          "kronos"                            # kronos | fincast | chronos2 | tirex
   m2:          ["rf"]                              # rf | xgboost | autogluon | tabpfn | tabpfn_ft | tabicl
   direction:   ["up", "down"]
-  granularity: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m", "15m", "5m"]
+  granularity: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
 
 # ┏━━━━━━━━━━ Data ━━━━━━━━━━┓
 data:
   load:
-    symbol:           null           # null → multi-asset; or ["BTC", "ETH", ...]
+    symbol:           null           # null → all assets (required for meaningful training)
     m1:               "kronos"       # MUST match experiment.m1 and paths.csv_dir
     target_col:       "meta_label"
     meta_label_mode:  "tp"           # fp | tp | og
@@ -605,7 +605,7 @@ runtime:
 #### `data.load`
 | Key | Meaning |
 | --- | --- |
-| `data.load.symbol` | `null` = multi-asset; set a list for asset-specific runs. |
+| `data.load.symbol` | Always `null` — the pipeline requires all assets for sufficient training samples. |
 | `data.load.m1` | Must match `experiment.m1` and `paths.csv_dir`. Validated at load time. |
 | `data.load.target_col` | Target column the M2 classifier predicts. |
 | `data.load.meta_label_mode` | Meta-label variant (`tp` is the active setup). |
