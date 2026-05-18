@@ -153,8 +153,7 @@ def run_feature_backtest(dataset,
                          desc        = "all features",
                          file_prefix = "10_backtest_all",
                          fee         = 0.0,
-                         thres_mode  = "utility",
-                         ocp_alpha   = 0.10):
+                         thres_mode  = "utility"):
     """Equity curve plot + per-asset table + ROI report for RF/XGB/AG selective model."""
     # ┏━━━━━━━━━━ Model Label & Split Indices ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
@@ -216,10 +215,7 @@ def run_feature_backtest(dataset,
     probs_raw = model.predict_proba(X_test)[:, 1]
     calibrator = artifacts.get("calibrator")
     probs = calibrator.predict(probs_raw) if calibrator is not None else probs_raw
-    if thres_mode.startswith("OCP") and "_ocp_test_approved" in val_op:
-        m2_approved = val_op["_ocp_test_approved"]
-    else:
-        m2_approved = probs >= threshold
+    m2_approved = probs >= threshold
 
     # ┏━━━━━━━━━━ Apply Direction ━━━━━━━━━━┓
     if direction.lower() == "down":
@@ -256,13 +252,6 @@ def run_feature_backtest(dataset,
     horizon = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7))
     m2_df = df_trades[df_trades["m2_approved"]]
 
-    # ┏━━━━━━━━━━ Check for Utility Threshold Approval ━━━━━━━━━━┓
-    has_m2_util = False
-    if thres_mode.startswith("OCP"):
-        m2_util_approved = probs >= val_op["threshold"]
-        m2_util_df = df_trades[m2_util_approved].copy()
-        has_m2_util = len(m2_util_df) > 0
-
     # ┏━━━━━━━━━━ Load Raw Close Prices ━━━━━━━━━━┓
     raw_close = _load_raw_close_prices(cfg, granularity, direction=direction)
     has_bh = len(raw_close) > 0
@@ -281,16 +270,10 @@ def run_feature_backtest(dataset,
     # ┏━━━━━━━━━━ Build Equity Curves ━━━━━━━━━━┓
     m1_equity, _ = _build_spread_equity(df_trades, full_idx, horizon)
     m2_equity, _ = _build_spread_equity(m2_df, full_idx, horizon)
-    if has_m2_util:
-        m2_util_equity, _ = _build_spread_equity(m2_util_df, full_idx, horizon)
 
     # ┏━━━━━━━━━━ Calculate Per-Asset Returns ━━━━━━━━━━┓
     asset_m1_rets = df_trades.groupby("asset")["return"].mean()
     asset_m2_rets = m2_df.groupby("asset")["return"].mean() if len(m2_df) > 0 else pd.Series(dtype=float)
-    if has_m2_util:
-        asset_m2_util_rets = (
-            m2_util_df.groupby("asset")["return"].mean() if len(m2_util_df) > 0 else pd.Series(dtype=float)
-        )
 
     # ┏━━━━━━━━━━ Calculate Execution Rate ━━━━━━━━━━┓
     execution_rate = m2_approved.sum() / len(m2_approved) * 100 if len(m2_approved) > 0 else 0
@@ -304,8 +287,7 @@ def run_feature_backtest(dataset,
     m1_wr = m1_good / n_total * 100 if n_total > 0 else 0
 
     # ┏━━━━━━━━━━ Define Strategy Names ━━━━━━━━━━┓
-    m2_name = f"M2 {mlabel} {thres_mode}" if thres_mode.startswith("OCP") else f"M2 {mlabel} selective"
-    m2_util_name = f"M2 {mlabel} Utility"
+    m2_name = f"M2 {mlabel} selective"
     m1_name = f"{_m1_display_label(cfg)} (all trades)"
     bh_name = "Buy & Hold"
 
@@ -328,23 +310,9 @@ def run_feature_backtest(dataset,
                            "mdd": _calc_drawdown(bh_equity.values) * 100,
                            "sharpe": _calc_sharpe(bh_h_rets, ann_horizon)}
     
-    # ┏━━━━━━━━━━ Add Utility Threshold Strategy Statistics ━━━━━━━━━━┓
-    if has_m2_util:
-        m2u_h_rets = _equity_horizon_returns(m2_util_equity, horizon) if len(m2_util_equity) > horizon else np.array([])
-        n_m2_util = int(m2_util_approved.sum())
-        m2_util_exec = n_m2_util / len(m2_util_approved) * 100 if len(m2_util_approved) > 0 else 0
-        strats[m2_util_name] = {"total_ret": (m2_util_equity.iloc[-1] - 1) * 100 if len(m2_util_equity) > 0 else 0,
-                                "mdd": _calc_drawdown(m2_util_equity.values) * 100 if len(m2_util_equity) > 0 else 0,
-                                "sharpe": _calc_sharpe(m2u_h_rets, ann_horizon)}
-
-    # ┏━━━━━━━━━━ Determine OCP vs Utility Threshold ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Utility Threshold ━━━━━━━━━━┓
     direction_label = direction.upper()
-    if thres_mode.startswith("OCP") and "_ocp_test_thresholds" in val_op:
-        ocp_s_hats = val_op["_ocp_test_thresholds"]
-        threshold = float(np.median(np.maximum(ocp_s_hats, 1.0 - ocp_s_hats)))
-        constraint_tag = f"{thres_mode} Median-Adaptive"
-    else:
-        constraint_tag = "Utility-Opt" if val_op["constraint_satisfied"] else "fallback"
+    constraint_tag = "Utility-Opt" if val_op["constraint_satisfied"] else "fallback"
     fee_tag = f" fee={fee*100:.2f}%" if fee > 0 else ""
 
     # ┏━━━━━━━━━━ Plot Equity Curves ━━━━━━━━━━┓
@@ -355,12 +323,6 @@ def run_feature_backtest(dataset,
             label=f"{m2_name} (SR: {strats[m2_name]['sharpe']:.2f}, Exec: {execution_rate:.1f}%)",
             color="green",
             linewidth=3.0)
-    if has_m2_util:
-        ax.plot((m2_util_equity - 1) * 100,
-                label=f"{m2_util_name} (SR: {strats[m2_util_name]['sharpe']:.2f}, Exec: {m2_util_exec:.1f}%)",
-                color="#E67E22",
-                linewidth=2.5,
-                linestyle="--")
     ax.plot((m1_equity - 1) * 100,
             label=f"{m1_name} (SR: {strats[m1_name]['sharpe']:.2f})",
             color="blue",
@@ -388,94 +350,37 @@ def run_feature_backtest(dataset,
 
     all_assets = sorted(df_trades["asset"].unique())
     table_data = []
-    if has_m2_util:
-        m2_util_counts = m2_util_df.groupby("asset").size() if len(m2_util_df) > 0 else pd.Series(dtype=int)
-        for asset in all_assets:
-            m2_a  = asset_m2_rets.get(asset, 0.0) * 100
-            m2u_a = asset_m2_util_rets.get(asset, 0.0) * 100
-            m1_a  = asset_m1_rets.get(asset, 0.0) * 100
-            bh_a  = asset_bh_rets.get(asset, 0.0) * 100 if has_bh else 0.0
-            m2_n  = int(m2_counts.get(asset, 0))
-            m2u_n = int(m2_util_counts.get(asset, 0))
-            m1_n  = int(m1_counts.get(asset, 0))
-            table_data.append(
-                [
-                    asset,
-                    f"{m2_a:+.1f}% ({m2_n})",
-                    f"{m2u_a:+.1f}% ({m2u_n})",
-                    f"{m1_a:+.1f}% ({m1_n})",
-                    f"{bh_a:+.1f}%",
-                ]
-            )
-    else:
-        for asset in all_assets:
-            m2_a = asset_m2_rets.get(asset, 0.0) * 100
-            m1_a = asset_m1_rets.get(asset, 0.0) * 100
-            bh_a = asset_bh_rets.get(asset, 0.0) * 100 if has_bh else 0.0
-            m2_n = int(m2_counts.get(asset, 0))
-            m1_n = int(m1_counts.get(asset, 0))
-            table_data.append([asset, f"{m2_a:+.1f}% ({m2_n})", f"{m1_a:+.1f}% ({m1_n})", f"{bh_a:+.1f}%"])
+    for asset in all_assets:
+        m2_a = asset_m2_rets.get(asset, 0.0) * 100
+        m1_a = asset_m1_rets.get(asset, 0.0) * 100
+        bh_a = asset_bh_rets.get(asset, 0.0) * 100 if has_bh else 0.0
+        m2_n = int(m2_counts.get(asset, 0))
+        m1_n = int(m1_counts.get(asset, 0))
+        table_data.append([asset, f"{m2_a:+.1f}% ({m2_n})", f"{m1_a:+.1f}% ({m1_n})", f"{bh_a:+.1f}%"])
 
     # ┏━━━━━━━━━━ Calculate Portfolio Statistics ━━━━━━━━━━┓
     ptf = {k: strats[k]["total_ret"] for k in [m2_name, m1_name]}
     ptf[bh_name] = strats[bh_name]["total_ret"] if has_bh else 0.0
-    if has_m2_util:
-        ptf[m2_util_name] = strats[m2_util_name]["total_ret"]
-        table_data.append(
-            [
-                "Portfolio Return",
-                f"{ptf[m2_name]:+.2f}%",
-                f"{ptf[m2_util_name]:+.2f}%",
-                f"{ptf[m1_name]:+.2f}%",
-                f"{ptf[bh_name]:+.2f}%",
-            ]
-        )
-        avg_m2 = m2_df["return"].mean() * 100 if len(m2_df) > 0 else 0.0
-        avg_m2u = m2_util_df["return"].mean() * 100 if len(m2_util_df) > 0 else 0.0
-        avg_m1 = df_trades["return"].mean() * 100
-        avg_bh = asset_bh_rets.mean() * 100 if has_bh and len(asset_bh_rets) > 0 else 0.0
-        table_data.append(
-            [
-                "Avg Ret/Trade",
-                f"{avg_m2:+.2f}% ({n_approved})",
-                f"{avg_m2u:+.2f}% ({n_m2_util})",
-                f"{avg_m1:+.2f}% ({n_total})",
-                f"{avg_bh:+.2f}%",
-            ]
-        )
-        mdd = {k: strats[k]["mdd"] for k in [m2_name, m2_util_name, m1_name]}
-        mdd[bh_name] = strats[bh_name]["mdd"] if has_bh else 0.0
-        table_data.append(
-            [
-                "Max Drawdown",
-                f"{mdd[m2_name]:+.2f}%",
-                f"{mdd[m2_util_name]:+.2f}%",
-                f"{mdd[m1_name]:+.2f}%",
-                f"{mdd[bh_name]:+.2f}%",
-            ]
-        )
-        col_labels = ["Asset", "M2 OCP", "M2 Utility", _m1_display_label(cfg), "B&H"]
-    else:
-        table_data.append(
-            ["Portfolio Return", f"{ptf[m2_name]:+.2f}%", f"{ptf[m1_name]:+.2f}%", f"{ptf[bh_name]:+.2f}%"]
-        )
-        avg_m2 = m2_df["return"].mean() * 100 if len(m2_df) > 0 else 0.0
-        avg_m1 = df_trades["return"].mean() * 100
-        avg_bh = asset_bh_rets.mean() * 100 if has_bh and len(asset_bh_rets) > 0 else 0.0
-        table_data.append(
-            [
-                "Avg Ret/Trade",
-                f"{avg_m2:+.2f}% ({n_approved})",
-                f"{avg_m1:+.2f}% ({n_total})",
-                f"{avg_bh:+.2f}%",
-            ]
-        )
-        mdd = {k: strats[k]["mdd"] for k in [m2_name, m1_name]}
-        mdd[bh_name] = strats[bh_name]["mdd"] if has_bh else 0.0
-        table_data.append(
-            ["Max Drawdown", f"{mdd[m2_name]:+.2f}%", f"{mdd[m1_name]:+.2f}%", f"{mdd[bh_name]:+.2f}%"]
-        )
-        col_labels = ["Asset", f"M2 {mlabel}", _m1_display_label(cfg), "B&H"]
+    table_data.append(
+        ["Portfolio Return", f"{ptf[m2_name]:+.2f}%", f"{ptf[m1_name]:+.2f}%", f"{ptf[bh_name]:+.2f}%"]
+    )
+    avg_m2 = m2_df["return"].mean() * 100 if len(m2_df) > 0 else 0.0
+    avg_m1 = df_trades["return"].mean() * 100
+    avg_bh = asset_bh_rets.mean() * 100 if has_bh and len(asset_bh_rets) > 0 else 0.0
+    table_data.append(
+        [
+            "Avg Ret/Trade",
+            f"{avg_m2:+.2f}% ({n_approved})",
+            f"{avg_m1:+.2f}% ({n_total})",
+            f"{avg_bh:+.2f}%",
+        ]
+    )
+    mdd = {k: strats[k]["mdd"] for k in [m2_name, m1_name]}
+    mdd[bh_name] = strats[bh_name]["mdd"] if has_bh else 0.0
+    table_data.append(
+        ["Max Drawdown", f"{mdd[m2_name]:+.2f}%", f"{mdd[m1_name]:+.2f}%", f"{mdd[bh_name]:+.2f}%"]
+    )
+    col_labels = ["Asset", f"M2 {mlabel}", _m1_display_label(cfg), "B&H"]
 
     # ┏━━━━━━━━━━ Set Column Widths ━━━━━━━━━━┓
     n_cols_tbl = len(col_labels)

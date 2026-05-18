@@ -474,7 +474,7 @@ def run_paradigm_comparison(dirs: list):
     dirs = [Path(d) for d in dirs]
     dir_labels = [d.name for d in dirs]
     short_labels = [
-        d.replace("_7_fees", "").replace("_7_OCP_new", "+OCP").replace("_7_OCP_old", "+OCP_old").replace("_", " ")
+        d.replace("_7_fees", "").replace("_", " ")
         for d in dir_labels
     ]
 

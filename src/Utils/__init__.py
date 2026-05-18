@@ -11,7 +11,6 @@ from Utils import data as _data
 from Utils import classifier as _classifier
 from Utils import feature_selection as _feature_selection
 from Utils import backtest as _backtest
-from Utils import ocp as _ocp
 from Utils import hpo as _hpo
 from Utils import edge as _edge
 
@@ -20,13 +19,10 @@ _sys.modules.setdefault("Utils.data_preprocessing", _data)
 _sys.modules.setdefault("Utils.models",             _classifier)
 _sys.modules.setdefault("Utils.features",           _feature_selection)
 _sys.modules.setdefault("Utils.comparison",         _backtest)
-_sys.modules.setdefault("Utils.saocp",              _ocp)
-_sys.modules.setdefault("Utils.ocp_analysis",       _ocp)
-_sys.modules.setdefault("Utils.ocp_theory",         _ocp)
 _sys.modules.setdefault("Utils.HPO",                _hpo)
 
 # ┏━━━━━━━━━━ Cleanup ━━━━━━━━━━┓
-del _sys, _data, _classifier, _feature_selection, _backtest, _ocp, _hpo, _edge
+del _sys, _data, _classifier, _feature_selection, _backtest, _hpo, _edge
 
 # ┏━━━━━━━━━━ Data hot symbols ━━━━━━━━━━┓
 from Utils.data import (split_by_global_time,

@@ -129,9 +129,7 @@ def run_experiments(config: dict, config_path: str):
         _training_thres = config["runtime"]["training"].get("thres", "utility")
         
         # ┏━━━━━━━━━━ Determine thresholding folder based on mode ━━━━━━━━━━┓
-        if _training_thres.startswith("OCP"):
-            thres_folder = _training_thres
-        elif _training_thres == "utility_nocal":
+        if _training_thres == "utility_nocal":
             thres_folder = "Utility_Score_NoCal"
         else:
             thres_folder = "Utility_Score"
@@ -177,7 +175,6 @@ def run_experiments(config: dict, config_path: str):
         # Threshold-selection mode chosen for the training phase also drives edge:
         # utility       → Edge/ folder (isotonic calibration in CPCV splits)
         # utility_nocal → Edge_NoCal/ folder (no calibration; raw τ* sweep)
-        # OCP*          → Edge/ folder (CPCV stays on utility logic regardless)
         _thres_mode = config["runtime"]["training"].get("thres", "utility")
         _edge_nocal = (_thres_mode == "utility_nocal")
         _edge_folder = "Edge_NoCal" if _edge_nocal else "Edge"

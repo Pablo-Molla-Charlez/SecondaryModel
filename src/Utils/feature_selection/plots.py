@@ -1,10 +1,9 @@
 """Feature analysis and plotting helpers extracted from m2_pipeline.py.
 
-After the 2026-05-14 cleanup, this module only contains feature-level
-diagnostics and the final risk-coverage plot. Meta-label diagnostics and
-M2 result-aggregation plots live in ``Utils.analysis``. CPCV/edge plots
-live in ``Utils.edge.plots``. The OCP threshold-evolution plot lives in
-``Utils.ocp.plots``.
+This module only contains feature-level diagnostics and the final
+risk-coverage plot. Meta-label diagnostics and M2 result-aggregation
+plots live in ``Utils.analysis``. CPCV/edge plots live in
+``Utils.edge.plots``.
 """
 
 import warnings
@@ -336,11 +335,8 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
                                             split_name: str,
                                             model_label: str,
                                             thres_mode: str,
-                                            ocp_alpha: float,
                                             val_threshold: Optional[float] = None,
                                             val_op: Optional[dict] = None,
-                                            is_ocp: bool = False,
-                                            test_approved_ocp: Optional[np.ndarray] = None,
                                             cov_min: float = 0.05,
                                             cov_star: float = 0.15,
                                             t_min: float = 1.0,
@@ -721,7 +717,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     risk_05 = np.interp(cov_05, grid_cov, risk_smooth) if grid_cov.size >= 2 else risks_raw[idx_05]
     op_cov = op["coverage"]
     op_risk = np.interp(op_cov, grid_cov, risk_smooth) if grid_cov.size >= 2 else op.get("risk", 0)
-    thr_source = op.get("threshold_source") or ("OCP-SAOCP" if is_ocp else ("Val-Utility" if split_name == "Test" else "Utility-Opt"))
+    thr_source = op.get("threshold_source") or ("Val-Utility" if split_name == "Test" else "Utility-Opt")
     show_baseline = abs(op_cov - cov_05) > 0.02 and abs(op["threshold"] - 0.5) > 0.01
     if show_baseline:
         ax_rc.axvline(x=cov_05, color=c_thr05, linestyle="--", alpha=0.7, linewidth=1.8)
@@ -743,7 +739,7 @@ def plot_temporal_risk_coverage_curve_final(save_path: Path,
     _ann_probs  = _u_probs   if opt_probs is not None else probs
     _ann_rets   = _u_rets    if opt_rets  is not None else split_rets
     _ann_labels = _u_y       if opt_y     is not None else labels_int
-    sel_op = test_approved_ocp if split_name == "Test" and is_ocp and test_approved_ocp is not None else (_ann_probs >= op["threshold"])
+    sel_op = (_ann_probs >= op["threshold"])
     n_op = int(sel_op.sum())
     # Interpolate exact y-coordinates from the return curves at op_cov so markers
     # land precisely on top of each line.

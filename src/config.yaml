@@ -64,19 +64,12 @@ runtime:
     seed:     42   # TPE sampler seed
 
   training:
-    ocp_costs: [ 0, 10 ,2 ]    # Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')
-    ocp_alpha: 0.10            # OCP target miscoverage rate (default: 0.10 → 90%% coverage target)
-    ocp_window_days: 25        # Calibration window in calendar days for OCP-W/OCP-cost modes (default: 25)
-    paradigm_comparison: null  # "Cross-paradigm comparison: pass 2+ result dirs (e.g. autogluon_7_fees rf_7_fees rf_OCP)
-    combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs (e.g. Output/Kronos/rf/UP/Utility_Score Output/Kronos/rf/DOWN/Utility_Score
+    paradigm_comparison: null  # Cross-paradigm comparison: pass 2+ result dirs to compare
+    combined_backtest: null    # [str, str]; Combined UP+DOWN backtest from two existing result dirs
     comparison: null           # [str, str]; Build comparison table from existing per-gran and unified result dirs
     all_grans: false           # Unified model trained on all granularities, evaluated per-gran
-    thres: "utility_nocal"     # "Threshold selection: 'utility' (financial utility on val), "
-                               # 'OCP' (SAOCP, unbounded history), "
-                               # 'OCP-W' (SAOCP, windowed calibration), "
-                               # 'OCP-cost' (cost-aware deferral, vanilla), "
-                               # 'OCP-cost-mondrian' (cost-aware deferral, volatility-regime-conditional)"
-    
+    thres: "utility_nocal"     # Threshold selection: "utility" (Isotonic calibration on Val-Cal + utility-opt τ on Val-Opt) | "utility_nocal" (no calibration; merged Val-Cal+Val-Opt)
+
   edge:
     n_trials: 1
     n_blocks: 6
@@ -84,7 +77,6 @@ runtime:
 
   combined:
     combined_backtest: [ "place_holder_up", "place_holder_down" ]
-    ocp_costs: [ 0, 10, 2 ] # Cost vector c_FN,c_FP,c_DEF for cost-aware deferral (default: '0,10,2')
 
   feature_selection:
     cv_strategy: "cpcv"           # choices: ["cpcv", "tscv", "pecv"]

@@ -1,8 +1,7 @@
 """Feature selection + feature-level plotting (package).
 
-After the 2026-05-14 cleanup, meta-label diagnostics and M2 result-aggregation
-plots live in ``Utils.analysis``; CPCV/edge plots live in ``Utils.edge.plots``;
-OCP threshold-evolution lives in ``Utils.ocp.plots``.
+Meta-label diagnostics and M2 result-aggregation plots live in
+``Utils.analysis``; CPCV/edge plots live in ``Utils.edge.plots``.
 """
 
 # ┏━━━━━━━━━━ Feature Selection ━━━━━━━━━━┓

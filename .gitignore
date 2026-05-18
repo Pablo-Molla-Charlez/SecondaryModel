@@ -10,7 +10,17 @@ src/Output/**
 # Deep Learning isolates
 src/Bi_FAST/
 src/Interpretability/
-src/Utils/ts_cross_validation/
+
+# OCP pipeline — kept locally as _og files and the Utils/ocp/ package
+src/Utils/ocp/
+src/m2_pipeline_og.py
+src/config_og.yaml
+src/Utils/__init___og.py
+src/Utils/backtest/engine_og.py
+src/Utils/experiments_og.py
+src/Utils/feature_selection/plots_og.py
+src/Utils/feature_selection/__init___og.py
+src/Utils/backtest/comparison_og.py
 
 # Images folder — keep in git (used in README)
 !src/Images/
