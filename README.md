@@ -273,16 +273,10 @@ All models share a 50 000-row soft sub-sampling guard (`_TABPFN_MAX_ROWS`) that 
 
 ### 1. Conda environment
 
-All scripts must run inside the `S2` conda environment. Activate it once per terminal session:
-
 ```bash
+conda create -n S2 python=3.11
 conda activate S2
-```
-
-Or prefix any command with `conda run -n S2` to run it without activating:
-
-```bash
-conda run -n S2 python Utils/experiments.py --config config.yaml
+pip install -r Secondary-Model/requirements.txt
 ```
 
 ### 2. Working directory
@@ -298,17 +292,32 @@ conda activate S2
 
 ## Run Guide
 
-### Unified workflow — edit `config.yaml`, then launch `Utils/experiments.py`
+### Direct run — `m2_pipeline.py`
 
-There is **one** entry point and **one** config. To switch M1 backbones, models, directions, granularities, or which phases run, edit [config.yaml](src/config.yaml) — no CLI flags.
+The primary way to run a single training slice is to invoke `m2_pipeline.py` directly. You must always specify `--config`, `--phase`, `--m2`, `--direction`, and `--granularity`:
+
+```bash
+conda run -n S2 python m2_pipeline.py \
+  --config config.yaml \
+  --phase training \
+  --m2 rf \
+  --direction up \
+  --granularity 4h
+```
+
+Each invocation trains, thresholds, and backtests exactly the `(m2, direction, granularity)` slice its CLI describes — nothing more.
+
+### Sweep orchestration — `Utils/experiments.py`
+
+For running the full cross-product of models, directions, and granularities defined in `config.yaml`, use `experiments.py`. It reads the `experiment.{m2, direction, granularity}` lists from the config and fans out one `m2_pipeline.py` subprocess per slice automatically:
 
 ```bash
 conda run -n S2 python Utils/experiments.py --config config.yaml
 ```
 
-`experiments.py` reads the YAML and fans out subprocesses (`m2_pipeline.py`, `python -m Utils.edge`, `Utils/feature_selection_experiment.py`), passing the **YAML file path** via `--config` plus the CLI selectors `--m2 / --direction / --granularity` per iteration. Workers reload the same YAML, so there is no drift between orchestrator and workers.
+`experiments.py` also orchestrates the downstream phases (edge, combined backtest, feature selection) in sequence. Configure which phases run via the `runtime.skip` flags in `config.yaml` — no CLI flags needed.
 
-**CLI vs config contract.** The config defines *what a slice is made of* (data signature, splits, threshold/HPO knobs, output root). CLI args define *which slice a given invocation runs* (`--m2`, `--direction`, `--granularity`, `--phase`). The `experiment.{m2, direction, granularity}` lists in the config are read only by `experiments.py`, which expands them into per-slice invocations. Each subprocess honours its CLI selectors *exactly* — `--direction up --granularity 1d` trains only up/1d, nothing else.
+**CLI vs config contract.** The config defines *what a slice is made of* (data signature, splits, threshold/HPO knobs, output root). CLI args define *which slice a given invocation runs* (`--m2`, `--direction`, `--granularity`, `--phase`). Each subprocess honours its CLI selectors *exactly* — `--direction up --granularity 1d` trains only up/1d, nothing else.
 
 #### Config knobs that drive the run
 
