@@ -82,7 +82,7 @@ The pipeline follows the standard three-way chronological split, with temporal e
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#0f766e', 'primaryBorderColor': '#115e59', 'primaryTextColor': '#ffffff', 'secondaryColor': '#f59e0b', 'tertiaryColor': '#dbeafe', 'lineColor': '#0f172a', 'background': '#ffffff'}}}%%
 flowchart LR
     A["&nbsp;&nbsp;&nbsp;Train&nbsp;&nbsp;&nbsp;<br/><small>Classifier</small>"]:::train --> V["&nbsp;&nbsp;Validation&nbsp;&nbsp;<br/><small>Risk-Profi <i>τ</i></small>"]:::val
-    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>\& Backtest</small>"]:::test
+    V --> D["&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Test&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<br/><small>& Backtest</small>"]:::test
     
     classDef train fill:#0f766e,stroke:#115e59,color:#ffffff,stroke-width:2px;
     classDef val   fill:#f59e0b,stroke:#b45309,color:#ffffff,stroke-width:2px;
@@ -93,7 +93,7 @@ flowchart LR
 | Window | Purpose |
 | --- | --- |
 | **Train** | Fitting the base classifier (Random Forest, AutoGluon, TabPFN, TabICL, or TabM). |
-| **Validation** | Searching for the optimal financial utility threshold via grid search. |
+| **Validation** | Searching for the optimal financial risk-profitability utility threshold via grid search and hyperparameters tuning (using Optuna). |
 | **Test** | Final, isolated out-of-sample backtest — never touched during training or tuning. |
 
 ### 2. Leakage Elimination & Embargo
@@ -107,10 +107,10 @@ We enforce **Temporal Embargoes** at every boundary. A purge window (based on th
 
 Two modes are available via `runtime.training.thres`:
 
-- **`utility`** — fits an Isotonic Regression calibrator on Val-Cal, then optimizes τ on the **calibrated** Val-Opt probabilities.
-- **`utility_nocal`** — skips calibration, merges Val-Cal + Val-Opt into a single Validation window, and optimizes τ directly on the model's raw probabilities. **In our experiments this mode consistently produced better selective-classification results** and is the recommended setting.
+- **`utility`** — fits an Isotonic Regression calibrator on Val-Cal (Subset of Validation for Calibration), then optimizes τ on the **calibrated** Val-Opt probabilities (Subset of Validation for Optimization).
+- **`utility_nocal`** — skips calibration, merges Val-Cal + Val-Opt into a single Validation window, and optimizes τ directly on the model's raw probabilities. **In our experiments this mode consistently produced better results** and is the recommended setting.
 
-The threshold τ is chosen on the **Validation** split via a single-stage grid search. The winning τ is then applied fixed to Test.
+The threshold τ is chosen on the **Validation** split via a single-stage grid search. The winning τ and hyperparameters are then applied fixed to Test.
 
 #### Stage A — Grid Search
 Grid-searches τ ∈ [0.50, 0.95] over a hybrid grid (200 linspace points + all unique emitted probabilities ≥ 0.5). A candidate τ is accepted only when **all** of the following hold simultaneously:
@@ -122,7 +122,7 @@ Grid-searches τ ∈ [0.50, 0.95] over a hybrid grid (200 linspace points + all 
 | Precision gate | Precision(τ) ≥ max(precision(τ=0.5), M1 precision) |
 | Statistical gate | Regularized t-stat t\* ≥ 1.0 (shrinkage prior n=50 toward base variance) |
 
-Among all candidates the winner maximises a **coverage-penalised utility score**:
+Among all candidates the winner maximizes a **coverage-penalized utility score** (where `t*` is the regularized t-statistic from the Statistical gate above, computed as `μ / reg_std × √n` with shrinkage toward a prior variance estimated at τ=0.5):
 
 ```
 utility = t* × cov_factor
@@ -234,7 +234,7 @@ from Utils.hpo import run_hpo
 from Utils.classifier.factory import _AG_TIME_LIMIT, _AG_PRESETS
 ```
 
-Legacy import paths (`Utils.data_preprocessing`, `Utils.models`, etc.) are aliased in `Utils/__init__.py` via `sys.modules` for pickle-cache compatibility, but should not be used in new code.
+The `sys.modules` aliases in `Utils/__init__.py` (e.g. `Utils.data_preprocessing`, `Utils.models`) exist solely for pickle-cache backward compatibility — saved `.pt` cache files may embed old module paths that need to resolve at load time. Do not use these paths in new code.
 
 ---
 
@@ -339,12 +339,6 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 
 Phases run sequentially (0 → 1 → 2 → 3 → 4). HPO results propagate downstream automatically:
 
-```
-Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train) ──▸  Phase 2 (CPCV)
-                                                                 ▲
-                        └───── best_params.json ─────────────────┘
-```
-
 - **Random Forest / TabPFN / TabICL**: `best_params.json` from Phase 0 is loaded by both Phase 1 (`m2_pipeline.py` via `_load_best_params`) and Phase 2 (`run_cpcv_analysis` via the same function). Each CPCV split uses `_build_edge_model(..., best_params=...)` → `_build_tree_model(params=...)` so the HPO-tuned hyperparameters are applied consistently.
 - **AutoGluon**: No HPO phase (not in `HPO_SUPPORTED_M2`). Instead, Phase 1 training runs the full AutoML search (`time_limit=3600s, presets=best_quality`) and saves the winning model's type and hyperparameters to `ag_best_hyperparameters.json` via `AutoGluon.save_best_hyperparameters()`. Phase 2 CPCV loads this file via `_load_ag_best_hyperparameters()` and calls `model.fit_with_hyperparameters(X, y, ag_hyperparameters={...})` — training only the known-best model type with locked hyperparameters, no search overhead.
 - **XGBoost / TabPFN_ft**: Use hard-coded defaults from `factory.py` (no HPO, no reuse).
@@ -353,11 +347,11 @@ Phase 0 (HPO)  ──best_params.json──▸  Phase 1 (Train) ──▸  Phase
 
 `experiments.py` can be safely re-run after a crash or interruption — it detects already-completed work per `(m2, direction, granularity)` and skips it:
 
-| Phase | Skip file checked | Path |
+| Experiments Phases | Skip file checked | Path |
 | --- | --- | --- |
 | **0. HPO** | `best_params.json` | `Output/<M1>/HPO/<m2>/<DIR>/<gran>/best_params.json` |
 | **1. Train** | `analysis_summary.json` | `Output/<M1>/<m2>/<DIR>/Utility_Score/<gran>_<mode>/analysis_summary.json` |
-| **2. Edge (Seeds + CPCV)** | `edge_trials.csv` / `cpcv_paths.csv` / `convergence_scores_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/{edge_trials.csv, cpcv_paths.csv}` and `Output/Analysis/Edge/<M1>/<m2>/<DIR>/convergence_scores_<gran>.json` |
+| **2. Edge** | `edge_trials.csv` / `cpcv_paths.csv` / `convergence_scores_<gran>.json` | `Output/Analysis/Edge/<M1>/<m2>/<DIR>/<gran>/{edge_trials.csv, cpcv_paths.csv}` and `Output/Analysis/Edge/<M1>/<m2>/<DIR>/convergence_scores_<gran>.json` |
 
 To **force re-execution** of a specific granularity, delete its skip file and re-run `experiments.py`. Global `runtime.skip.<phase>: true` overrides all per-granularity checks — the entire phase is skipped.
 
@@ -396,15 +390,15 @@ Edit three fields together, then run `experiments.py`:
 paths:
   csv_dir: "Data_MLA/Fincast/Crypto/TP/horizon_7"   # <-- model name with uppercase first letter
 experiment:
-  m1: "fincast"       <--- Change the name of the model (lowercase)
+  m1: "fincast"       # <--- Change the name of the model (lowercase)
 data:
   load:
-    m1: "fincast"     <--- Change the name of the model (lowercase)
+    m1: "fincast"     # <--- Change the name of the model (lowercase)
 ```
 
 `_load_config` validates that `data.load.m1` is consistent with `paths.csv_dir` and aborts with a clear error if they disagree.
 
-> **AutoGluon note**: `time_limit` (default 300 s) and `presets` (default `best_quality`) are set in `Utils/classifier/factory.py` constants `_AG_TIME_LIMIT` and `_AG_PRESETS`. Edit those to change the defaults globally.
+> **AutoGluon note**: `time_limit` (default 3600s) and `presets` (default `best_quality`) are set in `Utils/classifier/factory.py` constants `_AG_TIME_LIMIT` and `_AG_PRESETS`. Edit those to change the defaults globally.
 
 ---
 
