@@ -212,9 +212,6 @@ src/Utils/
 │   ├── __main__.py                    # entrypoint: python -m Utils.hpo
 │   └── __init__.py
 │
-├── ocp/                               # threshold & diagnostics support module
-│   └── __init__.py
-│
 └── feature_selection_experiment.py    # standalone SFS+/RFECV worker (Phase 4)
 ```
 
