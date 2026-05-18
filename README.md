@@ -336,7 +336,7 @@ conda run -n S2 python Utils/experiments.py --config config.yaml
 
 #### Phases (driven by `runtime.skip`)
 
-| Phase | What it runs | Enable via |
+| Experiment Phases | What it runs | Enable via |
 | --- | --- | --- |
 | **0. HPO** | `python -m Utils.hpo` per `(m2 × direction × granularity)` — Optuna TPE search, writes `best_params.json` into `Output/<M1>/HPO/<m2>/<DIR>/<gran>/`. Models not in `HPO_SUPPORTED_M2 = {"rf", "tabpfn", "tabicl", "tabm", "ctts"}` are skipped automatically. | `runtime.skip.hpo: false` |
 | **1. Train** | `m2_pipeline.py` per `(m2 × direction × granularity)` — train → threshold → backtest. Loads the matching `best_params.json` from Phase 0 via `_load_best_params`. For AutoGluon, also saves `ag_best_hyperparameters.json` inside `final_model/` for Phase 2 reuse. | `runtime.skip.training: false` |
