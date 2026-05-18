@@ -499,7 +499,7 @@ Results are saved to `Output/<M1>/HPO/<model>/<direction>/<gran>/best_params.jso
 | `Utils/backtest/` | Backtest helpers, equity construction, Sharpe/drawdown, reporting, combined UP+DOWN backtest, comparison tables. |
 | `Utils/hpo/` | Optuna-based HPO — Phase 0 of `experiments.py`. Results consumed by both Phase 1 training and Phase 2 CPCV. CLI: `python -m Utils.hpo`. |
 | `Utils/selective_classification/` | Utility-threshold selection (`utility` / `utility_nocal` modes). |
-| `Data_MLA/` | Per-M1 dataset assets and technical indicator computation (one subfolder per backbone: `Kronos/`, `Fincast/`, `Chronos2/`, `Tirex/`). Download from [🤗 Mollita/SecondaryModel](https://huggingface.co/datasets/Mollita/SecondaryModel). |
+| `Data_MLA/` | Per-M1 dataset assets and technical indicator computation (one subfolder per backbone: `Kronos/`, `Fincast/`, `Chronos2/`, `Tirex/`). Download from 🤗 [Mollita/SecondaryModel](https://huggingface.co/datasets/Mollita/SecondaryModel). |
 
 ---
 
