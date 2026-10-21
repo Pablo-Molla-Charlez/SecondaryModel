@@ -1,0 +1,93 @@
+.gitignore
+  s_fddf42be80ecea::t_7d7ce4c0213097 45
+CLAUDE.md
+  s_fddf42be80ecea::t_c9a04cd35ef16c 1-658
+requirements.txt
+  s_fddf42be80ecea::t_8785c719378e4f 53-60
+src/Utils/analysis/analysis_m2.py
+  s_fddf42be80ecea::t_aa8700f4f40b2c 1874,2665-5942
+src/Utils/analysis/latex/make_regime_tables.py
+  s_fddf42be80ecea::t_bc4a23440d50c2 1-786
+src/Utils/backtest/__init__.py
+  s_fddf42be80ecea::t_9c672c040e4728 10
+src/Utils/backtest/engine.py
+  s_fddf42be80ecea::t_65674056f15805 97-224,258-496,629-634,636,891-911
+src/Utils/backtest/plots.py
+  s_fddf42be80ecea::t_ae5374acbdc4d4 14,26-28,61-64,71-74,106,117,122,133
+src/Utils/edge/__init__.py
+  s_fddf42be80ecea::t_e5edca7a6758a7 3-4,8-9,19
+src/Utils/edge/edge.py
+  s_fddf42be80ecea::t_8996aa59d23bf5 2-8,15,544,554-827,834-836,883-888,896-898,1044,1051-1052,1063-1065,1086,1099-1100,1121,1124-1127,1164,1174-1183
+src/Utils/edge/plots.py
+  s_fddf42be80ecea::t_3e6e27e22297ff 375-381,401,428-430
+src/Utils/edge/scripts_rerun_samples.sh
+  s_fddf42be80ecea::t_70d7232f860bc8 1-36
+src/Utils/experiments.py
+  s_fddf42be80ecea::t_20c2147c8d928c 16,170-177,187,208-217,219,223,300-447
+src/Utils/regime/__init__.py
+  s_fddf42be80ecea::t_e190a8eb18c485 1-90
+src/Utils/regime/bic_selection.py
+  s_fddf42be80ecea::t_c1072723fac072 1-191
+src/Utils/regime/config.py
+  s_fddf42be80ecea::t_abe723f26ccc88 1-266
+src/Utils/regime/data_access.py
+  s_fddf42be80ecea::t_92eb793d4b5bb6 1-77
+src/Utils/regime/features.py
+  s_fddf42be80ecea::t_04fc6142de20af 1-476
+src/Utils/regime/model.py
+  s_fddf42be80ecea::t_7d3d65442e5187 1-646
+src/Utils/regime/paths.py
+  s_fddf42be80ecea::t_7ba6892d23348f 1-31
+src/Utils/regime/scripts/fit_all_granularities.sh
+  s_fddf42be80ecea::t_c46f2434e7da35 1-53
+src/Utils/regime/stat_tuning.py
+  s_fddf42be80ecea::t_b1d5cd33f0ccc5 1-447
+src/Utils/regime/storage.py
+  s_fddf42be80ecea::t_c2d5e03c59a647 1-240
+src/Utils/regime/train_global_jump_model.py
+  s_fddf42be80ecea::t_49f28571a9fa19 1-523
+src/Utils/selective_classification/baselines/__init__.py
+  s_fddf42be80ecea::t_3fd683b292076f 1-32
+src/Utils/selective_classification/baselines/_common.py
+  s_fddf42be80ecea::t_6c5f7b44c5baf6 1-284
+src/Utils/selective_classification/baselines/quantiles_selective.py
+  s_fddf42be80ecea::t_b3aba3f74c9a8f 1-138
+src/Utils/selective_classification/baselines/random_selective.py
+  s_fddf42be80ecea::t_59a1978c9af11a 1-190
+src/Utils/selective_classification/baselines/spci/PI_class_EnbPI.py
+  s_fddf42be80ecea::t_572f5d9b4f8e20 1-840
+src/Utils/selective_classification/baselines/spci/SPCI_class.py
+  s_fddf42be80ecea::t_6a4c035c69ff25 1-994
+src/Utils/selective_classification/baselines/spci/__init__.py
+  s_fddf42be80ecea::t_da8e45e6b37dc8 1-14
+src/Utils/selective_classification/baselines/spci/data.py
+  s_fddf42be80ecea::t_bb8d0e0f047a79 1-231
+src/Utils/selective_classification/baselines/spci/requirements.txt
+  s_fddf42be80ecea::t_63ea9cd56bb6c9 1-3
+src/Utils/selective_classification/baselines/spci/scpi_selective.py
+  s_fddf42be80ecea::t_0ff7c399df53be 1-339
+src/Utils/selective_classification/baselines/spci/utils_EnbPI.py
+  s_fddf42be80ecea::t_1c7d40fe3bade6 1-1832
+src/Utils/selective_classification/baselines/spci/utils_SPCI.py
+  s_fddf42be80ecea::t_0adb8e1102f8c8 1-173
+src/Utils/selective_classification/baselines/transfer_baselines_table.py
+  s_fddf42be80ecea::t_7a78411ac969af 1-170
+src/config.yaml
+  s_fddf42be80ecea::t_1b528401ca6c5a 10-12,25-34,38-40,59,61,72-73,87-88,91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1cd43acefc57ecb83feba6a22b1f416e40c9c632",
+  "prompts": {},
+  "sessions": {
+    "s_fddf42be80ecea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b85335c7-617f-4a96-a511-a9d03d07ac63",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
