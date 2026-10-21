@@ -1,0 +1,42 @@
+src/Utils/selective_classification/baselines/_common.py
+  s_fddf42be80ecea::t_5a0fcb25bbef95 38
+src/config.yaml
+  s_fddf42be80ecea::t_5a0fcb25bbef95 10-12
+src/Utils/regime/scripts/fit_all_granularities.sh
+  s_fddf42be80ecea::t_5a0fcb25bbef95 15
+  s_fddf42be80ecea::t_c75d102cc8f9ed 14
+src/Utils/ts_cross_validation/plotting.py
+  s_fddf42be80ecea::t_901e6880f7e34b 10
+src/Utils/analysis/analysis_m2.py
+  s_fddf42be80ecea::t_dd35b581ee53a7 16
+  s_fddf42be80ecea::t_901e6880f7e34b 748,1586-1587
+  s_fddf42be80ecea::t_5a0fcb25bbef95 17-19,153-154,595-596,831-832,2682,2762,2804,2860,2973-2974,2976,3072,3154-3156,3314,3367,3427,3494,3544,3720,5274
+src/Utils/edge/scripts_rerun_samples.sh
+  s_fddf42be80ecea::t_c75d102cc8f9ed 11
+  s_fddf42be80ecea::t_5a0fcb25bbef95 12
+src/Utils/selective_classification/baselines/transfer_baselines_table.py
+  s_fddf42be80ecea::t_5a0fcb25bbef95 31
+src/Utils/edge/plots.py
+  s_fddf42be80ecea::t_901e6880f7e34b 18
+  s_fddf42be80ecea::t_5a0fcb25bbef95 583
+src/Utils/feature_selection/plots.py
+  s_fddf42be80ecea::t_5a0fcb25bbef95 840
+src/Utils/feature_selection_experiment.py
+  s_fddf42be80ecea::t_901e6880f7e34b 89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fbe469e71173fa25145934d24ab2612b1f0a0903",
+  "prompts": {},
+  "sessions": {
+    "s_fddf42be80ecea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b85335c7-617f-4a96-a511-a9d03d07ac63",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
