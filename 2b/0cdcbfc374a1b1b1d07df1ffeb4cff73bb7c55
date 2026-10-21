@@ -1,0 +1,47 @@
+.python-version
+  s_fddf42be80ecea::t_b25e61a91780ca 1
+.github/workflows/ci.yml
+  s_fddf42be80ecea::t_98b55e9dd2b5ac 1-17
+tests/test_feature_contract.py
+  s_fddf42be80ecea::t_78f2fe5b979931 1-50
+mise.toml
+  s_fddf42be80ecea::t_98b55e9dd2b5ac 1-38
+tests/import_audit.py
+  s_fddf42be80ecea::t_4131f25be5e79f 1-66
+.pre-commit-config.yaml
+  s_fddf42be80ecea::t_98b55e9dd2b5ac 1-28
+mise.lock
+  s_fddf42be80ecea::t_2a5509e2b756cd 1-50
+README.md
+  s_fddf42be80ecea::t_527b3bc4344e84 272-278,281-283,286-289,292,295
+uv.lock
+  s_fddf42be80ecea::t_c9faea1a3cb482 1-2013
+pyproject.toml
+  s_fddf42be80ecea::t_3f912e401f72ef 76-124,126-136
+  s_fddf42be80ecea::t_27a1d0265d5f93 125
+  s_fddf42be80ecea::t_b25e61a91780ca 1-75
+  s_fddf42be80ecea::t_56c6dd2c065f01 137-139
+  s_fddf42be80ecea::t_e30cff829c6ef7 140-141
+renovate.json5
+  s_fddf42be80ecea::t_98b55e9dd2b5ac 1-23
+tests/test_imports.py
+  s_fddf42be80ecea::t_3f912e401f72ef 1-33
+.gitignore
+  s_fddf42be80ecea::t_98b55e9dd2b5ac 46-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2b0cdcbfc374a1b1b1d07df1ffeb4cff73bb7c55",
+  "prompts": {},
+  "sessions": {
+    "s_fddf42be80ecea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b85335c7-617f-4a96-a511-a9d03d07ac63",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}
