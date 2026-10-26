@@ -94,7 +94,134 @@ def _calc_drawdown(equity: np.ndarray) -> float:
     return float(np.min(dd))
 
 
-# ┏━━━━━━━━━━ Build Spread Equity ━━━━━━━━━━┓
+# ┏━━━━━━━━━━ Position sizing (cash-account engine only) ━━━━━━━━━━┓
+# Confidence-weighted sizing with a base floor: a p=0.5 signal still stakes _SIZE_BASE of
+# the per-trade allowance, a near-certain signal stakes ~all of it.
+_SIZE_BASE = 0.10
+# Per-trade EXPOSURE multiplier: each signal stakes _EXPOSURE × frac × free_cash (not the
+# full free cash), so early clustered signals cannot consume the whole account.
+_EXPOSURE = 0.10
+# Single-asset books have no cross-asset competition for cash → no per-trade cap needed.
+_EXPOSURE_SINGLE_ASSET = 1.0
+
+
+def _z_size(prob: float) -> float:
+    """QuantConnect-style ZSize with a base floor → fraction of the per-trade allowance."""
+    if prob != prob:          # NaN
+        return _SIZE_BASE
+    p = min(max(float(prob), 0.5), 1.0 - 1e-9)
+    zsize = (p - 0.5) / (1.0 - p) if p < 1.0 else 1.0
+    zsize = min(zsize, 1.0)
+    return _SIZE_BASE + (1.0 - _SIZE_BASE) * zsize
+
+
+# ┏━━━━━━━━━━ Build Cash-Account Equity (NEW engine) ━━━━━━━━━━┓
+def _build_cash_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, horizon: int,
+                       capital_log: bool = False, flat_size: bool = False):
+    """Stateful CASH-FLOW equity simulator (QuantConnect-style), normalized to start at 1.0.
+
+    Models a real cash account instead of a vectorized concurrency average. Equity =
+    free_cash + Σ(open-position book value), starting at 1.0 (all cash). Walking the
+    timeline bar by bar:
+      1. EXITS first: any position reaching its `horizon`-bar mark is liquidated — its
+         locked capital × (1 + realized trade return) returns to free cash. (DOWN trades
+         are symmetric shorts: the stored `return` is already direction-signed upstream.)
+      2. ENTRIES next: every trade entered on this bar requests `_EXPOSURE × frac ×
+         free_cash`, where frac = _z_size(m2_prob) unless ``flat_size=True`` (then
+         frac = 1.0). Over-subscribed bars are filled PRO-RATA, so the result does not
+         depend on trade ordering.
+      3. Equity is marked as free cash + locked capital.
+
+    ``flat_size=True`` MUST be used for the M1 "trade-all" baseline: otherwise M1 borrows
+    the M2 model's probabilities to size its positions, and the (fixed) M1 trade set would
+    produce a different curve for every M2 model — M1 is the model-free yardstick.
+
+    Returns ``(equity, realized_returns)``, or ``(equity, realized_returns, ledger)`` when
+    ``capital_log=True``.
+    """
+    # ┏━━━━━━━━━━ Handle Empty Trades ━━━━━━━━━━┓
+    if len(trades_df) == 0:
+        empty_eq = pd.Series(1.0, index=timeline)
+        if capital_log:
+            ledger = pd.DataFrame({"capital": 1.0, "free_cash": 1.0, "locked_capital": 0.0,
+                                   "invested_new": 0.0, "realized_pnl": 0.0, "n_open": 0},
+                                  index=timeline)
+            return empty_eq, np.array([]), ledger
+        return empty_eq, np.array([])
+
+    n_bars = len(timeline)
+    bar_map = {d: i for i, d in enumerate(timeline)}
+
+    # Single-asset book → no cross-asset competition for cash, drop the per-trade cap.
+    n_assets = trades_df["asset"].nunique() if "asset" in trades_df.columns else 1
+    exposure = _EXPOSURE_SINGLE_ASSET if n_assets <= 1 else _EXPOSURE
+
+    # ┏━━━━━━━━━━ Group entries by bar index (entries off-timeline are dropped) ━━━━━━━━━━┓
+    rets = trades_df["return"].values
+    probs = (trades_df["m2_prob"].values if "m2_prob" in trades_df.columns
+             else np.full(len(trades_df), np.nan))
+    entries_at = {}   # bar_idx → list of (return, prob)
+    for k in range(len(trades_df)):
+        bi = bar_map.get(trades_df["date"].iloc[k])
+        if bi is None:
+            continue
+        entries_at.setdefault(bi, []).append(
+            (float(rets[k]), float(probs[k]) if probs[k] == probs[k] else np.nan))
+
+    # ┏━━━━━━━━━━ Sequential cash walk ━━━━━━━━━━┓
+    cash = 1.0                          # free cash (fraction of starting capital)
+    equity_curve = np.empty(n_bars)
+    open_pos = []                       # [exit_bar_idx, locked_capital, trade_return]
+    realized = []
+    led_cash = np.empty(n_bars); led_locked = np.empty(n_bars)
+    led_inv = np.zeros(n_bars); led_pnl = np.zeros(n_bars)
+    led_nopen = np.zeros(n_bars, dtype=int)
+
+    for b in range(n_bars):
+        # 1) EXITS at this bar → return capital×(1+ret) to cash
+        still_open = []
+        for ex_bar, cap, r in open_pos:
+            if ex_bar <= b:
+                cash += cap * (1.0 + r)
+                realized.append(r)
+                led_pnl[b] += cap * r
+            else:
+                still_open.append([ex_bar, cap, r])
+        open_pos = still_open
+
+        # 2) ENTRIES at this bar → request exposure×frac×free_cash, pro-rata if over-subscribed
+        todays = entries_at.get(b, [])
+        if todays and cash > 1e-12:
+            reqs = [(exposure * (1.0 if flat_size else _z_size(p)) * cash, r) for (r, p) in todays]
+            total_req = sum(q for q, _ in reqs)
+            scale = min(1.0, cash / total_req) if total_req > 1e-12 else 0.0
+            # Clamp to the LAST bar: the exit loop only runs for b ≤ n_bars-1, so an
+            # exit_bar of n_bars would never liquidate and its P&L would be lost.
+            exit_bar = min(b + horizon, n_bars - 1)
+            for q, r in reqs:
+                cap = q * scale
+                if cap <= 1e-12:
+                    continue
+                cash -= cap
+                led_inv[b] += cap
+                open_pos.append([exit_bar, cap, r])
+
+        # 3) Mark equity = free cash + locked capital (book value of open positions)
+        locked = sum(cap for _, cap, _ in open_pos)
+        equity_curve[b] = cash + locked
+        led_cash[b] = cash; led_locked[b] = locked; led_nopen[b] = len(open_pos)
+
+    equity = pd.Series(equity_curve, index=timeline)
+    if capital_log:
+        ledger = pd.DataFrame({"capital": equity_curve, "free_cash": led_cash,
+                               "locked_capital": led_locked, "invested_new": led_inv,
+                               "realized_pnl": led_pnl, "n_open": led_nopen},
+                              index=timeline)
+        return equity, np.asarray(realized, dtype=float), ledger
+    return equity, np.asarray(realized, dtype=float)
+
+
+# ┏━━━━━━━━━━ Build Spread Equity (OLD engine — concurrency average) ━━━━━━━━━━┓
 def _build_spread_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, horizon: int):
     """Spread each trade return over horizon bars, then accumulate multiplicatively."""
     # ┏━━━━━━━━━━ Handle Empty Trades ━━━━━━━━━━┓
@@ -126,6 +253,245 @@ def _build_spread_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, ho
     bar_normed = np.where(active_mask, bar_sums / avg_conc, 0.0)
     equity = pd.Series((1 + bar_normed).cumprod(), index=timeline)
     return equity, trades_df["return"].dropna().values
+
+
+# ┏━━━━━━━━━━ Cash-engine artifact emitter (curve + ROI + trades CSV) ━━━━━━━━━━┓
+def _emit_cash_engine_artifacts(*, df_trades, m2_df, full_idx, horizon, save_dir,
+                                file_prefix, cfg, mlabel, m2_name, m1_name, bh_name,
+                                bh_equity, has_bh, ann_horizon, granularity, direction,
+                                meta_mode, desc, threshold, constraint_tag, fee,
+                                execution_rate, test_start, test_end, n_total, n_approved,
+                                m1_wr, m2_wr, m1_good, n_m2_good, avg_app, avg_rej,
+                                asset_m2_rets, asset_m1_rets, asset_bh_rets):
+    """Emit the NEW cash-account engine's own curve / ROI / trades CSV.
+
+    Mirrors the old engine's three artifacts under a distinct ``file_prefix`` so both
+    versions can be compared side by side. The trade set and fee-adjusted returns are
+    passed in already computed — only the equity simulation differs.
+    """
+    save_dir = Path(save_dir)
+
+    # ┏━━━━━━━━━━ Equity curves (M1 flat-sized; M2 confidence-sized) ━━━━━━━━━━┓
+    m1_equity_c, _m1_real = _build_cash_equity(df_trades, full_idx, horizon, flat_size=True)
+    m2_equity_c, _m2_real, m2_ledger = _build_cash_equity(m2_df, full_idx, horizon,
+                                                          capital_log=True)
+
+    # ┏━━━━━━━━━━ Strategy statistics ━━━━━━━━━━┓
+    strats = {}
+    for name, eq in [(m2_name, m2_equity_c), (m1_name, m1_equity_c)]:
+        h_rets = _equity_horizon_returns(eq, horizon) if len(eq) > horizon else np.array([])
+        strats[name] = {"total_ret": (eq.iloc[-1] - 1) * 100 if len(eq) > 0 else 0,
+                        "mdd": _calc_drawdown(eq.values) * 100 if len(eq) > 0 else 0,
+                        "sharpe": _calc_sharpe(h_rets, ann_horizon)}
+    if has_bh and bh_equity is not None:
+        bh_h = _equity_horizon_returns(bh_equity, horizon) if len(bh_equity) > horizon else np.array([])
+        strats[bh_name] = {"total_ret": (bh_equity.iloc[-1] - 1) * 100,
+                           "mdd": _calc_drawdown(bh_equity.values) * 100,
+                           "sharpe": _calc_sharpe(bh_h, ann_horizon)}
+
+    # ┏━━━━━━━━━━ Plot Equity Curves ━━━━━━━━━━┓
+    # Mirrors the old engine's figure exactly (curve + per-asset table), so the two
+    # images differ ONLY by the equity math behind them.
+    direction_label = direction.upper()
+    fee_tag = f" fee={fee*100:.2f}%" if fee > 0 else ""
+    fig, ax = plt.subplots(figsize=(18, 8))
+    plt.subplots_adjust(right=0.68)
+
+    ax.plot((m2_equity_c - 1) * 100,
+            label=f"{m2_name} (SR: {strats[m2_name]['sharpe']:.2f}, Exec: {execution_rate:.1f}%)",
+            color="green",
+            linewidth=3.0)
+    ax.plot((m1_equity_c - 1) * 100,
+            label=f"{m1_name} (SR: {strats[m1_name]['sharpe']:.2f})",
+            color="blue",
+            alpha=0.6,
+            linewidth=2.0)
+    if has_bh and bh_equity is not None:
+        ax.plot((bh_equity - 1) * 100,
+                label=f"{bh_name} (SR: {strats[bh_name]['sharpe']:.2f})",
+                color="gray",
+                linestyle="--",
+                linewidth=1.5)
+
+    # ┏━━━━━━━━━━ Set Title ━━━━━━━━━━┓
+    title = (f"[CASH ENGINE] Cumulative Returns (%) — {mlabel} {granularity.upper()}+{direction_label}"
+             f"+{meta_mode.upper()} ({desc}) thr={threshold:.3f} ({constraint_tag}){fee_tag}")
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Cumulative Return (%)")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+
+    # ┏━━━━━━━━━━ Calculate Per-Asset Statistics ━━━━━━━━━━┓
+    m1_counts = df_trades.groupby("asset").size()
+    m2_counts = m2_df.groupby("asset").size() if len(m2_df) > 0 else pd.Series(dtype=int)
+
+    all_assets = sorted(df_trades["asset"].unique())
+    table_data = []
+    for asset in all_assets:
+        m2_a = asset_m2_rets.get(asset, 0.0) * 100
+        m1_a = asset_m1_rets.get(asset, 0.0) * 100
+        bh_a = asset_bh_rets.get(asset, 0.0) * 100 if has_bh else 0.0
+        m2_n = int(m2_counts.get(asset, 0))
+        m1_n = int(m1_counts.get(asset, 0))
+        table_data.append([asset, f"{m2_a:+.1f}% ({m2_n})", f"{m1_a:+.1f}% ({m1_n})", f"{bh_a:+.1f}%"])
+
+    # ┏━━━━━━━━━━ Calculate Portfolio Statistics ━━━━━━━━━━┓
+    ptf = {k: strats[k]["total_ret"] for k in [m2_name, m1_name]}
+    ptf[bh_name] = strats[bh_name]["total_ret"] if has_bh else 0.0
+    table_data.append(
+        ["Portfolio Return", f"{ptf[m2_name]:+.2f}%", f"{ptf[m1_name]:+.2f}%", f"{ptf[bh_name]:+.2f}%"]
+    )
+    avg_m2 = m2_df["return"].mean() * 100 if len(m2_df) > 0 else 0.0
+    avg_m1 = df_trades["return"].mean() * 100
+    avg_bh = asset_bh_rets.mean() * 100 if has_bh and len(asset_bh_rets) > 0 else 0.0
+    table_data.append(
+        [
+            "Avg Ret/Trade",
+            f"{avg_m2:+.2f}% ({n_approved})",
+            f"{avg_m1:+.2f}% ({n_total})",
+            f"{avg_bh:+.2f}%",
+        ]
+    )
+    mdd = {k: strats[k]["mdd"] for k in [m2_name, m1_name]}
+    mdd[bh_name] = strats[bh_name]["mdd"] if has_bh else 0.0
+    table_data.append(
+        ["Max Drawdown", f"{mdd[m2_name]:+.2f}%", f"{mdd[m1_name]:+.2f}%", f"{mdd[bh_name]:+.2f}%"]
+    )
+    col_labels = ["Asset", f"M2 {mlabel}", _m1_display_label(cfg), "B&H"]
+
+    # ┏━━━━━━━━━━ Set Column Widths ━━━━━━━━━━┓
+    n_cols_tbl = len(col_labels)
+    if n_cols_tbl == 5:
+        col_widths = [0.28, 0.22, 0.22, 0.22, 0.14]
+    else:
+        col_widths = [0.35, 0.27, 0.27, 0.18]
+
+    # ┏━━━━━━━━━━ Create Table ━━━━━━━━━━┓
+    the_table = plt.table(cellText  = table_data,
+                          colLabels = col_labels,
+                          loc       = "right",
+                          bbox      = [1.03, 0.0, 0.55, 1.0],
+                          cellLoc   = "center",
+                          colWidths = col_widths)
+
+    the_table.auto_set_font_size(False)
+    the_table.set_fontsize(8)
+    n_data_rows = len(table_data)
+    n_summary = 3
+    first_summary_row = n_data_rows - n_summary + 1
+
+    # ┏━━━━━━━━━━ Get All Values ━━━━━━━━━━┓
+    all_vals = []
+    for (row, col), cell in the_table.get_celld().items():
+        if row > 0 and col > 0:
+            val_str = cell.get_text().get_text().split("%")[0].strip()
+            try:
+                all_vals.append(float(val_str))
+            except ValueError:
+                pass
+    abs_max = max(abs(v) for v in all_vals) if all_vals else 1.0
+
+    # ┏━━━━━━━━━━ Color Function ━━━━━━━━━━┓
+    def _val_color(val: float, scale: float) -> str:
+        intensity = min(abs(val) / scale, 1.0)
+        if val > 0:
+            r = int(255 - intensity * (255 - 46))
+            g = int(255 - intensity * (255 - 139))
+            b = int(255 - intensity * (255 - 87))
+        elif val < 0:
+            r = int(255 - intensity * (255 - 180))
+            g = int(255 - intensity * (255 - 40))
+            b = int(255 - intensity * (255 - 40))
+        else:
+            return "#ffffff"
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    # ┏━━━━━━━━━━ Color Cells ━━━━━━━━━━┓
+    for (row, col), cell in the_table.get_celld().items():
+        cell.get_text().set_weight("bold")
+        cell.set_text_props(ha="center", va="center")
+        if row > 0 and col > 0:
+            val_str = cell.get_text().get_text().split("%")[0].strip()
+            try:
+                val = float(val_str)
+                cell.set_facecolor(_val_color(val, abs_max))
+                if abs(val) / abs_max > 0.55:
+                    cell.get_text().set_color("white")
+            except ValueError:
+                pass
+        if row == 0 and col >= 0:
+            cell.set_facecolor("#2b5797")
+            cell.get_text().set_color("white")
+        elif row == 0:
+            cell.set_facecolor("#f2f2f2")
+        if row >= first_summary_row:
+            cell.set_fontsize(9)
+            if col == 0:
+                cell.set_facecolor("#2b5797")
+                cell.get_text().set_color("white")
+
+    # ┏━━━━━━━━━━ Save Plot ━━━━━━━━━━┓
+    ax.text(1.225, 1.02, "Individual Asset Performance", transform=ax.transAxes, fontsize=12, fontweight="bold", ha="center")
+    plot_path = save_dir / f"{file_prefix}_curve.png"
+    fig.savefig(str(plot_path), bbox_inches="tight", dpi=200)
+    plt.close(fig)
+
+    # ┏━━━━━━━━━━ ROI report ━━━━━━━━━━┓
+    lines = [
+        "=" * 60,
+        f"FINANCIAL BACKTEST [CASH-ACCOUNT ENGINE]: {mlabel} {granularity.upper()} "
+        f"{direction.upper()} {meta_mode.upper()} ({desc})",
+        f"Period: {test_start.date()} to {test_end.date()}",
+        f"Threshold: {threshold:.4f} ({constraint_tag}) | Fee: {fee*100:.3f}%",
+        f"Sizing: exposure={_EXPOSURE if df_trades['asset'].nunique() > 1 else _EXPOSURE_SINGLE_ASSET:.2f}"
+        f" base={_SIZE_BASE:.2f} | M1 flat-sized, M2 confidence-sized",
+        "=" * 60,
+        f"Total Test Trades:     {n_total}",
+        f"{_m1_display_label(cfg)} Baseline Win-Rate:  {m1_wr:.1f}% ({m1_good}/{n_total})",
+        "-" * 60,
+        f"M2 Approved Trades:    {n_approved} ({execution_rate:.1f}% execution)",
+        f"M2 Rejected Trades:    {n_total - n_approved}",
+        f"M2 Win-Rate:           {m2_wr:.1f}% ({n_m2_good}/{n_approved})",
+        "-" * 60,
+        f"Avg Return APPROVED:   {avg_app:+.3f}%",
+        f"Avg Return REJECTED:   {avg_rej:+.3f}%",
+        "=" * 60,
+        f"{'Strategy':<25} {'Total Ret':>10} {'MaxDD':>8} {'Sharpe':>8}",
+        "-" * 60,
+    ]
+    for name in [m2_name, m1_name] + ([bh_name] if has_bh else []):
+        s = strats[name]
+        lines.append(f"{name:<25} {s['total_ret']:>+9.2f}% {s['mdd']:>+7.2f}% {s['sharpe']:>7.2f}")
+    lines.append("=" * 60)
+    report = "\n".join(lines)
+    print(f"\n{report}")
+    report_path = save_dir / f"{file_prefix}_ROI.txt"
+    with open(report_path, "w") as f:
+        f.write(report)
+
+    # ┏━━━━━━━━━━ Trades CSV (+ per-bar capital ledger from capital_log) ━━━━━━━━━━┓
+    trades_dump = df_trades.copy()
+    trades_dump["date"] = trades_dump["date"].astype(str)
+    trades_dump["direction"] = direction
+    trades_dump["return_pct"] = trades_dump["return"] * 100
+    # Per-trade sizing fraction actually used by the cash engine for APPROVED trades
+    # (rejected trades never enter the book → NaN).
+    _appr = trades_dump["m2_approved"].values if "m2_approved" in trades_dump.columns else None
+    if _appr is not None and "m2_prob" in trades_dump.columns:
+        trades_dump["size_frac"] = [
+            _z_size(p) if a else np.nan for p, a in zip(trades_dump["m2_prob"].values, _appr)]
+    trades_path = save_dir / f"{file_prefix}_trades.csv"
+    trades_dump.to_csv(trades_path, index=False, float_format="%.6f")
+
+    # Per-bar capital ledger (free cash / locked / new investment / realized P&L / #open).
+    ledger_path = save_dir / f"{file_prefix}_capital_ledger.csv"
+    m2_ledger.to_csv(ledger_path, index_label="date", float_format="%.6f")
+
+    print(f"  [cash] Equity curve saved:   {plot_path.name}")
+    print(f"  [cash] ROI report saved:     {report_path.name}")
+    print(f"  [cash] Trade dump saved:     {trades_path.name}")
+    print(f"  [cash] Capital ledger saved: {ledger_path.name}")
 
 
 # ┏━━━━━━━━━━ Calculate Horizon Returns ━━━━━━━━━━┓
@@ -260,9 +626,14 @@ def run_feature_backtest(dataset,
     if has_bh:
         raw_close = raw_close[(raw_close["date"] >= test_start) & (raw_close["date"] <= test_end)]
         bh_pivot = raw_close.pivot_table(index="date", columns="asset", values="close")
-        bh_first = bh_pivot.iloc[0]
+        # Per-asset first/last VALID price, not the pivot's global first/last row: an asset
+        # delisted mid-window (e.g. TONUSDT stops trading 2026-06-30) has NaN in the final
+        # rows, which would make its B&H return NaN and blank out that table cell. Measuring
+        # each asset to its own last traded bar keeps the number meaningful and finite.
+        bh_first = bh_pivot.apply(lambda c: c.dropna().iloc[0] if c.notna().any() else np.nan)
+        bh_last  = bh_pivot.apply(lambda c: c.dropna().iloc[-1] if c.notna().any() else np.nan)
         bh_equity = (bh_pivot / bh_first).mean(axis=1)
-        asset_bh_rets = (bh_pivot.iloc[-1] / bh_first) - 1
+        asset_bh_rets = (bh_last / bh_first) - 1
         full_idx = bh_equity.index
     else:
         full_idx = pd.DatetimeIndex(sorted(df_trades["date"].unique()))
@@ -516,6 +887,27 @@ def run_feature_backtest(dataset,
     print(f"  Equity curve saved: {plot_path.name}")
     print(f"  ROI report saved:   {report_path.name}")
     print(f"  Trade dump saved:   {trades_path.name}")
+
+    # ┏━━━━━━━━━━ NEW cash-account engine: parallel artifact set ━━━━━━━━━━┓
+    # Same trades, same fee-adjusted returns, same threshold — ONLY the equity math
+    # differs, so this is a controlled old-vs-new comparison. Written under a separate
+    # file_prefix so the original '10_backtest_all_*' artifacts stay untouched (they are
+    # what run_combined_backtest reads).
+    _cash_prefix = f"{file_prefix.replace('_all', '')}_cash" if "_all" in file_prefix else f"{file_prefix}_cash"
+    _emit_cash_engine_artifacts(
+        df_trades=df_trades, m2_df=m2_df, full_idx=full_idx, horizon=horizon,
+        save_dir=save_dir, file_prefix=_cash_prefix, cfg=cfg, mlabel=mlabel,
+        m2_name=m2_name, m1_name=m1_name, bh_name=bh_name,
+        bh_equity=bh_equity if has_bh else None, has_bh=has_bh,
+        ann_horizon=ann_horizon, granularity=granularity, direction=direction,
+        meta_mode=meta_mode, desc=desc, threshold=threshold,
+        constraint_tag=constraint_tag, fee=fee, execution_rate=execution_rate,
+        test_start=test_start, test_end=test_end, n_total=n_total,
+        n_approved=n_approved, m1_wr=m1_wr, m2_wr=m2_wr, m1_good=m1_good,
+        n_m2_good=n_m2_good, avg_app=avg_app, avg_rej=avg_rej,
+        asset_m2_rets=asset_m2_rets, asset_m1_rets=asset_m1_rets,
+        asset_bh_rets=asset_bh_rets if has_bh else pd.Series(dtype=float),
+    )
 
     return {
         "threshold": float(threshold),

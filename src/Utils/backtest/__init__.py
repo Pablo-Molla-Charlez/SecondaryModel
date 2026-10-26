@@ -7,6 +7,7 @@ Split from the previous ``_impl.py`` / ``_comparison_impl.py`` monoliths into:
 - :mod:`comparison` — per-gran vs unified comparison, paradigm comparison
 """
 from Utils.backtest.engine import (_annualization_factor,
+                                   _build_cash_equity,
                                    _build_spread_equity,
                                    _calc_drawdown,
                                    _calc_sharpe,

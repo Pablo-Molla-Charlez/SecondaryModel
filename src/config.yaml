@@ -7,8 +7,9 @@
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
-  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
+  csv_dir: "/home/pablo/M2_DS/SecondaryModel/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
+  raw_data_dir:  "/home/pablo/M2_DS/SecondaryModel/src/Data_MLA/Raw"   # raw OHLCV(A) root for regime/JM features
+  output_root: "/home/pablo/M2_DS/SecondaryModel/src/Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
@@ -21,12 +22,22 @@ data:
     granularity: "all"        # "1d", "4h", etc. or "all" for multi-granularity
     forecast_horizon: 7
 
+    # ┏━━━━━━━━━━ Regime (global Sparse Jump Model) ━━━━━━━━━━┓
+    # Defaults for Utils/regime. K is pinned to 2 (bull/bear) by design — the
+    # fold-composition analysis needs a two-regime split, so BIC searches only
+    # lambda and kappa, never K. jump_penalty is the fallback when BIC is off;
+    # a --select-bic fit overrides it with the selected lambda per granularity.
+    regime_variant: "sparse"
+    regime_k: 2
+    regime_jump_penalty: 20.0
+    regime_scope: "global"      # "asset" | "global"; global -> Output/Jump_Models/_global/<gran>/
+
   # ┏━━━━━━━━━━ Data Splits ━━━━━━━━━━┓
   split:
     start_date: "2024-07-01"
-    train_end:  "2025-05-30"
-    val_end:    "2025-10-01"
-    end_date:   "2026-01-25"
+    train_end:  "2025-08-31"
+    val_end:    "2025-12-31"
+    end_date:   "2026-08-01"
 
   # ┏━━━━━━━━━━ Features ━━━━━━━━━━┓
   features:
@@ -45,9 +56,9 @@ evaluation:
 # ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
 experiment:
   m1: "kronos"                                                       # choice:  ["chronos2", "fincast", "tirex", "kronos"]
-  m2: ["autogluon"]              # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm"]
+  m2: ["autogluon", "ctts", "tabpfn", "tabicl"]
   direction: [ "up", "down" ]                                       # choices: ["up", "down"]
-  granularity: [ "1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]  # choices: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
+  granularity: [ "1d", "12h", "8h", "6h", "4h", "2h", "1h" ]
 
 
 # ┏━━━━━━━━━━ Runtime / Experiment Configuration ━━━━━━━━━━┓
@@ -58,6 +69,8 @@ runtime:
     edge: false               # choice: ["true" or "false"]
     combined: false           # choice: ["true" or "false"]
     feature_selection: true   # choice: ["true" or "false"]
+    regime: false             # choice: ["true" or "false"] — Phase 5: 4-scenario regime analysis
+                              # (needs the SJM fits + Phase 2 per-sample CSVs; cheap, read-only)
 
   hpo:
     n_trials: 100  # Optuna trials per (m2, direction, granularity)
@@ -71,9 +84,11 @@ runtime:
     thres: "utility_nocal"     # Threshold selection: "utility" (Isotonic calibration on Val-Cal + utility-opt τ on Val-Opt) | "utility_nocal" (no calibration; merged Val-Cal+Val-Opt)
 
   edge:
+    strategy: "cpcv"    # "cpcv" (combinatorial, all C(n_blocks,k_test) splits + verdict gate) |
+                        # "cvexpand" (walk-forward only, no combinatorics, no verdict — set via --mode on the CLI)
     n_trials: 1
     n_blocks: 6
-    k_test: 2
+    k_test: 2           # unused by cvexpand (expanding scheme fixes k_test structurally)
 
   combined:
     combined_backtest: [ "place_holder_up", "place_holder_down" ]

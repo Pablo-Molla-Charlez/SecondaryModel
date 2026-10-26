@@ -1,19 +1,18 @@
 """
-Edge Analysis — Model Stability & Regime Sensitivity
-=====================================================
-Two modes:
-  --mode seeds  : 100 trials with different seeds on a static train/val/test split
-  --mode cpcv   : Combinatorial Purged Cross-Validation (Lopez de Prado)
-                  N=6 datetime blocks, k=2 test → C(6,2)=15 splits → 5 paths
+Edge Analysis — Cross-Validation Evidence
+========================================
+Two modes, both writing a per-sample CSV that the regime analysis consumes:
+  --mode cpcv     : Combinatorial Purged Cross-Validation (Lopez de Prado)
+                    N=6 datetime blocks, k=2 test → C(6,2)=15 splits → 5 paths
+  --mode cvexpand : expanding-window purged CV — same datetime blocks and time-based
+                    purge, but walk-forward only (no combinatorics)
 
 Supported models: rf, xgboost, autogluon, tabpfn, tabpfn_ft
 
 Usage:
-  python -m Utils.edge --cache path/to/multi_cache.pt --mode seeds
-  python -m Utils.edge --cache path/to/multi_cache.pt --mode seeds --model xgboost
   python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv
   python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv --model tabpfn_ft
-  python -m Utils.edge --cache path/to/multi_cache.pt --mode cpcv --n-blocks 8 --k-test 2
+  python -m Utils.edge --cache path/to/multi_cache.pt --mode cvexpand
 """
 import math
 import argparse, sys, json
@@ -63,13 +62,11 @@ from Utils.ts_cross_validation import (_gran_to_timedelta,
                                        _generate_cpcv_splits,
                                        _reconstruct_paths,
                                        compute_embargo_splits as _compute_embargo_splits,
-                                       compute_seeds_embargo_splits as _compute_seeds_embargo_splits,
                                        CAL_SPLIT_RATIO)
 
 # ┏━━━━━━━━━━ Imports from Edge Plots ━━━━━━━━━━┓
 from .plots import (_plot_edge_curves,
                     _plot_summary_boxplots,
-                    _plot_cross_gran_seeds,
                     _plot_split_matrix,
                     _plot_path_boxplots,
                     _plot_cross_gran_cpcv)
@@ -300,331 +297,6 @@ def _compute_m1_baseline_on_raw_indices(sub: dict, idx_raw: list) -> dict:
         result["m1_acc"]  = float(accuracy_score(t[ok], p[ok]))
         result["m1_prec"] = float(precision_score(t[ok], p[ok], zero_division=0))
     return result
-
-
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ██████  MODE: SEEDS  ██████
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-# ┏━━━━━━━━━━ Run single trial [How noisy is the model under different seeds?] ━━━━━━━━━━┓
-def _run_single_trial(eng, labels, returns, split_indices, direction, fee, seed, granularity, horizon,
-                      model_key="rf"):
-    """Train one model with a given seed, return metrics.
-
-    4-way split: Train / Val-Cal / Val-Opt / Val-Eval (all carved inside
-    train+val — the real TEST window is never referenced here; embargo gaps
-    are handled upstream by ``compute_seeds_embargo_splits``).
-    Order: Train → Calibrate on Cal → Sweep τ on calibrated Opt → Evaluate on calibrated Val-Eval.
-
-    The result key remains ``"test"`` (in the dict) to keep downstream plot
-    code unchanged; it means "evaluation set of this trial" = Val-Eval, NOT
-    the real test window.
-    """
-    # ┏━━━━━━━━━━ Get 4-way split indices (Val-Eval is the per-trial hold-out) ━━━━━━━━━━┓
-    idx_train, idx_cal, idx_opt, idx_val_eval = split_indices
-
-    # ┏━━━━━━━━━━ Extract data for each split ━━━━━━━━━━┓
-    X_train = eng[idx_train];     y_train = labels[idx_train].astype(int)
-    X_cal   = eng[idx_cal];       y_cal   = labels[idx_cal].astype(int)
-    X_opt   = eng[idx_opt];       y_opt   = labels[idx_opt].astype(int)
-    X_test  = eng[idx_val_eval];  y_test  = labels[idx_val_eval].astype(int)   # Val-Eval acts as "test" within this trial
-    opt_returns  = returns[idx_opt].copy()
-    test_returns = returns[idx_val_eval].copy()
-
-    # ┏━━━━━━━━━━ Adjust returns based on direction ━━━━━━━━━━┓
-    if direction.lower() == "down":
-        opt_returns  = -opt_returns
-        test_returns = -test_returns
-
-    ann_horizon = np.sqrt(_annualization_factor(granularity) ** 2 / max(horizon, 1))
-
-    # ┏━━━━━━━━━━ Scale features (skip for TabPFN) ━━━━━━━━━━┓
-    if model_key not in MODELS_NO_SCALING:  # TODO this is very questionable to only scale for some models?! Why is that?
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_cal   = scaler.transform(X_cal)
-        X_opt   = scaler.transform(X_opt)
-        X_test  = scaler.transform(X_test)
-
-    # ┏━━━━━━━━━━ Step 1: Build and train model ━━━━━━━━━━┓
-    n_pos = int(y_train.sum())
-    n_neg = len(y_train) - n_pos
-    cw_ratio = n_neg / max(n_pos, 1)
-    model = _build_edge_model(model_key, len(y_train), seed=seed, class_weight_ratio=cw_ratio)
-    model.fit(X_train, y_train)
-
-    # ┏━━━━━━━━━━ Step 2: Calibrate on Val-Cal ━━━━━━━━━━┓
-    cal_probs_raw = model.predict_proba(X_cal)[:, 1]
-    _cal = calibrate_probabilities(cal_probs_raw, y_cal)
-    calibrator = _cal["calibrator"]
-
-    # ┏━━━━━━━━━━ Step 3: Sweep threshold on calibrated Val-Opt ━━━━━━━━━━┓
-    opt_probs_raw = model.predict_proba(X_opt)[:, 1]
-    opt_probs_cal = calibrator.predict(opt_probs_raw)
-    op = _find_best_utility_threshold(opt_probs_cal, opt_returns, fee=fee, labels=y_opt)
-    val_thr = op["threshold"]
-
-    # ┏━━━━━━━━━━ Step 4: Evaluate on calibrated Test ━━━━━━━━━━┓
-    test_preds = model.predict(X_test)
-    test_probs_raw = model.predict_proba(X_test)[:, 1]
-    test_probs_cal = calibrator.predict(test_probs_raw)
-
-    # ┏━━━━━━━━━━ Base classifier metrics (predict @0.5, no selective threshold) ━━━━━━━━━━┓
-    acc  = accuracy_score(y_test, test_preds)
-    prec = precision_score(y_test, test_preds, zero_division=0)
-    rec  = recall_score(y_test, test_preds, zero_division=0)
-    f1   = f1_score(y_test, test_preds, zero_division=0)
-
-    # ┏━━━━━━━━━━ Selective metrics (threshold on calibrated test probs) ━━━━━━━━━━┓
-    sel = test_probs_cal >= val_thr
-    n_sel = int(sel.sum())
-    sel_acc  = accuracy_score(y_test, sel.astype(int))
-    sel_prec = float((y_test[sel] == 1).sum()) / max(n_sel, 1) if n_sel > 0 else 0.0
-    coverage = n_sel / len(y_test) if len(y_test) > 0 else 0.0
-    net_rets = test_returns[sel] - fee if n_sel > 0 else np.array([0.0])
-    mean_ret_sel = float(np.nanmean(net_rets))
-    sel_sharpe = _calc_sharpe(net_rets, ann_horizon) if n_sel > 1 else 0.0
-
-    # ┏━━━━━━━━━━ Base classifier metrics (predict @0.5, no selective threshold) ━━━━━━━━━━┓
-    base_pred_mask = test_preds == 1
-    n_base_pred = int(base_pred_mask.sum())
-    base_net_rets = test_returns[base_pred_mask] - fee if n_base_pred > 0 else np.array([0.0])
-    mean_ret = float(np.nanmean(base_net_rets))
-
-    # ┏━━━━━━━━━━ Store results (test only — no val metrics needed) ━━━━━━━━━━┓
-    result = {"test": {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1,
-                       "sel_accuracy": sel_acc, "sel_precision": sel_prec,
-                       "sel_coverage": coverage, "sel_threshold": val_thr,
-                       "mean_ret": mean_ret, "sel_mean_ret": mean_ret_sel,
-                       "sel_sharpe": sel_sharpe}}
-    return result
-
-
-
-# ┏━━━━━━━━━━ Seeds: main runner ━━━━━━━━━━┓
-def run_seeds_analysis(cache_path, config, output_root, n_trials=100, m2_name="rf", direction="up", granularity="1d"):
-    # ┏━━━━━━━━━━ Extract config ━━━━━━━━━━┓
-    train_end  = config["data"]["split"]["train_end"]
-    val_end    = config["data"]["split"]["val_end"]
-    fee        = config["evaluation"]["fee_per_trade"]
-    horizon    = config["data"]["load"]["forecast_horizon"]
-    
-    # ┏━━━━━━━━━━ Load cache ━━━━━━━━━━┓
-    print(f"\n[edge-seeds] Loading cache: {cache_path}")
-    multi = _load_multi_cache(cache_path)
-    print(f"[edge-seeds] Direction: {direction} | Granularities: {multi.grans}")
-    print(f"[edge-seeds] Trials: {n_trials} | Fee: {fee}")
-    print(f"[edge-seeds] Output: {output_root}\n")
-
-    # ┏━━━━━━━━━━ Initialize summary ━━━━━━━━━━┓
-    summary_all = {}
-
-    print(f"\n{'='*60}")
-    print(f"[edge-seeds] {granularity} — {direction.upper()} — {n_trials} trials")
-    print(f"{'='*60}")
-
-    # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
-    sub = multi.sub[granularity]
-    eng = sub["eng_features"]
-    if isinstance(eng, torch.Tensor): eng = eng.numpy()
-    labels = sub["labels"]
-    if isinstance(labels, torch.Tensor): labels = labels.numpy()
-    returns = sub["returns"]
-    if isinstance(returns, torch.Tensor): returns = returns.numpy()
-
-    # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
-    valid = ~np.isnan(labels)
-    eng, labels, returns = eng[valid], labels[valid], returns[valid]
-
-    # ┏━━━━━━━━━━ Get dates ━━━━━━━━━━┓
-    dates_all = sub["dates"]
-    dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid[i]]
-
-    # ┏━━━━━━━━━━ 4-way split with embargo — INSIDE train+val only (no TEST leakage) ━━━━━━━━━━┓
-    # The real TEST window (dates > val_end) is never exposed during the
-    # seeds-convergence experiment. Per-seed noise is measured on Val-Eval,
-    # a held-out slice carved from the tail of the train+val timeline.
-    splits = _compute_seeds_embargo_splits(dates_valid, train_end, val_end, horizon, granularity)
-    idx_train    = splits["idx_train"]
-    idx_cal      = splits["idx_cal"]
-    idx_opt      = splits["idx_opt"]
-    idx_val_eval = splits["idx_val_eval"]
-    purge_td     = splits["purge_td"]
-    b            = splits["boundaries"]
-
-    # ┏━━━━━━━━━━ Check for empty splits ━━━━━━━━━━┓
-    if any(len(s) == 0 for s in [idx_train, idx_cal, idx_opt, idx_val_eval]):
-        print(f"  [SKIP] Empty split (train={len(idx_train)} cal={len(idx_cal)} "
-                f"opt={len(idx_opt)} val_eval={len(idx_val_eval)})")
-        return None
-
-    # ┏━━━━━━━━━━ Print split info ━━━━━━━━━━┓
-    print(f"  Splits: train={len(idx_train):,}  cal={len(idx_cal):,}  "
-            f"opt={len(idx_opt):,}  val_eval={len(idx_val_eval):,}  (TEST window excluded)")
-    print(f"  Boundaries: train→{b['train_end'].strftime('%Y-%m-%d')} | "
-            f"cal→{b['cal_end'].strftime('%Y-%m-%d')} | "
-            f"opt→{b['opt_end'].strftime('%Y-%m-%d')} | "
-            f"val_eval→{b['val_end'].strftime('%Y-%m-%d')}  |  Purge: {purge_td}")
-    print(f"  Features: {eng.shape[1]}")
-
-    # ┏━━━━━━━━━━ Compute M1 baselines on Val-Eval (NOT on real test) ━━━━━━━━━━┓
-    # Build raw-index list that matches idx_val_eval in the valid-filtered space.
-    m1_pred = sub.get("m1_pred_labels")
-    m1_true = sub.get("m1_true_labels")
-    if isinstance(m1_pred, torch.Tensor): m1_pred = m1_pred.numpy()
-    if isinstance(m1_true, torch.Tensor): m1_true = m1_true.numpy()
-    # Map valid-filtered Val-Eval indices back to raw cache indices
-    valid_to_raw = np.flatnonzero(valid)
-    idx_val_eval_raw = valid_to_raw[idx_val_eval].tolist() if len(idx_val_eval) else []
-
-    m1_acc_test = m1_prec_test = None
-    if m1_pred is not None and m1_true is not None and len(idx_val_eval_raw) > 0:
-        p = m1_pred[idx_val_eval_raw]
-        t = m1_true[idx_val_eval_raw]
-        ok = ~np.isnan(p) & ~np.isnan(t)
-        if ok.sum() > 0:
-            m1_acc_test  = float(accuracy_score(t[ok], p[ok]))
-            m1_prec_test = float(precision_score(t[ok], p[ok], zero_division=0))
-
-    rets_val_eval = returns[idx_val_eval].copy()
-    if direction.lower() == "down":
-        rets_val_eval = -rets_val_eval
-    m1_ret_test = float(np.nanmean(rets_val_eval - fee)) if len(rets_val_eval) > 0 else 0.0
-
-    # ┏━━━━━━━━━━ Keep the dict shape expected by plot helpers ━━━━━━━━━━┓
-    m1_baselines = {"val":  {"m1_acc": None, "m1_prec": None, "m1_mean_ret": None},
-                    "test": {"m1_acc":  m1_acc_test,
-                                "m1_prec": m1_prec_test,
-                                "m1_mean_ret": m1_ret_test}}
-
-    # ┏━━━━━━━━━━ Print M1 baselines (on Val-Eval) ━━━━━━━━━━┓
-    if m1_acc_test is not None:
-        print(f"  M1 Baseline Val-Eval: acc={m1_acc_test:.4f}  "
-                f"prec={m1_prec_test:.4f}  mean_ret={m1_ret_test:.6f}")
-    else:
-        print(f"  M1 Baselines — not available | Mean Ret Val-Eval: {m1_ret_test:.6f}")
-
-    # ┏━━━━━━━━━━ Run trials (Val-Eval stands in for 'test' within each trial) ━━━━━━━━━━┓
-    all_trials = []
-    for trial_i in range(n_trials):
-        seed = trial_i * 7 + 1
-        result = _run_single_trial(eng, labels, returns,
-                                    (idx_train, idx_cal, idx_opt, idx_val_eval),
-                                    direction, fee, seed, gran, horizon,
-                                    model_key=model_key)
-        all_trials.append(result)
-        if (trial_i + 1) % 10 == 0 or trial_i == 0:
-            t = result["test"]
-            print(f"    Trial {trial_i+1:3d}/{n_trials}: test_acc={t['accuracy']:.4f}  "
-                    f"sel_prec={t['sel_precision']:.4f}  sel_μ={t['sel_mean_ret']:+.5f}  τ={t['sel_threshold']:.3f}")
-
-    # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
-    gran_dir = output_root / direction.upper() / granularity
-    gran_dir.mkdir(parents=True, exist_ok=True)
-
-    # ┏━━━━━━━━━━ Plot ━━━━━━━━━━┓
-    _plot_edge_curves(all_trials, "test", gran_dir / "edge_test.png", granularity, direction, n_trials, m1_baselines)
-    _plot_summary_boxplots(all_trials, gran_dir / "edge_summary.png", granularity, direction, n_trials, m1_baselines)
-
-    # ┏━━━━━━━━━━ Save trial results ━━━━━━━━━━┓
-    rows = []
-    for i, t in enumerate(all_trials):
-        row = {"trial": i, "seed": i * 7 + 1}
-        for k, v in t["test"].items():
-            row[f"test_{k}"] = v
-        rows.append(row)
-    pd.DataFrame(rows).to_csv(gran_dir / "edge_trials.csv", index=False)
-
-    # ┏━━━━━━━━━━ Compute summary statistics ━━━━━━━━━━┓
-    test_accs      = np.array([t["test"]["accuracy"]      for t in all_trials])
-    test_precs     = np.array([t["test"]["precision"]     for t in all_trials])
-    test_sel_accs  = np.array([t["test"]["sel_accuracy"]  for t in all_trials])
-    test_sel_precs = np.array([t["test"]["sel_precision"] for t in all_trials])
-    test_sel_covs  = np.array([t["test"]["sel_coverage"]  for t in all_trials])
-    test_sel_rets  = np.array([t["test"]["sel_mean_ret"]  for t in all_trials])
-    test_sel_shps  = np.array([t["test"]["sel_sharpe"]    for t in all_trials])
-    test_thresholds = np.array([t["test"]["sel_threshold"] for t in all_trials])
-
-    # ┏━━━━━━━━━━ Threshold distribution ━━━━━━━━━━┓
-    median_threshold = float(np.median(test_thresholds))
-    threshold_std    = float(np.std(test_thresholds))
-
-    # ┏━━━━━━━━━━ Profitability and Sharpe gates ━━━━━━━━━━┓
-    frac_profitable = float(np.mean(test_sel_rets > 0))
-    mean_sharpe     = float(np.mean(test_sel_shps))
-    std_sharpe      = float(np.std(test_sel_shps, ddof=1)) if len(test_sel_shps) > 1 else 0.0
-    sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(test_sel_shps), 1))
-
-    # ┏━━━━━━━━━━ Edge vs M1 ━━━━━━━━━━┓
-    acc_edge_test  = float(np.mean(test_accs) - m1_acc_test)   if m1_acc_test  else None
-    prec_edge_test = float(np.mean(test_precs) - m1_prec_test) if m1_prec_test else None
-
-    # ┏━━━━━━━━━━ Create summary dictionary ━━━━━━━━━━┓
-    summary = {
-        "granularity": gran, "direction": direction, "n_trials": n_trials,
-        "n_train": len(idx_train), "n_cal": len(idx_cal),
-        "n_opt": len(idx_opt), "n_val_eval": len(idx_val_eval),
-        "eval_split": "val_eval (carved inside train+val; real TEST excluded)",
-        "n_features": eng.shape[1],
-        "train_end":    str(b["train_end"]),
-        "cal_end":      str(b["cal_end"]),
-        "opt_end":      str(b["opt_end"]),
-        "val_eval_end": str(b["val_end"]),
-        "purge": str(purge_td),
-        "m1_baseline_val_eval_acc":  m1_acc_test,
-        "m1_baseline_val_eval_prec": m1_prec_test,
-        # Legacy keys retained for downstream plot compatibility:
-        "m1_baseline_test_acc": m1_acc_test, "m1_baseline_test_prec": m1_prec_test,
-        "test_acc_mean": float(np.mean(test_accs)), "test_acc_std": float(np.std(test_accs)),
-        "test_prec_mean": float(np.mean(test_precs)), "test_prec_std": float(np.std(test_precs)),
-        "test_sel_acc_mean": float(np.mean(test_sel_accs)), "test_sel_acc_std": float(np.std(test_sel_accs)),
-        "test_sel_prec_mean": float(np.mean(test_sel_precs)), "test_sel_prec_std": float(np.std(test_sel_precs)),
-        "test_sel_cov_mean": float(np.mean(test_sel_covs)), "test_sel_cov_std": float(np.std(test_sel_covs)),
-        "test_sel_ret_mean": float(np.mean(test_sel_rets)), "test_sel_ret_std": float(np.std(test_sel_rets)),
-        "median_threshold": median_threshold, "threshold_std": threshold_std,
-        "frac_profitable": frac_profitable,
-        "mean_sharpe": mean_sharpe, "sharpe_ci_lower": sharpe_ci_lower,
-        "acc_edge_test": acc_edge_test, "prec_edge_test": prec_edge_test,
-    }
-
-    # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓
-    summary_all[granularity] = summary
-
-    # ┏━━━━━━━━━━ Print summary ━━━━━━━━━━┓
-    print(f"\n  ┌─ {granularity} {direction.upper()} Seeds Summary ──────────────┐")
-    if m1_acc_test is not None:
-        print(f"  │ M1 Baseline Test: acc={m1_acc_test:.4f}  prec={m1_prec_test:.4f}")
-    print(f"  │ M2 Test Acc:      {summary['test_acc_mean']:.4f} ± {summary['test_acc_std']:.4f}" + (f"  (edge: {acc_edge_test:+.4f})" if acc_edge_test else ""))
-    print(f"  │ M2 Test Prec:     {summary['test_prec_mean']:.4f} ± {summary['test_prec_std']:.4f}" + (f"  (edge: {prec_edge_test:+.4f})" if prec_edge_test else ""))
-    print(f"  │ Sel Mean Ret:     {summary['test_sel_ret_mean']:+.5f} ± {summary['test_sel_ret_std']:.5f}")
-    print(f"  │ Frac Profitable:  {frac_profitable:.0%}")
-    print(f"  │ Sharpe:           {mean_sharpe:.2f} (CI lower: {sharpe_ci_lower:.2f})")
-    print(f"  │ Median Threshold: {median_threshold:.3f} ± {threshold_std:.3f}")
-    gate_pass = frac_profitable > 0.70 and sharpe_ci_lower > 0
-    print(f"  │ Gate: {'PASS ✓' if gate_pass else 'FAIL ✗'}  (>70% profitable AND CI>0)")
-    print(f"  └──────────────────────────────────────┘")
-    print(f"  Saved to: {gran_dir}")
-
-    # ┏━━━━━━━━━━ Save summary ━━━━━━━━━━┓  
-    if summary_all:
-        summary_path = output_root / direction.upper() / f"edge_summary_{granularity}.json"
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(summary_path, "w") as f:
-            json.dump(summary_all, f, indent=2)
-        print(f"\n[edge-seeds] Summary: {summary_path}")
-    print(f"\n[edge-seeds] Done.")
-
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ██████  MODE: CPCV  ██████
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Block/path/purge helpers (_gran_to_timedelta, _build_datetime_blocks,
-# _assign_blocks, _generate_cpcv_splits, _reconstruct_paths) are imported
-# from Utils.ts_cross_validation at the top of this module — single source
-# of truth shared with the CombinatorialPurgedCV class.
 
 
 # ┏━━━━━━━━━━ Helper to run CPCV split (with & without OOB-calibrated threshold) ━━━━━━━━━━┓
@@ -869,6 +541,7 @@ def _compute_path_metrics(path_results, fee):
         "m1_mean_ret": float(np.nanmean(m1_net)),
         "n_samples": n_samples,
         "n_selected": n_selected,
+        "_y": y_all.astype(int),
         "_preds": preds_all.astype(int),
         "_probs": probs_all,
         "_sel": sel_all.astype(int),
@@ -878,13 +551,289 @@ def _compute_path_metrics(path_results, fee):
 
 
 
+# ┏━━━━━━━━━━ Per-sample persistence (regime-composition analysis) ━━━━━━━━━━┓
+def _write_sample_level_csv(metrics_list, dates_by_unit, out_path, unit_key="path"):
+    """Persist one row per evaluated sample: unit id, date, asset, label, pred, prob, sel, ret.
+
+    The path/split metrics dicts already carry per-sample arrays (_preds/_probs/_sel/
+    _rets/_assets) and the runners already track the matching dates, but until now
+    both were consumed only by the plots and then discarded. The regime-composition
+    analysis needs to join each sample to a dated regime label, which the aggregated
+    per-path CSV cannot support. Writing them out here keeps that analysis a pure
+    read-side consumer instead of forcing it to re-run the CV.
+    """
+    rows = []
+    for ui, (pm, unit_dates) in enumerate(zip(metrics_list, dates_by_unit)):
+        n = len(pm["_rets"])
+        if len(unit_dates) != n:
+            # Misalignment would silently corrupt every downstream regime join.
+            print(f"  [WARN] {unit_key} {ui+1}: {len(unit_dates)} dates vs {n} samples; skipping")
+            continue
+        rows.append(pd.DataFrame({
+            unit_key: ui + 1,
+            "date":   pd.to_datetime(list(unit_dates)),
+            "asset":  pm["_assets"],
+            "y_true": pm["_y"] if "_y" in pm else np.nan,
+            "pred":   pm["_preds"],
+            "prob":   pm["_probs"],
+            "sel":    pm["_sel"],
+            "ret":    pm["_rets"],
+        }))
+    if rows:
+        pd.concat(rows, ignore_index=True).to_csv(out_path, index=False)
+        print(f"  [saved] per-sample -> {out_path.name}")
+
+
+# ┏━━━━━━━━━━ Expanding-window purged CV: main runner ━━━━━━━━━━┓
+def run_cvexpand_analysis(cache_path, config, output_root, n_blocks=6, m2_name="rf", direction="up", granularity="1d", nocal=False):
+    """Expanding-window CV with time-based purge (no combinatorics).
+
+    Reuses the SAME datetime-block construction and purge-by-timedelta logic as CPCV
+    (_build_datetime_blocks / _assign_blocks, purge_td = horizon * bar_width), but
+    instead of every C(n_blocks, k_test) combination, only walks forward: for block
+    i = 1..n_blocks-1, train = blocks [0..i-1] (purged near the boundary with block i),
+    test = block i alone. This mirrors classic expanding-window walk-forward CV while
+    keeping the same leakage protection CPCV uses at each train/test boundary.
+
+    Unlike CPCV there is no "path" reconstruction: each split already IS one full
+    train/test partition, not a combinatorial fragment.
+    """
+    # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
+    fee     = config["evaluation"]["fee_per_trade"]
+    horizon = config["data"]["load"]["forecast_horizon"]
+
+    # ┏━━━━━━━━━━ Load multi cache ━━━━━━━━━━┓
+    print(f"\n[edge-cvexpand] Loading cache: {cache_path}")
+    multi = _load_multi_cache(cache_path)
+    print(f"[edge-cvexpand] Direction: {direction} | Granularities: {multi.grans}")
+    print(f"[edge-cvexpand] Expanding-window CV: N={n_blocks} blocks -> {n_blocks - 1} splits")
+    print(f"[edge-cvexpand] Fee: {fee} | Horizon: {horizon}")
+    print(f"[edge-cvexpand] Output: {output_root}\n")
+
+    print(f"\n{'='*60}")
+    print(f"[edge-cvexpand] {granularity} — {direction.upper()}")
+    print(f"{'='*60}")
+
+    # ┏━━━━━━━━━━ Extract data ━━━━━━━━━━┓
+    sub = multi.sub[granularity]
+    eng = sub["eng_features"]
+    if isinstance(eng, torch.Tensor): eng = eng.numpy()
+    labels = sub["labels"]
+    if isinstance(labels, torch.Tensor): labels = labels.numpy()
+    returns = sub["returns"]
+    if isinstance(returns, torch.Tensor): returns = returns.numpy()
+    asset_ids = sub["asset_ids"]
+    if isinstance(asset_ids, torch.Tensor): asset_ids = asset_ids.numpy()
+    asset_map = sub.get("asset_map", {})
+    if not isinstance(asset_map, dict) and hasattr(sub, "asset_map"): asset_map = sub.asset_map
+    dates_all_raw = sub["dates"]
+
+    # ┏━━━━━━━━━━ CTTS branch: replace eng with raw close windows ━━━━━━━━━━┓
+    if m2_name == "ctts":
+        from Utils.classifier.ctts.ctts_features import extract_close_windows
+        from Utils.data import GRAN_SEQ_LEN
+        _ctts_seq = min(90, GRAN_SEQ_LEN.get(granularity, 90))
+        eng = extract_close_windows(sub, seq_len=_ctts_seq)
+        print(f"  [CTTS] Using raw close windows: shape {eng.shape} (seq_len={_ctts_seq})")
+
+    # ┏━━━━━━━━━━ Filter valid samples ━━━━━━━━━━┓
+    valid = ~np.isnan(labels)
+    eng, labels, returns, asset_ids = eng[valid], labels[valid], returns[valid], asset_ids[valid]
+    dates_valid = [dates_all_raw[i] for i in range(len(dates_all_raw)) if valid[i]]
+
+    # ┏━━━━━━━━━━ CRITICAL: Exclude Test data — cvexpand only ever sees Train+Val ━━━━━━━━━━┓
+    t_val_end = pd.Timestamp(config["data"]["split"]["val_end"])
+    # Lower bound as well as upper: a prediction must not be *dated* before the
+    # configured start_date. Context windows may reach further back (the model needs
+    # history), but the first evaluated sample belongs to the declared window --
+    # otherwise the evaluated span silently depends on granularity (1h reached 37
+    # days earlier than 1d), and the reported window does not match the data.
+    t_start = pd.Timestamp(config["data"]["split"]["start_date"])
+    cvx_mask = np.array([(d >= t_start) and (d <= t_val_end) for d in dates_valid])
+    n_before = int(sum(1 for d in dates_valid if d < t_start))
+    n_excluded = int((~cvx_mask).sum())
+    eng = eng[cvx_mask]
+    labels = labels[cvx_mask]
+    returns = returns[cvx_mask]
+    asset_ids = asset_ids[cvx_mask]
+    dates_valid = [d for d, m in zip(dates_valid, cvx_mask) if m]
+
+    print(f"  Samples: {len(labels):,} (excluded {n_excluded:,} outside "
+          f"{t_start.strftime('%Y-%m-%d')}..{t_val_end.strftime('%Y-%m-%d')}; "
+          f"{n_before:,} before start_date)")
+    print(f"  Features: {eng.shape[1]}")
+
+    # ┏━━━━━━━━━━ Build datetime blocks (SAME construction as CPCV) ━━━━━━━━━━┓
+    boundaries = _build_datetime_blocks(dates_valid, n_blocks)
+    block_ids = _assign_blocks(dates_valid, boundaries)
+    for b in range(n_blocks):
+        b_size = int((block_ids == b).sum())
+        print(f"    Block {b}: {boundaries[b][0].strftime('%Y-%m-%d')} → "
+              f"{boundaries[b][1].strftime('%Y-%m-%d')} ({b_size:,} samples)")
+    unassigned = int((block_ids == -1).sum())
+    if unassigned > 0:
+        print(f"    WARNING: {unassigned} samples unassigned")
+
+    # ┏━━━━━━━━━━ Purge window (SAME as CPCV: horizon x bar width) ━━━━━━━━━━┓
+    bar_td = _gran_to_timedelta(granularity)
+    purge_td = bar_td * horizon
+    print(f"  Purge: {purge_td} (= {horizon} x {bar_td})")
+
+    # ┏━━━━━━━━━━ Generate expanding-window splits ━━━━━━━━━━┓
+    # Split i: train = blocks [0..i-1] (right edge purged near block i's start), test = block i.
+    # No left-side purge is needed on the test block itself — nothing after it is ever used
+    # as train in an expanding scheme, unlike CPCV's combinatorial train blocks on both sides.
+    dates_arr = np.asarray(dates_valid)
+    splits = []
+    for i in range(1, n_blocks):
+        idx_test = np.where(block_ids == i)[0]
+        idx_train_raw = np.where(np.isin(block_ids, list(range(i))))[0]
+        if len(idx_test) == 0 or len(idx_train_raw) == 0:
+            continue
+
+        test_start, _test_end = boundaries[i]
+        purged_mask = np.zeros(len(dates_arr), dtype=bool)
+        for j in idx_train_raw:
+            t = dates_arr[j]
+            if (test_start - purge_td) <= t < test_start:
+                purged_mask[j] = True
+
+        idx_train = idx_train_raw[~purged_mask[idx_train_raw]]
+        splits.append({"test_block": i, "idx_train": idx_train, "idx_test": idx_test,
+                       "idx_purged": idx_train_raw[purged_mask[idx_train_raw]]})
+
+    avg_purged = np.mean([len(s["idx_purged"]) for s in splits]) if splits else 0.0
+    avg_train  = np.mean([len(s["idx_train"])  for s in splits]) if splits else 0.0
+    avg_test   = np.mean([len(s["idx_test"])   for s in splits]) if splits else 0.0
+    print(f"  {len(splits)} splits | Avg: train={avg_train:.0f}, test={avg_test:.0f}, purged={avg_purged:.0f}")
+
+    if not splits:
+        print(f"  [SKIP] No valid expanding-window splits")
+        return
+
+    # ┏━━━━━━━━━━ Create output directory ━━━━━━━━━━┓
+    gran_dir = output_root / direction.upper() / granularity
+    gran_dir.mkdir(parents=True, exist_ok=True)
+
+    # ┏━━━━━━━━━━ Load HPO params ━━━━━━━━━━┓
+    _best_params = _load_best_params(config, m2_name, direction, granularity)
+    _feature_names = list(sub.get("feature_names", [])) if hasattr(sub, "feature_names") or "feature_names" in sub else None
+
+    # ┏━━━━━━━━━━ Run splits (reuses the SAME per-split fit/calibrate/eval as CPCV) ━━━━━━━━━━┓
+    split_metrics_list, dates_by_split = [], []
+    for si, sp in enumerate(splits):
+        result = _run_cpcv_split(eng, labels, returns, asset_ids, asset_map,
+                                 sp["idx_train"], sp["idx_test"],
+                                 direction, fee,
+                                 model_key    = m2_name,
+                                 best_params  = _best_params,
+                                 feature_names = _feature_names,
+                                 nocal        = nocal)
+        acc = accuracy_score(result["y_test"], result["preds"])
+        print(f"    Split {si+1:2d}/{len(splits)}: test_block={sp['test_block']} "
+              f"n_test={len(sp['idx_test']):,} acc={acc:.4f} thr={result['threshold']:.3f}")
+
+        # Each split IS the reportable unit directly (no path stitching needed).
+        pm = _compute_path_metrics([{
+            "idx_test": result["idx_test"], "y_test": result["y_test"],
+            "preds": result["preds"], "probs": result["probs"], "sel": result["sel"],
+            "threshold": result["threshold"], "test_returns": result["test_returns"],
+            "test_assets": result["test_assets"], "n_sel": int(result["sel"].sum()),
+        }], fee)
+        split_metrics_list.append(pm)
+        dates_by_split.append([dates_valid[idx] for idx in sp["idx_test"]])
+        print(f"    Split {si+1}: n={pm['n_samples']:,} acc={pm['accuracy']:.4f} "
+              f"prec={pm['precision']:.4f} sel_prec={pm['sel_precision']:.4f} "
+              f"cov={pm['sel_coverage']:.3f} sel_μ_ret={pm['sel_mean_ret']:+.5f}")
+
+    # ┏━━━━━━━━━━ M1 baseline on the raw (train+val) timeline ━━━━━━━━━━┓
+    m1_baselines = _compute_m1_baseline_on_raw_indices(sub, list(range(len(dates_all_raw))))
+    if m1_baselines["m1_acc"] is not None:
+        print(f"\n  M1 Baseline: acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
+
+    # ┏━━━━━━━━━━ Plots (same helpers as CPCV; "path" = "split" here) ━━━━━━━━━━┓
+    sharpes, total_rets = _plot_path_equity(split_metrics_list,
+                                            dates_by_split,
+                                            gran_dir / "cvexpand_equity.png",
+                                            granularity,
+                                            direction,
+                                            fee,
+                                            horizon,
+                                            granularity,
+                                            config,
+                                            unit_label="Split")
+    _plot_path_boxplots(split_metrics_list,
+                        m1_baselines,
+                        gran_dir / "cvexpand_boxplots.png",
+                        granularity,
+                        direction,
+                        unit_label="Splits",
+                        scheme_label="Expanding-Window CV")
+
+    # ┏━━━━━━━━━━ CSV ━━━━━━━━━━┓
+    rows = []
+    for si, pm in enumerate(split_metrics_list):
+        row = {"split": si + 1, "test_block": splits[si]["test_block"]}
+        for k in ["accuracy", "precision", "recall", "f1", "sel_accuracy", "sel_precision",
+                   "sel_coverage", "mean_ret", "sel_mean_ret", "m1_mean_ret", "n_samples", "n_selected"]:
+            row[k] = pm[k]
+        if si < len(sharpes):
+            row["sharpe"] = sharpes[si]
+            row["total_ret_pct"] = total_rets[si]
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(gran_dir / "cvexpand_splits.csv", index=False)
+    _write_sample_level_csv(split_metrics_list, dates_by_split,
+                            gran_dir / "cvexpand_samples.csv", unit_key="split")
+
+    # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
+    accs    = np.array([pm["accuracy"]      for pm in split_metrics_list])
+    precs   = np.array([pm["precision"]     for pm in split_metrics_list])
+    s_precs = np.array([pm["sel_precision"] for pm in split_metrics_list])
+    s_accs  = np.array([pm["sel_accuracy"]  for pm in split_metrics_list])
+    s_covs  = np.array([pm["sel_coverage"]  for pm in split_metrics_list])
+    s_rets  = np.array([pm["sel_mean_ret"]  for pm in split_metrics_list])
+
+    summary = {"granularity": granularity, "direction": direction,
+               "n_blocks": n_blocks, "n_splits": len(splits), "n_features": eng.shape[1],
+               "purge_window": str(purge_td),
+               "m1_baseline_acc": m1_baselines.get("m1_acc"),
+               "m1_baseline_prec": m1_baselines.get("m1_prec"),
+               "split_acc_mean": float(np.mean(accs)), "split_acc_std": float(np.std(accs)),
+               "split_prec_mean": float(np.mean(precs)), "split_prec_std": float(np.std(precs)),
+               "split_sel_acc_mean": float(np.mean(s_accs)), "split_sel_acc_std": float(np.std(s_accs)),
+               "split_sel_prec_mean": float(np.mean(s_precs)), "split_sel_prec_std": float(np.std(s_precs)),
+               "split_sel_cov_mean": float(np.mean(s_covs)), "split_sel_cov_std": float(np.std(s_covs)),
+               "split_sel_ret_mean": float(np.mean(s_rets)), "split_sel_ret_std": float(np.std(s_rets)),
+               "split_sharpes": sharpes, "split_total_rets": total_rets}
+
+    print(f"\n  ┌─ {granularity} {direction.upper()} Expanding-CV Summary ─────────────┐")
+    if m1_baselines["m1_acc"] is not None:
+        print(f"  │ M1 Baseline: acc={m1_baselines['m1_acc']:.4f}  prec={m1_baselines['m1_prec']:.4f}")
+    print(f"  │ Split Acc:       {summary['split_acc_mean']:.4f} ± {summary['split_acc_std']:.4f}")
+    print(f"  │ Split Prec:      {summary['split_prec_mean']:.4f} ± {summary['split_prec_std']:.4f}")
+    print(f"  │ Split Sel Prec:  {summary['split_sel_prec_mean']:.4f} ± {summary['split_sel_prec_std']:.4f}")
+    print(f"  │ Split Sel Cov:   {summary['split_sel_cov_mean']:.4f} ± {summary['split_sel_cov_std']:.4f}")
+    print(f"  │ Split Sel μ-Ret: {summary['split_sel_ret_mean']:+.5f} ± {summary['split_sel_ret_std']:.5f}")
+    print(f"  └─────────────────────────────────────────┘")
+    print(f"  Saved to: {gran_dir}")
+
+    summary_path = output_root / direction.upper() / f"edge_summary_cvexpand_{granularity}.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\n[edge-cvexpand] Summary: {summary_path}")
+    print(f"\n[edge-cvexpand] Done.")
+
+
 # ┏━━━━━━━━━━ CPCV: main runner ━━━━━━━━━━┓
 def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_name="rf", direction="up", granularity="1d", nocal=False):
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     fee       = config["evaluation"]["fee_per_trade"]
     horizon   = config["data"]["load"]["forecast_horizon"]
     
-    n_paths  = n_blocks // k_test
+    # Paths are C(N-1, k-1), matching _reconstruct_paths — NOT n_blocks // k_test,
+    # which under-reported (e.g. 6//2=3 while C(5,1)=5 paths are actually built).
+    n_paths  = math.comb(n_blocks - 1, k_test - 1)
     n_splits = len(list(combinations(range(n_blocks), k_test)))
     summary_all = {}
     
@@ -931,7 +880,12 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     # ┏━━━━━━━━━━ CRITICAL: Exclude Test data from CPCV ━━━━━━━━━━┓
     # CPCV must only use Train+Val data. Test period is completely invisible.
     t_val_end = pd.Timestamp(config["data"]["split"]["val_end"])
-    cpcv_mask = np.array([d <= t_val_end for d in dates_valid])
+    # See the CVExpand site: bound the window below by start_date as well, so the
+    # first prediction belongs to the declared evaluation window. Context windows
+    # may still reach back before it.
+    t_start = pd.Timestamp(config["data"]["split"]["start_date"])
+    cpcv_mask = np.array([(d >= t_start) and (d <= t_val_end) for d in dates_valid])
+    n_before = int(sum(1 for d in dates_valid if d < t_start))
     n_excluded = int((~cpcv_mask).sum())
     eng = eng[cpcv_mask]
     labels = labels[cpcv_mask]
@@ -939,7 +893,9 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     asset_ids = asset_ids[cpcv_mask]
     dates_valid = [d for d, m in zip(dates_valid, cpcv_mask) if m]
 
-    print(f"  Samples: {len(labels):,} (excluded {n_excluded:,} test samples after {t_val_end.strftime('%Y-%m-%d')})")
+    print(f"  Samples: {len(labels):,} (excluded {n_excluded:,} outside "
+          f"{t_start.strftime('%Y-%m-%d')}..{t_val_end.strftime('%Y-%m-%d')}; "
+          f"{n_before:,} before start_date)")
     print(f"  Features: {eng.shape[1]}")
 
     # ┏━━━━━━━━━━ Build datetime blocks ━━━━━━━━━━┓
@@ -1085,13 +1041,15 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     for pi, pm in enumerate(path_metrics_list):
         row = {"path": pi + 1}
         for k in ["accuracy", "precision", "recall", "f1", "sel_accuracy", "sel_precision",
-                   "sel_coverage", "sel_mean_ret", "m1_mean_ret", "n_samples", "n_selected"]:
+                   "sel_coverage", "mean_ret", "sel_mean_ret", "m1_mean_ret", "n_samples", "n_selected"]:
             row[k] = pm[k]
         if pi < len(sharpes):
             row["sharpe"] = sharpes[pi]
             row["total_ret_pct"] = total_rets[pi]
         rows.append(row)
     pd.DataFrame(rows).to_csv(gran_dir / "cpcv_paths.csv", index=False)
+    _write_sample_level_csv(path_metrics_list, dates_by_path,
+                            gran_dir / "cpcv_samples.csv", unit_key="path")
 
     # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
     accs    = np.array([pm["accuracy"]      for pm in path_metrics_list])
@@ -1102,22 +1060,12 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     s_rets  = np.array([pm["sel_mean_ret"]  for pm in path_metrics_list])
     worst_sharpe = min(sharpes) if sharpes else 0.0
 
-    # ┏━━━━━━━━━━ CPCV-only verdict ━━━━━━━━━━┓
-    # GREEN : median path Sharpe > 0  AND  ≥60% of paths have positive total return
-    # AMBER : exactly one condition passes
-    # RED   : neither condition passes
+    # ┏━━━━━━━━━━ Descriptive path statistics ━━━━━━━━━━┓
+    # Reported, not gated: the deployment verdict this used to emit has been removed —
+    # the regime analysis (Phase 5) is what the results are read from now.
     path_total_rets_arr = np.array(total_rets) if total_rets else np.array([0.0])
     frac_profitable = float(np.mean(path_total_rets_arr > 0))
     median_sharpe   = float(np.median(sharpes)) if sharpes else 0.0
-    cpcv_sharpe_ok  = median_sharpe > 0
-    cpcv_profit_ok  = frac_profitable >= 0.60
-    if cpcv_sharpe_ok and cpcv_profit_ok:
-        verdict = "GREEN"
-    elif cpcv_sharpe_ok or cpcv_profit_ok:
-        verdict = "AMBER"
-    else:
-        verdict = "RED"
-    verdict_icon = {"GREEN": "✓", "AMBER": "~", "RED": "✗"}[verdict]
 
     # ┏━━━━━━━━━━ Summary dict ━━━━━━━━━━┓
     summary = {"granularity": granularity, "direction": direction,
@@ -1134,12 +1082,8 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
                "path_sel_ret_mean": float(np.mean(s_rets)), "path_sel_ret_std": float(np.std(s_rets)),
                "worst_path_sharpe": worst_sharpe,
                "path_sharpes": sharpes, "path_total_rets": total_rets,
-               # CPCV-only gate fields
                "median_path_sharpe":  median_sharpe,
-               "frac_profitable":     frac_profitable,
-               "cpcv_sharpe_passes":  cpcv_sharpe_ok,
-               "cpcv_profit_passes":  cpcv_profit_ok,
-               "verdict":             verdict}
+               "frac_profitable":     frac_profitable}
 
     summary_all[granularity] = summary
 
@@ -1152,9 +1096,8 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     print(f"  │ Path Sel Prec:  {summary['path_sel_prec_mean']:.4f} ± {summary['path_sel_prec_std']:.4f}")
     print(f"  │ Path Sel Cov:   {summary['path_sel_cov_mean']:.4f} ± {summary['path_sel_cov_std']:.4f}")
     print(f"  │ Path Sel μ-Ret: {summary['path_sel_ret_mean']:+.5f} ± {summary['path_sel_ret_std']:.5f}")
-    print(f"  │ Median SR:      {median_sharpe:.2f}  (gate: {'>0' if cpcv_sharpe_ok else '≤0 FAIL'})")
-    print(f"  │ Frac Profitable:{frac_profitable:.0%}  (gate: {'≥60%' if cpcv_profit_ok else '<60% FAIL'})")
-    print(f"  │ Verdict:        [{verdict_icon}] {verdict}")
+    print(f"  │ Median SR:      {median_sharpe:.2f}")
+    print(f"  │ Frac Profitable:{frac_profitable:.0%}")
     print(f"  └─────────────────────────────────────────┘")
     print(f"  Saved to: {gran_dir}")
 
@@ -1169,182 +1112,19 @@ def run_cpcv_analysis(cache_path, config, output_root, n_blocks=6, k_test=2, m2_
     print(f"\n[edge-cpcv] Done.")
 
 
-# ┏━━━━━━━━━━ Compute edge convergence score ━━━━━━━━━━┓
-def compute_edge_convergence_score(cache_path, config, direction="up", model_name="rf", granularity="1d"):
-    """2-stage convergence score: CPCV (60%) + Seeds (40%).
 
-    Hard gates (AND logic — both must pass for GREEN):
-        CPCV:  median path Sharpe Ratio > 0  AND  >60% paths profitable
-        Seeds: >70% seeds profitable  AND  Sharpe Confidence Interval lower > 0
-    """
-    # ┏━━━━━━━━━━ Load Cache ━━━━━━━━━━┓
-    print(f"\n[edge-convergence] Loading cache: {cache_path}")
-    multi = _load_multi_cache(cache_path)
-    
-    # ┏━━━━━━━━━━ Get Granularities ━━━━━━━━━━┓
-    edge_root = Path(config["paths"]["output_root"]) / "Analysis" / "Edge" / config["experiment"]["m1"].capitalize() / model_name
-    dir_path = edge_root / direction.upper()
-    if not dir_path.exists():
-        print(f"  [SKIP] Directory not found: {dir_path}")
-        return
-    grans = sorted([g for g in multi.sub.keys() if (dir_path / g).exists()])
-
-    print(f"\n{'='*80}")
-    print(f"[edge-convergence] 2-Stage Convergence Score — {direction.upper()} — {model_name}")
-    print(f"{'='*80}")
-
-    # ┏━━━━━━━━━━ Initialize Weights and Results ━━━━━━━━━━┓
-    w_cpcv, w_seeds = 0.60, 0.40
-    convergence_results = {}
-
-    # ┏━━━━━━━━━━ Get Paths ━━━━━━━━━━┓
-    gran_dir = dir_path / granularity
-    cpcv_csv = gran_dir / "cpcv_paths.csv"
-    seeds_csv = gran_dir / "edge_trials.csv"
-
-    # ┏━━━━━━━━━━ Stage 1: CPCV ━━━━━━━━━━┓
-    cpcv_score = 0.0
-    cpcv_raw = {"fraction_profitable": None,
-                "median_path_sharpe": None,
-                "passes_gate": False}
-    cpcv_detail = "Missing CPCV results"
-    
-    # ┏━━━━━━━━━━ Load CPCV Results ━━━━━━━━━━┓
-    if cpcv_csv.exists():
-        df_cpcv = pd.read_csv(cpcv_csv)
-
-        # ┏━━━━━━━━━━ Calculate CPCV Score ━━━━━━━━━━┓
-        if "sharpe" in df_cpcv.columns:
-            total_ret_col = "total_ret_pct" if "total_ret_pct" in df_cpcv.columns else "sel_mean_ret"
-            path_rets = df_cpcv[total_ret_col].dropna().values
-            path_sharpes = df_cpcv["sharpe"].dropna().values
-
-            # ┏━━━━━━━━━━ Check if CPCV Results Exist ━━━━━━━━━━┓
-            if len(path_rets) > 0 and len(path_sharpes) > 0:
-                frac_profitable = float(np.mean(path_rets > 0))
-                median_sharpe = float(np.median(path_sharpes))
-                cpcv_score = frac_profitable * float(np.clip(median_sharpe, 0.0, 1.0))
-                
-                # ┏━━━━━━━━━━ CPCV Raw ━━━━━━━━━━┓
-                cpcv_raw = {"fraction_profitable": frac_profitable,
-                            "median_path_sharpe":  median_sharpe,
-                            "passes_gate":         bool(median_sharpe > 0 and frac_profitable > 0.60)}
-                
-                # ┏━━━━━━━━━━ CPCV Detail ━━━━━━━━━━┓
-                cpcv_detail = (f"profitable = {frac_profitable:.0%} "
-                               f"median_SR  = {median_sharpe:.2f} "
-                               f"worst_ret  = {float(np.min(path_rets)):+.2f}%")
-
-    # ┏━━━━━━━━━━ Stage 2: Seeds ━━━━━━━━━━┓
-    seeds_score = 0.0
-    seeds_raw = {"fraction_profitable": None,
-                 "mean_sharpe":         None,
-                 "sharpe_ci_lower":     None,
-                 "median_threshold":    None,
-                 "threshold_std":       None,
-                 "passes_gate":         False}
-    seeds_detail = "missing seeds results"
-    
-    # ┏━━━━━━━━━━ Load Seeds Results ━━━━━━━━━━┓
-    if seeds_csv.exists():
-        df_seeds = pd.read_csv(seeds_csv)
-
-        # ┏━━━━━━━━━━ Calculate Seeds Score ━━━━━━━━━━┓
-        if "test_sel_mean_ret" in df_seeds.columns and "test_sel_sharpe" in df_seeds.columns:
-            seed_rets = df_seeds["test_sel_mean_ret"].dropna().values
-            seed_sharpes = df_seeds["test_sel_sharpe"].dropna().values
-            seed_thresholds = df_seeds["test_sel_threshold"].dropna().values if "test_sel_threshold" in df_seeds.columns else np.array([])
-            
-            # ┏━━━━━━━━━━ Check if Seeds Results Exist ━━━━━━━━━━┓
-            if len(seed_rets) > 0 and len(seed_sharpes) > 0:
-                frac_profitable = float(np.mean(seed_rets > 0))
-                mean_sharpe = float(np.mean(seed_sharpes))
-                std_sharpe = float(np.std(seed_sharpes, ddof=1)) if len(seed_sharpes) > 1 else 0.0
-                sharpe_ci_lower = mean_sharpe - 1.96 * std_sharpe / np.sqrt(max(len(seed_sharpes), 1))
-                cv_sharpe = std_sharpe / abs(mean_sharpe) if abs(mean_sharpe) > 1e-9 else 1.0
-                stability = float(np.clip(1.0 - cv_sharpe, 0.0, 1.0))
-                seeds_score = frac_profitable * stability
-                median_thr = float(np.median(seed_thresholds)) if len(seed_thresholds) > 0 else None
-                thr_std = float(np.std(seed_thresholds)) if len(seed_thresholds) > 0 else None
-                
-                # ┏━━━━━━━━━━ Seeds Raw ━━━━━━━━━━┓
-                seeds_raw = {"fraction_profitable": frac_profitable,
-                             "mean_sharpe":         mean_sharpe,
-                             "sharpe_ci_lower":     sharpe_ci_lower,
-                             "cv_sharpe":           cv_sharpe,
-                             "median_threshold":    median_thr,
-                             "threshold_std":       thr_std,
-                             "passes_gate":         bool(frac_profitable > 0.70 and sharpe_ci_lower > 0)}
-
-                # ┏━━━━━━━━━━ Seeds Detail ━━━━━━━━━━┓
-                seeds_detail = (f"profitable = {frac_profitable:.0%} "
-                                f"mean_SR    = {mean_sharpe:.2f} "
-                                f"CI_low     = {sharpe_ci_lower:.2f} "
-                                f"CV         = {cv_sharpe:.2f} "
-                                f"τ_med      = {median_thr:.3f}" if median_thr else
-                                f"profitable = {frac_profitable:.0%} "
-                                f"mean_SR    = {mean_sharpe:.2f} "
-                                f"CI_low     = {sharpe_ci_lower:.2f}")
-
-    # ┏━━━━━━━━━━ Combined score + verdict ━━━━━━━━━━┓
-    final_score = w_cpcv * cpcv_score + w_seeds * seeds_score
-    
-    # ┏━━━━━━━━━━ Verdict ━━━━━━━━━━┓
-    cpcv_pass = cpcv_raw.get("passes_gate", False)
-    seeds_pass = seeds_raw.get("passes_gate", False)
-    if cpcv_pass and seeds_pass:
-        verdict = "GREEN"
-    elif cpcv_pass or seeds_pass:
-        verdict = "AMBER"
-    else:
-        verdict = "RED"
-
-    # ┏━━━━━━━━━━ Convergence Results ━━━━━━━━━━┓
-    convergence_results[granularity] = {"weights":      {"cpcv": w_cpcv, "seeds": w_seeds},
-                                 "cpcv":         {**cpcv_raw, "score": round(cpcv_score, 4)},
-                                 "seeds":        {**seeds_raw, "score": round(seeds_score, 4)},
-                                 "final_score":  round(final_score, 4),
-                                 "verdict":      verdict,
-                                 "gates_passed": {"cpcv": cpcv_pass, "seeds": seeds_pass}}
-
-    icon = {"GREEN": "✓", "AMBER": "~", "RED": "✗"}[verdict]
-    print(f"\n  [{icon}] {granularity:4s} — Score: {final_score:.3f} ({verdict})")
-    print(f"      1. CPCV  (w={w_cpcv}): {cpcv_score:.3f}  | {cpcv_detail}")
-    print(f"      2. Seeds (w={w_seeds}): {seeds_score:.3f}  | {seeds_detail}")
-
-    # ┏━━━━━━━━━━ Save Convergence Results ━━━━━━━━━━┓
-    if convergence_results:
-        out_path = dir_path / f"convergence_scores_{granularity}.json"
-        with open(out_path, "w") as f:
-            json.dump(convergence_results, f, indent=2)
-        print(f"\n[edge-convergence] Saved: {out_path}")
-
-        # ┏━━━━━━━━━━ Print Convergence Results ━━━━━━━━━━┓
-        print(f"\n  {'Gran':>5s} | {'CPCV':>6s} | {'Seeds':>6s} | {'FINAL':>6s} | Verdict")
-        print(f"  {'─'*5} | {'─'*6} | {'─'*6} | {'─'*6} | {'─'*7}")
-        for g, r in convergence_results.items():
-            print(f"  {g:>5s} | {r['cpcv']['score']:6.3f} | {r['seeds']['score']:6.3f} | "
-                  f"{r['final_score']:6.3f} | {r['verdict']}")
-
-    print(f"\n[edge-convergence] Done.\n")
-
-
-
-# ┏━━━━━━━━━━ Models that use seeds mode (RF only) ━━━━━━━━━━┓
-# AutoGluon, TabPFN, and TabICL skip seeds — CPCV is the sole edge gate for those.
-_SEEDS_SUPPORTED_M2 = {"rf", "xgboost"}
 
 
 # ┏━━━━━━━━━━ CLI ━━━━━━━━━━┓
 def main():
     # ┏━━━━━━━━━━ Parse arguments ━━━━━━━━━━┓
-    parser = argparse.ArgumentParser(description="Edge Analysis — regime sensitivity via CPCV (seeds mode available for RF/XGBoost only)")
+    parser = argparse.ArgumentParser(description="Edge Analysis — cross-validation evidence via CPCV and expanding-window CV")
     parser.add_argument("--cache_path", type=str, default=None, help="Explicit path to dataset cache .pt")
     parser.add_argument("--config", type=_load_config, help="Experiment config (path to .yaml or inline JSON string)", required=True)
-    parser.add_argument("--mode", type=str, choices=["seeds", "cpcv", "convergence"], required=True,
-                        help="'cpcv' = Combinatorial Purged CV (all models); "
-                             "'seeds' = 100 seed trials (RF/XGBoost only, skipped for AutoGluon/TabPFN/TabICL); "
-                             "'convergence' = legacy 2-stage score (RF/XGBoost only, skipped otherwise)")
+    parser.add_argument("--mode", type=str, choices=["cpcv", "cvexpand"], required=True,
+                        help="'cpcv' = Combinatorial Purged CV; "
+                             "'cvexpand' = expanding-window purged CV, same datetime blocks and "
+                             "time-based purge as cpcv but walk-forward only, no combinatorics")
     parser.add_argument("--phase", type=str, help="Experimental Phase", required=True)
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
@@ -1380,31 +1160,8 @@ def main():
     _edge_folder = "Edge_NoCal" if args.nocal else "Edge"
     output_root = Path(args.config["paths"]["output_root"]) / "Analysis" / _edge_folder / args.config["experiment"]["m1"].capitalize() / args.m2
 
-    # ┏━━━━━━━━━━ Seeds and convergence: only for RF/XGBoost ━━━━━━━━━━┓
-    if args.mode in ("seeds", "convergence") and args.m2 not in _SEEDS_SUPPORTED_M2:
-        print(f"[edge] --mode {args.mode} is not used for m2={args.m2} "
-              f"(seeds/convergence only apply to {sorted(_SEEDS_SUPPORTED_M2)}). "
-              f"Verdict is determined purely from CPCV results. Skipping.")
-        return
-
     # ┏━━━━━━━━━━ Run analysis ━━━━━━━━━━┓
-    if args.mode == "convergence":
-        compute_edge_convergence_score(args.cache_path,
-                                       args.config,
-                                       direction=args.direction,
-                                       model_name=args.m2,
-                                       granularity=args.granularity)
-    
-    elif args.mode == "seeds":
-        run_seeds_analysis(args.cache_path,
-                           args.config,
-                           output_root,
-                           n_trials=args.config["runtime"][args.phase]["n_trials"],
-                           m2_name=args.m2,
-                           direction=args.direction,
-                           granularity=args.granularity)
-    
-    elif args.mode == "cpcv":
+    if args.mode == "cpcv":
         run_cpcv_analysis(args.cache_path,
                           args.config,
                           output_root,
@@ -1414,6 +1171,16 @@ def main():
                           direction=args.direction,
                           granularity=args.granularity,
                           nocal=args.nocal)
+
+    elif args.mode == "cvexpand":
+        run_cvexpand_analysis(args.cache_path,
+                              args.config,
+                              output_root,
+                              n_blocks=args.config["runtime"][args.phase]["n_blocks"],
+                              m2_name=args.m2,
+                              direction=args.direction,
+                              granularity=args.granularity,
+                              nocal=args.nocal)
     else:
         print(f"Invalid mode: {args.mode}")
 

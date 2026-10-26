@@ -372,8 +372,13 @@ def _plot_split_matrix(splits, paths, n_blocks, boundaries, purge_td, save_path,
 
 
 # ┏━━━━━━━━━━ Plot path boxplots ━━━━━━━━━━┓
-def _plot_path_boxplots(path_metrics, m1_baselines, save_path, gran, direction):
-    """Boxplots of metrics across CPCV paths."""
+def _plot_path_boxplots(path_metrics, m1_baselines, save_path, gran, direction,
+                        unit_label: str = "Paths", scheme_label: str = "CPCV Path"):
+    """Boxplots of metrics across CPCV paths (or expanding-window splits).
+
+    ``unit_label``/``scheme_label`` let the cvexpand mode relabel the axis and title:
+    its units are expanding-window SPLITS, not CPCV's combinatorially reconstructed paths.
+    """
 
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     metrics_cfg = [("accuracy", "Accuracy (@0.5)"), 
@@ -393,7 +398,7 @@ def _plot_path_boxplots(path_metrics, m1_baselines, save_path, gran, direction):
         vals = [pm[m_key] for pm in path_metrics]
         
         # ┏━━━━━━━━━━ Create boxplot ━━━━━━━━━━┓
-        bp = ax.boxplot([vals], labels=["Paths"], patch_artist=True, widths=0.5)
+        bp = ax.boxplot([vals], labels=[unit_label], patch_artist=True, widths=0.5)
         bp["boxes"][0].set_facecolor("cornflowerblue")
 
         # ┏━━━━━━━━━━ Add M1 baseline ━━━━━━━━━━┓
@@ -420,7 +425,9 @@ def _plot_path_boxplots(path_metrics, m1_baselines, save_path, gran, direction):
         ax.set_title(label, fontsize=9); ax.grid(axis="y", alpha=0.3)
 
     # ┏━━━━━━━━━━ Set title and save figure ━━━━━━━━━━┓
-    fig.suptitle(f"CPCV Path Distribution — {gran} {direction.upper()} | {len(path_metrics)} Chronological Paths", fontsize=12, fontweight="bold")
+    fig.suptitle(f"{scheme_label} Distribution — {gran} {direction.upper()} | "
+                 f"{len(path_metrics)} {'Chronological Paths' if unit_label == 'Paths' else 'Expanding-Window Splits'}",
+                 fontsize=12, fontweight="bold")
     fig.tight_layout()
 
     # ┏━━━━━━━━━━ Save figure ━━━━━━━━━━┓

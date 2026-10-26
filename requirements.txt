@@ -51,3 +51,10 @@ tabicl
 # ┏━━━━━━━━━━ TabM (tabular MLP-Mixer ensemble — deep-learning M2 baseline) ━━━━━━━━━━┓
 tabm
 rtdl_num_embeddings
+
+# ┏━━━━━━━━━━ SPCI baseline (M1+SPCI conformal reliability gate) ━━━━━━━━━━┓
+# Required by the vendored hamrel-cxu/SPCI-code under
+# src/Utils/selective_classification/baselines/spci/. statsmodels (above) is also
+# a dependency of that code. Only needed to run the M1+SPCI baseline.
+sklearn_quantile
+skranger

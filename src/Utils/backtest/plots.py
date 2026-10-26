@@ -11,6 +11,7 @@ from Utils.utils import m1_display_label as _m1_display_label
 
 # ┏━━━━━━━━━━ Engine ━━━━━━━━━━┓
 from Utils.backtest.engine import (_annualization_factor,
+                                  _build_cash_equity,
                                   _build_spread_equity,
                                   _calc_drawdown,
                                   _calc_sharpe,
@@ -22,7 +23,9 @@ __all__ = ["_plot_path_equity"]
 
 
 # ┏━━━━━━━━━━ Plot path equity ━━━━━━━━━━┓
-def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, fee, horizon, gran_name, cfg):
+def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, fee, horizon, gran_name, cfg,
+                      unit_label: str = "Path"):
+    """Equity curves per CPCV path (or per expanding-window split when unit_label='Split')."""
     # ┏━━━━━━━━━━ Initialize variables ━━━━━━━━━━┓
     n_paths = len(path_metrics)
     colors = plt.cm.tab10(np.linspace(0, 1, max(n_paths, 2)))
@@ -55,14 +58,20 @@ def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, f
         all_dates.extend(p_dates)
         all_rets.extend(pm["_rets"] - fee)
         all_assets.extend(pm["_assets"])
-        df_p = pd.DataFrame({"date": pd.to_datetime(p_dates), "return": pm["_rets"] - fee, "asset": pm["_assets"]})
+        # m2_prob is required by the cash engine for confidence-weighted sizing; without
+        # it every trade would fall back to the base stake and the sizing rule would be inert.
+        df_p = pd.DataFrame({"date": pd.to_datetime(p_dates), "return": pm["_rets"] - fee,
+                             "asset": pm["_assets"], "m2_prob": pm["_probs"]})
         list_m2_sel.append(df_p[pm["_sel"] == 1].copy())
         list_m2_pred.append(df_p[pm["_preds"] == 1].copy())
 
     # ┏━━━━━━━━━━ Compute M1 metrics ━━━━━━━━━━┓
     df_m1 = pd.DataFrame({"date": pd.to_datetime(all_dates), "return": all_rets, "asset": all_assets})
     m1_tl = pd.DatetimeIndex(sorted(df_m1["date"].unique()))
-    m1_eq, _ = _build_spread_equity(df_m1, m1_tl, horizon)
+    # Cash-flow engine (same simulator as the main backtest). M1 is the model-free
+    # yardstick, so it is flat-sized: without this it would borrow M2's probabilities
+    # for position sizing and its curve would change with the M2 model.
+    m1_eq, _ = _build_cash_equity(df_m1, m1_tl, horizon, flat_size=True)
     m1_ret = (m1_eq.iloc[-1] - 1) * 100 if len(m1_eq) > 0 else 0.0
     m1_sr = _calc_sharpe(_equity_horizon_returns(m1_eq, horizon) if len(m1_eq) > horizon else np.array([]), ann_horizon)
     m1_mdd = _calc_drawdown(m1_eq.values) * 100 if len(m1_eq) > 0 else 0.0
@@ -94,7 +103,7 @@ def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, f
     # ┏━━━━━━━━━━ Compute M2 metrics ━━━━━━━━━━┓
     for pi, df_pred in enumerate(list_m2_pred):
         # ┏━━━━━━━━━━ Build spread equity ━━━━━━━━━━┓
-        m2_pred_eq, _ = _build_spread_equity(df_pred, m1_tl, horizon)
+        m2_pred_eq, _ = _build_cash_equity(df_pred, m1_tl, horizon)
         
         # ┏━━━━━━━━━━ Compute metrics ━━━━━━━━━━┓
         pred_ret = (m2_pred_eq.iloc[-1] - 1) * 100 if len(m2_pred_eq) > 0 else 0.0
@@ -105,12 +114,12 @@ def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, f
         mdds_pred.append(pred_mdd)
         
         # ┏━━━━━━━━━━ Plot equity curve ━━━━━━━━━━┓
-        ax1.plot((m2_pred_eq - 1) * 100, color=colors[pi], lw=2, label=f"Path {pi+1} (Ret={pred_ret:+.1f}%, SR={pred_sr:.2f}, MDD={pred_mdd:.1f}%)")
+        ax1.plot((m2_pred_eq - 1) * 100, color=colors[pi], lw=2, label=f"{unit_label} {pi+1} (Ret={pred_ret:+.1f}%, SR={pred_sr:.2f}, MDD={pred_mdd:.1f}%)")
 
     # ┏━━━━━━━━━━ Compute Selective M2 metrics ━━━━━━━━━━┓
     for pi, df_sel in enumerate(list_m2_sel):
         # ┏━━━━━━━━━━ Build spread equity ━━━━━━━━━━┓
-        m2_sel_eq, _ = _build_spread_equity(df_sel, m1_tl, horizon)
+        m2_sel_eq, _ = _build_cash_equity(df_sel, m1_tl, horizon)
         
         # ┏━━━━━━━━━━ Compute metrics ━━━━━━━━━━┓
         sel_ret = (m2_sel_eq.iloc[-1] - 1) * 100 if len(m2_sel_eq) > 0 else 0.0
@@ -121,7 +130,7 @@ def _plot_path_equity(path_metrics, dates_by_path, save_path, gran, direction, f
         mdds_sel.append(sel_mdd)
         
         # ┏━━━━━━━━━━ Plot equity curve ━━━━━━━━━━┓
-        ax2.plot((m2_sel_eq - 1) * 100, color=colors[pi], lw=2, label=f"Path {pi+1} (Ret={sel_ret:+.1f}%, SR={sel_sr:.2f}, MDD={sel_mdd:.1f}%)")
+        ax2.plot((m2_sel_eq - 1) * 100, color=colors[pi], lw=2, label=f"{unit_label} {pi+1} (Ret={sel_ret:+.1f}%, SR={sel_sr:.2f}, MDD={sel_mdd:.1f}%)")
 
     # ┏━━━━━━━━━━ Plot M1 equity curve ━━━━━━━━━━┓
     for ax in [ax1, ax2]:

@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import pandas as pd
 import subprocess
 import sys
 import time
@@ -28,10 +29,6 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from Utils.utils import _load_config, HPO_SUPPORTED_M2
-
-# ┏━━━━━━━━━━ Models for which seeds+convergence modes are skipped — CPCV is the sole gate. ━━━━━━━━━━┓
-_SEEDS_SUPPORTED_M2 = set()  # seeds disabled — CPCV is the sole edge gate for all models
-
 
 # ┏━━━━━━━━━━ Run subprocess ━━━━━━━━━━┓
 def _run(cmd: list[str], label: str):
@@ -170,7 +167,14 @@ def run_experiments(config: dict, config_path: str):
                     ok = _run(cmd, label)
                     results[label] = ok
     
-    # ┏━━━━━━━━━━ Phase 2: Edge Convergence ━━━━━━━━━━┓
+    # ┏━━━━━━━━━━ Phase 2: Cross-validation evidence (CPCV + expanding-window) ━━━━━━━━━━┓
+    # Runs the two CV schemes whose per-sample outputs Phase 5 consumes:
+    #   cpcv     -> cpcv_paths.csv     + cpcv_samples.csv
+    #   cvexpand -> cvexpand_splits.csv + cvexpand_samples.csv
+    # The old GREEN/AMBER/RED verdict gate is not consulted anywhere: it answered a
+    # deployment question, whereas what the paper needs is the regime evidence built
+    # in Phase 5. The seeds/convergence sub-steps are gone too: their model list had
+    # been empty for a while, so they never executed.
     if not config["runtime"]["skip"]['edge']:
         # Threshold-selection mode chosen for the training phase also drives edge:
         # utility       → Edge/ folder (isotonic calibration in CPCV splits)
@@ -180,7 +184,7 @@ def run_experiments(config: dict, config_path: str):
         _edge_folder = "Edge_NoCal" if _edge_nocal else "Edge"
 
         print(f"\n{'#' * 70}")
-        print(f"# PHASE 2: Edge Convergence Protocol")
+        print(f"# PHASE 2: Cross-Validation Evidence (CPCV + Expanding-Window)")
         print(f"# M1 Model: {config['experiment']['m1']}")
         print(f"# M2 Models: {config['experiment']['m2']}")
         print(f"# Directions: {config['experiment']['direction']}")
@@ -197,64 +201,26 @@ def run_experiments(config: dict, config_path: str):
                         print(f"  [SKIP] No cache for direction={direction}")
                         continue
 
-                    # ┏━━━━━━━━━━ Per-gran skip logic ━━━━━━━━━━┓
-                    # Use output-specific sentinel files so seeds and CPCV don't
-                    # falsely skip each other (both write edge_summary_{gran}.json).
-                    #   seeds      → edge_trials.csv
-                    #   cpcv       → cpcv_paths.csv  (inside direction/gran subdir)
-                    #   convergence→ convergence_scores_{gran}.json
                     edge_root = (Path(config["paths"]["output_root"])
                                  / "Analysis" / _edge_folder
                                  / config["experiment"]["m1"].capitalize()
                                  / m2)
-                    gran_dir      = edge_root / direction.upper() / granularity
-                    cpcv_done     = (gran_dir / "cpcv_paths.csv").exists()
-                    seeds_done    = (gran_dir / "edge_trials.csv").exists()
-                    conv_done     = (edge_root / direction.upper() / f"convergence_scores_{granularity}.json").exists()
+                    gran_dir = edge_root / direction.upper() / granularity
 
-                    all_done = cpcv_done and (m2 not in _SEEDS_SUPPORTED_M2 or (seeds_done and conv_done))
-                    if all_done:
-                        print(f"  [SKIP] Edge already complete: {m2.upper()} {direction.upper()} {granularity}")
-                        results[f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"] = True
-                        if m2 in _SEEDS_SUPPORTED_M2:
-                            results[f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"] = True
-                            results[f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"] = True
-                        continue
-
-                    # Individual sub-step skips (so a partial run resumes correctly)
-                    skip_seeds = seeds_done
-                    skip_cpcv  = cpcv_done
-                    skip_conv  = conv_done
-
-                    # ┏━━━━━━━━━━ Seeds (RF/XGBoost only) ━━━━━━━━━━┓
-                    if m2 in _SEEDS_SUPPORTED_M2:
-                        label = f"Edge Seeds {m2.upper()} {direction.upper()} {granularity}"
-                        if skip_seeds:
-                            print(f"  [SKIP] Seeds already done: {label}")
+                    # Sentinel is the per-SAMPLE csv, not the aggregate: an older run
+                    # produced cpcv_paths.csv without cpcv_samples.csv, and Phase 5
+                    # cannot work from the aggregate alone.
+                    for mode, sentinel in (("cpcv", "cpcv_samples.csv"),
+                                           ("cvexpand", "cvexpand_samples.csv")):
+                        label = f"Edge {mode.upper()} {m2.upper()} {direction.upper()} {granularity}"
+                        if (gran_dir / sentinel).exists():
+                            print(f"  [SKIP] already done: {label}")
                             results[label] = True
-                        else:
-                            cmd = [python, "-m", "Utils.edge",
-                                   "--config", json.dumps(config),
-                                   "--cache_path", cache_path,
-                                   "--mode", "seeds",
-                                   "--phase", "edge",
-                                   "--m2", m2,
-                                   "--direction", direction,
-                                   "--granularity", granularity]
-                            if _edge_nocal:
-                                cmd.append("--nocal")
-                            results[label] = _run(cmd, label)
-
-                    # ┏━━━━━━━━━━ CPCV (all models) ━━━━━━━━━━┓
-                    label = f"Edge CPCV {m2.upper()} {direction.upper()} {granularity}"
-                    if skip_cpcv:
-                        print(f"  [SKIP] CPCV already done: {label}")
-                        results[label] = True
-                    else:
+                            continue
                         cmd = [python, "-m", "Utils.edge",
                                "--config", json.dumps(config),
                                "--cache_path", cache_path,
-                               "--mode", "cpcv",
+                               "--mode", mode,
                                "--phase", "edge",
                                "--m2", m2,
                                "--direction", direction,
@@ -263,25 +229,6 @@ def run_experiments(config: dict, config_path: str):
                             cmd.append("--nocal")
                         results[label] = _run(cmd, label)
 
-                    # ┏━━━━━━━━━━ Convergence score (RF/XGBoost only) ━━━━━━━━━━┓
-                    if m2 in _SEEDS_SUPPORTED_M2:
-                        label = f"Edge Convergence {m2.upper()} {direction.upper()} {granularity}"
-                        if skip_conv:
-                            print(f"  [SKIP] Convergence already done: {label}")
-                            results[label] = True
-                        else:
-                            cmd = [python, "-m", "Utils.edge",
-                                   "--config", json.dumps(config),
-                                   "--cache_path", cache_path,
-                                   "--mode", "convergence",
-                                   "--phase", "edge",
-                                   "--m2", m2,
-                                   "--direction", direction,
-                                   "--granularity", granularity]
-                            if _edge_nocal:
-                                cmd.append("--nocal")
-                            results[label] = _run(cmd, label)
-    
     # ┏━━━━━━━━━━ Phase 3: Combined UP+DOWN Backtest ━━━━━━━━━━┓
     if not config["runtime"]["skip"]['combined']:
         # ┏━━━━━━━━━━ Print header ━━━━━━━━━━┓
@@ -350,6 +297,154 @@ def run_experiments(config: dict, config_path: str):
                     ok = _run(cmd, label)
                     results[label] = ok
     
+    # ┏━━━━━━━━━━ Phase 5: 4-scenario regime analysis ━━━━━━━━━━┓
+    # Consumes what Phases 1 and 2 wrote — the static test-period trades plus the
+    # per-sample CV outputs — and joins every evaluated bar to its causal SJM regime
+    # label. Pure read-side aggregation (no refitting), so it is cheap; the cost sits
+    # entirely in having the jump models fitted beforehand.
+    #
+    # The four scenarios differ only in how bars are grouped before averaging, and that
+    # grouping is the whole point: regime share correlates strongly with how good each
+    # period was, so a pooled average measures WHEN a regime occurred rather than the
+    # regime itself. See CLAUDE.md for the worked example.
+    if not config["runtime"]["skip"].get("regime", False):
+        print(f"\n{'#' * 70}")
+        print(f"# PHASE 5: Regime Analysis (4 scenarios)")
+        print(f"# M1 Model: {config['experiment']['m1']}")
+        print(f"# M2 Models: {config['experiment']['m2']}")
+        print(f"{'#' * 70}")
+
+        _thres_mode = config["runtime"]["training"].get("thres", "utility")
+        _edge_folder = "Edge_NoCal" if _thres_mode == "utility_nocal" else "Edge"
+        _thres_folder = "Utility_Score_NoCal" if _thres_mode == "utility_nocal" else "Utility_Score"
+        out_root = Path(config["paths"]["output_root"])
+        m1_cap = config["experiment"]["m1"].capitalize()
+
+        try:
+            from Utils.analysis.analysis_m2 import (regime_scenarios, regime_split_table,
+                                                    test_gap_by_quarter, m2_vs_m1_by_regime,
+                                                    robust_significance_suite,
+                                                    permutation_regime_sweep)
+        except Exception as exc:
+            print(f"  [SKIP] cannot import regime analysis: {exc}")
+        else:
+            # Each analysis resolves its own structured output dir
+            # (Analysis/RegimeAnalysis/<M1>/<M2>/<NN_analysis_name>/).
+
+            # Table A describes the data splits themselves, so it is M1/M2-independent.
+            label = "Regime Table A (split composition)"
+            try:
+                tbl = regime_split_table(list(config["experiment"]["granularity"]),)
+                print(f"  [OK] {label}: {len(tbl)} rows")
+                results[label] = True
+            except Exception as exc:
+                print(f"  [FAIL] {label}: {exc}")
+                results[label] = False
+
+            for m2 in config["experiment"]["m2"]:
+                label = f"Regime Scenarios {m2.upper()}"
+                try:
+                    df = regime_scenarios(
+                        m1=m1_cap,
+                        m2=m2,
+                        directions=tuple(d.upper() for d in config["experiment"]["direction"]),
+                        granularities=list(config["experiment"]["granularity"]),
+                        fee=config["evaluation"]["fee_per_trade"],
+                        edge_root=out_root / "Analysis" / _edge_folder,
+                        test_root=out_root,
+                        thres_folder=_thres_folder,
+                        verbose=False)
+                    if df.empty:
+                        print(f"  [WARN] {label}: no rows (missing SJM fits or CV samples?)")
+                        results[label] = False
+                    else:
+                        tally = df.groupby(["direction", "winner"]).size().to_dict()
+                        print(f"  [OK] {label}: {len(df)} cells  {tally}")
+                        results[label] = True
+                except Exception as exc:
+                    print(f"  [FAIL] {label}: {exc}")
+                    results[label] = False
+
+                # Significance for the regime effect: reviewers R5-W2 and R3 asked for
+                # paired comparisons and statistical validation by name.
+                # Tests B/C/E/G on the counter-trend regime gap. Run per direction:
+                # pooling M2 UP and M2 DOWN dilutes whichever one carries the effect.
+                label = f"Regime Significance {m2.upper()}"
+                try:
+                    parts = []
+                    for _dir in config["experiment"]["direction"]:
+                        parts.append(robust_significance_suite(
+                            m1=m1_cap, m2=m2, direction=_dir.upper(),
+                            granularities=list(config["experiment"]["granularity"]),
+                            fee=config["evaluation"]["fee_per_trade"],
+                            test_root=out_root, thres_folder=_thres_folder,
+                            verbose=False))
+                    sig = pd.concat([p for p in parts if len(p)], ignore_index=True) \
+                          if any(len(p) for p in parts) else pd.DataFrame()
+                    nsig = int((sig["p_value"] < 0.05).sum()) if "p_value" in sig else 0
+                    print(f"  [OK] {label}: {len(sig)} tests ({nsig} with p<0.05)")
+                    results[label] = True
+                except Exception as exc:
+                    print(f"  [FAIL] {label}: {exc}")
+                    results[label] = False
+
+                # Cross-validated significance: the composition-null permutation test
+                # over every (granularity, direction, scheme) cell of the CV folds.
+                # This is the train+val counterpart to the held-out suite above, and
+                # the only test applied there -- a per-cell Wilcoxon on 5-6 folds
+                # cannot resolve the effect and was removed rather than reported.
+                label = f"Regime CV-Permutation {m2.upper()}"
+                try:
+                    cv = permutation_regime_sweep(
+                        m1=m1_cap, m2=m2,
+                        directions=tuple(d.upper() for d in config["experiment"]["direction"]),
+                        granularities=list(config["experiment"]["granularity"]),
+                        fee=config["evaluation"]["fee_per_trade"],
+                        edge_root=out_root / "Analysis" / _edge_folder,
+                        verbose=False)
+                    nsig = int((cv["p_value"] < 0.05).sum()) if len(cv) else 0
+                    print(f"  [OK] {label}: {len(cv)} cells ({nsig} with p<0.05)")
+                    results[label] = True
+                except Exception as exc:
+                    print(f"  [FAIL] {label}: {exc}")
+                    results[label] = False
+
+                # Held-out gap per quarter: is the effect spread over the test window
+                # or carried by one quarter? Descriptive, not a second significance test.
+                label = f"Regime TestGap-by-Quarter {m2.upper()}"
+                try:
+                    q = test_gap_by_quarter(
+                        m1=m1_cap, m2=m2,
+                        directions=tuple(d.upper() for d in config["experiment"]["direction"]),
+                        granularities=list(config["experiment"]["granularity"]),
+                        fee=config["evaluation"]["fee_per_trade"],
+                        test_root=out_root, thres_folder=_thres_folder,
+                        verbose=False)
+                    print(f"  [OK] {label}: {len(q)} rows")
+                    results[label] = True
+                except Exception as exc:
+                    print(f"  [FAIL] {label}: {exc}")
+                    results[label] = False
+
+                # M2's gain over M1 within each regime — the pooled version is diluted
+                # by an ~84% bearish test window.
+                label = f"Regime M2-vs-M1 {m2.upper()}"
+                try:
+                    v = m2_vs_m1_by_regime(
+                        m1=m1_cap, m2=m2,
+                        directions=tuple(d.upper() for d in config["experiment"]["direction"]),
+                        granularities=list(config["experiment"]["granularity"]),
+                        fee=config["evaluation"]["fee_per_trade"],
+                        test_root=out_root, thres_folder=_thres_folder,
+                        verbose=False)
+                    nsig = int(v["excludes_zero"].sum()) if len(v) else 0
+                    print(f"  [OK] {label}: {len(v)} rows ({nsig} with CI excluding zero)")
+                    results[label] = True
+                except Exception as exc:
+                    print(f"  [FAIL] {label}: {exc}")
+                    results[label] = False
+                    v = None
+
     # ┏━━━━━━━━━━ Summary ━━━━━━━━━━┓
     print(f"\n{'=' * 70}")
     print(f"EXPERIMENT SUMMARY")
