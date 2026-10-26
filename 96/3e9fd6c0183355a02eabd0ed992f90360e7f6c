@@ -1,0 +1,35 @@
+requirements.txt
+  s_391ef904b4389f::t_f6177fd2dc3f94 53-56
+src/Utils/classifier/factory.py
+  s_391ef904b4389f::t_ec80cc2776c531 123-131
+  s_391ef904b4389f::t_a6eb1407c7f5c0 14,18-20
+slurm/README.md
+  s_391ef904b4389f::t_c5b1025778d5a7 3-28,33-35,55-57,68-86,94-96,101,104,109-110,129,133-138
+  s_391ef904b4389f::t_fba724a681807e 58-67
+slurm/m2-compare-full.sh
+  s_391ef904b4389f::t_0cd79257e2788b 15-18,23-26,37,40,47,50-58,61-62,64-66,68-69,109
+src/config.yaml
+  s_391ef904b4389f::t_a647c655f57d91 48
+slurm/m2-compare-trial.sh
+  s_391ef904b4389f::t_690c7543b53971 177-179
+  s_391ef904b4389f::t_b4b67f4db9430c 13-15,17-23,34,37,44-47,50-59,62-63,65-67,69-70,95-98,101,114,119-121,124,135-147,164,176
+src/Utils/classifier/kumo_tabular_classifier.py
+  s_391ef904b4389f::t_137ae895779074 198,202
+  s_391ef904b4389f::t_7e9e311ffccde5 1-197,199-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "963e9fd6c0183355a02eabd0ed992f90360e7f6c",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
