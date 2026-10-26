@@ -1,0 +1,21 @@
+slurm/README.md
+  s_391ef904b4389f::t_42d556bfe42913 56
+  s_391ef904b4389f::t_68d461d2acecf4 33-43
+  s_391ef904b4389f::t_9db3c8d231bff6 52-55,59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bf77e7a02cdfd4382acd39f3370ccafbe1c79431",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "unknown"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
