@@ -1,0 +1,38 @@
+# Tool versions and tasks.  https://mise.jdx.dev
+#   mise install && mise run install    # uv at the locked version, then the locked Python env
+#   mise run check                      # lint + fast tests + import smoke test (all modules)
+
+[tools]
+uv = "0.12"
+
+[settings]
+lockfile = true
+
+[env]
+MPLBACKEND = "Agg"
+
+[tasks.install]
+description = "locked environment (Python 3.11, CTTS-equivalent ML stack) + git hooks"
+run = ["uv sync --locked", "uv run pre-commit install"]
+
+[tasks.lint]
+description = "ruff: bug-finding rules on src/, full rules on tests/"
+run = ["uv run ruff check src tests", "uv run ruff format --check tests"]
+
+[tasks.test]
+description = "fast tests (M2 feature-vector contract)"
+run = "uv run pytest -m 'not slow'"
+
+[tasks."test:imports"]
+description = "import every module under src/ in a fresh interpreter (parallel)"
+run = "uv run pytest -m slow -n auto"
+
+[tasks.check]
+description = "everything CI runs"
+depends = ["lint", "test"]
+run = "mise run test:imports"
+
+[tasks.pipeline]
+description = "train/evaluate M2 (src/config.yaml); extra args are passed through"
+dir = "src"
+run = "uv run python m2_pipeline.py"

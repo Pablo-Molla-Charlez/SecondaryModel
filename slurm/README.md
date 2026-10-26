@@ -17,22 +17,24 @@ are optional and default to the old hardcoded values, so every existing invocati
 (Pablo's included) behaves identically unless you pass them. See the diffs on
 `src/m2_pipeline.py` / `src/Utils/classifier/factory.py` — small and additive.
 
-## Environment note — conda, not uv
+## Environment — uv, not conda
 
-This branch is based on **`upstream/main`**, not `elie/sota`. That matters here
-specifically: `elie/sota` has a later commit migrating the repo to `uv` + `pyproject.toml`
-+ `mise`, but that commit isn't part of `upstream/main` yet, so **this PR's base still uses
-conda + `requirements.txt`**, exactly as README.md's own "Setup" section documents
-(`conda create -n S2 python=3.11`, `pip install -r requirements.txt`). Both SLURM scripts
-below use conda accordingly — don't "fix" them to `uv sync` without separately bringing
-that migration commit into this PR first (that's a bigger, separate scope decision).
+This branch now carries the `uv` + `pyproject.toml` + `mise` migration (ported from
+`elie/sota`'s tooling commit, adapted to this PR's actual module set — the SPCI/regime-only
+dependencies that migration also pinned aren't here, since those source files live only on
+`elie/sota`). Both SLURM scripts use `uv sync --locked` + `uv run`, matching README.md's
+"Setup" section. Neither script assumes `uv` is preinstalled on the compute node: each
+tries `module load uv` first, falls back to the official installer
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`) if that's not available either, and
+exits with a clear message only if both fail.
 
 ## Before you run anything
 
 1. **EPFL cluster access.** These scripts use generic `#SBATCH --partition=gpu` /
-   `--qos=normal|debug` directives, and try `module load miniconda3` / `anaconda3` for
-   conda (common names, not guaranteed). Once you know your cluster's actual
-   partition/qos/module names (SCITAS Jed/Izar, RCP, etc.), edit accordingly.
+   `--qos=normal|debug` directives, and try `module load uv` (common name, not
+   guaranteed — falls back to installing uv directly if the module doesn't exist). Once
+   you know your cluster's actual partition/qos/module names (SCITAS Jed/Izar, RCP, etc.),
+   edit accordingly.
 
 2. **Stage the training data — two hops.** `Data_MLA/Kronos/Crypto/TP/horizon_7/`
    (referenced by `config.yaml`'s `paths.csv_dir`) is gitignored and lives on **gpu8**
@@ -54,7 +56,7 @@ that migration commit into this PR first (that's a bigger, separate scope decisi
 
 3. **Don't trust "TabPFN-2.5", "Mitra", or "kumo" until the trial job confirms them.**
    Three things are genuinely unverified until you run on the actual cluster:
-   - `tabpfn==7.1.0` is pinned in `requirements.txt`. **Correction (2026-10-26):** per
+   - `tabpfn==7.1.0` is pinned in `pyproject.toml`. **Correction (2026-10-26):** per
      `PriorLabs/TabPFN`'s current README, a bare `TabPFNClassifier()` now defaults to
      **TabPFN-3.5**, not 2.5 — "To use our default TabPFN-3.5 model: `TabPFNClassifier()`".
      TabPFN-3.5's weights are non-commercial-licensed (fine for a thesis), and it raises
@@ -65,11 +67,11 @@ that migration commit into this PR first (that's a bigger, separate scope decisi
      "TabPFN-2.5."** The trial script still prints `tabpfn.__version__` and the
      `TabPFNClassifier` signature — confirm which generation you actually got before
      citing a number, don't assume this note is still accurate by the time you read it.
-   - AutoGluon preset names and contents shift between releases, and
-     `requirements.txt` pins `autogluon.tabular` **unversioned**. Verified locally
-     2026-10-26 by actually installing it: you get **1.6.3**, not the `1.5.0` this was
-     originally researched against, and the old `PRESETS_CONFIGS` import doesn't exist
-     in 1.6.x (replaced by `tabular_presets_dict`) — the trial script handles both.
+   - AutoGluon preset names and contents shift between releases. `pyproject.toml` now
+     pins `autogluon-tabular==1.5.0` (matching the CTTS training env — a trained bundle
+     unpickles against it), but the old, unpinned `requirements.txt` resolved to **1.6.3**
+     during earlier local testing, where the old `PRESETS_CONFIGS` import doesn't exist
+     (replaced by `tabular_presets_dict`) — the trial script handles both either way.
      **Correction: `extreme_quality` is NOT an equivalent fallback for Mitra.** Verified
      by importing the actual hyperparameter config in 1.6.3: `tabarena`
      (`zeroshot_2025_tabfm`) includes `REALTABPFN-V2, TABM, TABICL, GBM, CAT, XGB, MITRA`.
@@ -79,7 +81,13 @@ that migration commit into this PR first (that's a bigger, separate scope decisi
      with, there is no drop-in replacement that still reaches Mitra — the trial script's
      preset check prints each preset's actual model-family list so you can see this
      directly rather than trusting this note after the next AutoGluon release moves
-     things again.
+     things again. **Update (2026-10-26, full trial run):** `tabarena` was previously
+     flagged "inconclusive" on CPU after a standalone attempt crashed. Running it through
+     the actual trial script end-to-end (10-minute `--ag-time-limit`, real fit20 data) now
+     completed cleanly with a real backtest (Sharpe 0.86) — the earlier crash doesn't
+     reproduce under these conditions. Still worth re-confirming on the actual GPU cluster
+     (AutoGluon itself still warns Mitra/TabPFNv2 is much slower on CPU), but this is no
+     longer a known blocker.
    - **`kumo` (`kumo_tabular_classifier.py`) — now actually run locally (CPU, small-scale,
      see "Local validation" below) and confirmed working end-to-end**, including a real
      backtest. Two real bugs from the initial NVIDIA-ported draft were found and fixed in
@@ -125,6 +133,7 @@ this thesis):**
 | Model | Total Ret | MaxDD | Sharpe |
 |---|---|---|---|
 | M2 xgboost | +5.00% | -12.45% | 0.85 |
+| M2 autogluon (tabarena/Mitra, 600s budget) | +4.59% | -13.11% | 0.86 |
 | M2 kumo | +14.21% | -14.94% | 1.42 |
 | M1 Kronos (baseline, all trades) | +1.80% | -13.57% | 0.56 |
 | Buy & Hold | -36.21% | -42.17% | -2.68 |
@@ -132,6 +141,8 @@ this thesis):**
 Kumo's number is the most eye-catching thing in this PR and the least justified to
 repeat anywhere — it's one run, one direction, one granularity, on CPU, with the default
 `size="large"`. Confirms the wrapper works, nothing about whether kumo is actually better.
+`tabpfn` is still the one model with zero successful runs in this validation pass — every
+attempt needs a real `TABPFN_TOKEN`, which this validation never had.
 
 **Not re-triggered after the first attempt crashed:** `_resolve_caches` builds both
 `up`/`down` caches on first run regardless of which `--direction` you asked for, and
@@ -140,7 +151,42 @@ traceback) partway through — most likely memory pressure from building the ful
 multi-granularity dataset twice on a resource-constrained laptop, not something SLURM's
 requested 16-32GB should hit, but genuinely unconfirmed. If the trial job dies here with
 no traceback, that's the first thing to suspect; `--cache_path` (pointing at an
-already-built cache) skips this entirely if you need to isolate it.
+already-built cache) skips this entirely if you need to isolate it. (Both caches now exist
+locally from later runs and the crash hasn't recurred, including after the OpenMP fix
+below — still not root-caused, just no longer blocking.)
+
+## uv migration + further local validation (2026-10-26, same day)
+
+Ported the `uv` + `pyproject.toml` + `mise` + ruff/pytest/CI tooling from `elie/sota`
+onto this branch (that migration commit was previously out of scope — see git history —
+now explicitly brought in). Adapted rather than copied: dropped the SPCI/regime-only
+dependencies (`statsmodels`, `jumpmodels`, `sklearn-quantile`, `skranger`) since those
+source files don't exist outside `elie/sota`, and added `structured-data-models` (kumo).
+Actually running the result (not just editing config) surfaced four more real bugs:
+
+1. **Two modules couldn't import at all**: `feature_selection_experiment.py` imported the
+   long-deleted `Interpretability` package (unused — only referenced in a comment); 
+   `ts_cross_validation/plotting.py` used `from src.Utils...` instead of `from Utils...`.
+   Both are one-line fixes, caught by the import-smoke-test (`pytest -m slow`, new in this
+   migration) rather than by ruff, since ruff doesn't execute imports.
+2. **The trial script's version-check crashed**: `tabicl.__version__` and
+   `autogluon.tabular.__version__` don't exist on the installed versions
+   (`AttributeError`, `No package metadata found`). Switched to
+   `importlib.metadata.version(...)`, which works for every package checked.
+3. **`module purge` isn't guarded** — fails outright with `command not found` outside an
+   Lmod cluster (e.g. testing the script locally on a laptop). Guarded with
+   `command -v module`, a no-op anywhere Lmod exists.
+4. **One model failing killed the whole trial/full loop** (`set -e` + a non-zero exit from
+   any `m2_pipeline.py` invocation inside the `for` loop aborts the script immediately) —
+   caught by actually inducing a failure (a bad `TABPFN_TOKEN`) and watching autogluon/kumo
+   never run. Both scripts now catch each model's exit status, keep going, and report a
+   summary with a non-zero exit only at the end if anything failed — the entire point of a
+   cheap trial is seeing which of the four models are fine, not just the first one.
+
+Ruff (`select = ["F", "E9", "B", "PLE"]`) found ~32 further pre-existing issues in Pablo's
+analysis/plotting code (missing `import json`, a dead `if __name__: main()`, an undefined
+`r_zone` in a radar plot, a few more) — left as-is, documented in `pyproject.toml`'s
+per-file-ignores, since fixing them is a separate bug-fix pass, not this PR's scope.
 
 ## Usage
 
@@ -155,16 +201,17 @@ sbatch slurm/m2-compare-trial.sh
 # 2. Full: both directions, full AutoGluon time budget (3600s/fit by default).
 sbatch slurm/m2-compare-full.sh
 
-# Override granularity, AutoGluon settings, or the conda env name via --export:
+# Override granularity or AutoGluon settings via --export:
 sbatch slurm/m2-compare-full.sh --export=GRANULARITY=4h
 sbatch slurm/m2-compare-full.sh --export=AG_PRESET=extreme_quality,AG_TIME_LIMIT=7200
-sbatch slurm/m2-compare-full.sh --export=CONDA_ENV=my_existing_env
 ```
 
 Both scripts assume they're submitted from the `SecondaryModel/` repo root (the
 `PROJECT_DIR` resolution falls back to `$SLURM_SUBMIT_DIR`, matching `sbatch`'s default).
-`CONDA_ENV` (default `S2_m2compare`) is created once by whichever script runs first and
-reused by the other — run the trial first so the full job doesn't pay the install cost cold.
+The locked `.venv` (from `uv.lock`) is created once by whichever script runs first and
+reused by the other via `uv sync --locked` — run the trial first so the full job doesn't
+pay the install cost cold. Each script also tolerates a model failing mid-run: it keeps
+going through the rest, then reports which (if any) failed and exits non-zero only then.
 
 ## Reading results
 

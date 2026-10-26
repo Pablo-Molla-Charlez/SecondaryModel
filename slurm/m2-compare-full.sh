@@ -20,9 +20,8 @@
 # Same features, same splits, same k/target for every model — only the model
 # family changes between runs, so the comparison is actually fair.
 #
-# Environment: this branch is based on upstream/main, which predates
-# Elie's uv/pyproject.toml migration (that's on elie/sota, not here) — it
-# still uses conda + requirements.txt, per README.md's own "Setup" section.
+# Environment: uv + pyproject.toml/uv.lock (Python 3.11), locked. See
+# mise.toml / README.md's "Setup" section.
 #
 # Usage:
 #   sbatch slurm/m2-compare-full.sh
@@ -37,36 +36,34 @@ GRANULARITY="${GRANULARITY:-1d}"
 MODELS=("xgboost" "tabpfn" "autogluon" "kumo")
 AG_PRESET="${AG_PRESET:-tabarena}"
 AG_TIME_LIMIT="${AG_TIME_LIMIT:-3600}"   # matches factory.py's _AG_TIME_LIMIT default; raise if autogluon times out in the trial
-CONDA_ENV="${CONDA_ENV:-S2_m2compare}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 cd "$PROJECT_DIR"
 mkdir -p slurm/logs
 
 # ---------------------------------------------------------------------------
-# 1. Load conda — same approach as the trial script.
+# 1. uv — same approach as the trial script. uv.lock already has everything
+#    resolved from that run, so this is just `uv sync --locked` (fast, no
+#    re-resolution) if the trial ran on this node/scratch already.
 # ---------------------------------------------------------------------------
-module purge
-if ! command -v conda &> /dev/null; then
-    module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+# No-op (and `command -v module` guarded) outside an Lmod cluster, e.g. when
+# testing this script locally on a laptop.
+command -v module &> /dev/null && module purge
+if ! command -v uv &> /dev/null; then
+    command -v module &> /dev/null && module load uv 2>/dev/null
 fi
-if ! command -v conda &> /dev/null; then
-    echo "[$(date)] ERROR: no 'conda' on PATH and no miniconda3/anaconda3 module found."
-    echo "  Load your cluster's conda module before submitting this job."
+if ! command -v uv &> /dev/null; then
+    echo "[$(date)] No 'uv' on PATH or as a module — installing it locally."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+if ! command -v uv &> /dev/null; then
+    echo "[$(date)] ERROR: could not find or install 'uv'. Load your cluster's uv module"
+    echo "  (check 'module avail uv') or install it manually before sbatch."
     exit 1
 fi
-eval "$(conda shell.bash hook)"
-
-# ---------------------------------------------------------------------------
-# 2. Reuse the env the trial script created (CONDA_ENV, default S2_m2compare).
-#    Create it here too in case this is run standalone.
-# ---------------------------------------------------------------------------
-if ! conda env list | grep -qE "^\s*${CONDA_ENV}\s"; then
-    echo "[$(date)] Creating conda env '$CONDA_ENV' (python=3.11) — did the trial script not run first?"
-    conda create -n "$CONDA_ENV" python=3.11 -y
-fi
-conda activate "$CONDA_ENV"
-pip install -r requirements.txt
+echo "[$(date)] uv: $(uv --version)"
+uv sync --locked
 
 export HF_HOME="${SCRATCH:-/tmp}/.cache/huggingface"
 
@@ -111,6 +108,9 @@ mkdir -p "$RESULTS_ROOT"
 
 TOTAL=$((${#MODELS[@]} * ${#DIRECTIONS[@]}))
 DONE=0
+# One model/direction failing partway through a multi-hour sweep must not
+# throw away every other combination that would have finished fine.
+FAILED_RUNS=()
 
 for MODEL in "${MODELS[@]}"; do
     for DIRECTION in "${DIRECTIONS[@]}"; do
@@ -125,7 +125,8 @@ for MODEL in "${MODELS[@]}"; do
             EXTRA_ARGS=(--ag-presets "$AG_PRESET" --ag-time-limit "$AG_TIME_LIMIT")
         fi
 
-        python m2_pipeline.py \
+        set +e
+        uv run --project .. python m2_pipeline.py \
             --config config.yaml \
             --phase training \
             --m2 "$MODEL" \
@@ -133,6 +134,13 @@ for MODEL in "${MODELS[@]}"; do
             --granularity "$GRANULARITY" \
             "${EXTRA_ARGS[@]}" \
             2>&1 | tee "${RESULTS_ROOT}/${MODEL}_${DIRECTION}.log"
+        RUN_STATUS=${PIPESTATUS[0]}
+        set -e
+
+        if [ "$RUN_STATUS" -ne 0 ]; then
+            echo "[$(date)] FAILED: model=$MODEL direction=$DIRECTION (exit $RUN_STATUS)"
+            FAILED_RUNS+=("${MODEL}_${DIRECTION}")
+        fi
     done
 done
 
@@ -150,4 +158,10 @@ echo "Outputs: ${PROJECT_DIR}/src/Output/Kronos/<model>/<UP|DOWN>/Utility_Score*
 echo "Found this run's summaries:"
 find "${PROJECT_DIR}/src/Output/Kronos" -name "analysis_summary.json" -newer "$RESULTS_ROOT" 2>/dev/null | sort || true
 echo ""
-echo "[$(date)] Full comparison complete."
+if [ ${#FAILED_RUNS[@]} -eq 0 ]; then
+    echo "[$(date)] Full comparison complete. All $TOTAL runs succeeded."
+else
+    echo "[$(date)] Full comparison finished with failures: ${FAILED_RUNS[*]}"
+    echo "  (${#FAILED_RUNS[@]}/$TOTAL failed — see their logs under $RESULTS_ROOT)"
+    exit 1
+fi

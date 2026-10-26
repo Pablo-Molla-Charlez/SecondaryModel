@@ -1,0 +1,17 @@
+name: CI
+on:
+  push:
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+      - run: uv sync --locked
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run test:imports

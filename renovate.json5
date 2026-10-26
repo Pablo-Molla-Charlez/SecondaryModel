@@ -1,0 +1,23 @@
+// Grouped weekly dependency PRs. The pinned ML stack (what pickled M2 bundles need)
+// is only updated with explicit approval: retrain or re-validate bundles first.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", ":dependencyDashboard"],
+  timezone: "Asia/Tokyo",
+  schedule: ["before 9am on monday"],
+  "pre-commit": { enabled: true },
+  lockFileMaintenance: { enabled: true, schedule: ["before 9am on monday"] },
+  packageRules: [
+    {
+      matchPackageNames: ["numpy", "pandas", "scikit-learn", "torch", "tabpfn", "tabicl", "tabm",
+                          "rtdl-num-embeddings", "xgboost", "autogluon-tabular", "structured-data-models"],
+      dependencyDashboardApproval: true,
+    },
+    {
+      groupName: "dev tooling",
+      matchPackageNames: ["ruff", "ty", "pytest", "pytest-xdist", "hypothesis", "deptry", "pre-commit"],
+      automerge: true,
+    },
+    { groupName: "GitHub Actions", matchManagers: ["github-actions"], automerge: true },
+  ],
+}

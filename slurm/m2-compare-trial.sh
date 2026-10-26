@@ -17,10 +17,9 @@
 # Confirms: environment builds, data is staged, TabPFN/AutoGluon/Kumo load
 # what we think they load, and nothing crashes — fast and cheap.
 #
-# Environment: this branch is based on upstream/main, which predates
-# Elie's uv/pyproject.toml migration (that's on elie/sota, not here) — it
-# still uses conda + requirements.txt, per README.md's own "Setup" section.
-# Don't "fix" this to uv without also bringing that migration into the PR.
+# Environment: uv + pyproject.toml/uv.lock (Python 3.11), locked. See
+# mise.toml / README.md's "Setup" section — this replaced the old conda +
+# requirements.txt setup.
 #
 # Usage:
 #   sbatch slurm/m2-compare-trial.sh
@@ -34,40 +33,41 @@ GRANULARITY="${GRANULARITY:-1d}"
 MODELS=("xgboost" "tabpfn" "autogluon" "kumo")
 AG_PRESET="${AG_PRESET:-tabarena}"   # AutoGluon preset that includes Mitra/TabPFNv2/TabICL as base learners
 AG_TIME_LIMIT_TRIAL=600              # short budget per fit, just to prove it runs
-CONDA_ENV="${CONDA_ENV:-S2_m2compare}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 cd "$PROJECT_DIR"
 mkdir -p slurm/logs
 
 # ---------------------------------------------------------------------------
-# 1. Load conda — try the common module name, else require it preinstalled.
-#    (EPFL cluster module names vary; `module load miniconda3` is a common
-#    one but not guaranteed. If this fails, load whatever your cluster's
-#    conda module is actually called before submitting.)
+# 1. uv — prefer a cluster module if one exists; otherwise install it
+#    locally (official installer, no sudo/root needed, lands in
+#    $HOME/.local/bin). Pinned version is in mise.toml ([tools] uv = "0.12").
 # ---------------------------------------------------------------------------
-module purge
-if ! command -v conda &> /dev/null; then
-    module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+# No-op (and `command -v module` guarded) outside an Lmod cluster, e.g. when
+# testing this script locally on a laptop.
+command -v module &> /dev/null && module purge
+if ! command -v uv &> /dev/null; then
+    command -v module &> /dev/null && module load uv 2>/dev/null
 fi
-if ! command -v conda &> /dev/null; then
-    echo "[$(date)] ERROR: no 'conda' on PATH and no miniconda3/anaconda3 module found."
-    echo "  Load your cluster's conda module (check 'module avail conda' / 'module avail anaconda')"
-    echo "  and either edit this script's module-load line or run 'module load <name>' before sbatch."
+if ! command -v uv &> /dev/null; then
+    echo "[$(date)] No 'uv' on PATH or as a module — installing it locally."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+if ! command -v uv &> /dev/null; then
+    echo "[$(date)] ERROR: could not find or install 'uv'. Load your cluster's uv module"
+    echo "  (check 'module avail uv') or install it manually before sbatch."
     exit 1
 fi
-eval "$(conda shell.bash hook)"
+echo "[$(date)] uv: $(uv --version)"
 
 # ---------------------------------------------------------------------------
-# 2. Create the env once, then reuse it (so re-running a trial doesn't
-#    reinstall the whole ML stack every time).
+# 2. Locked environment (Python 3.11, CTTS-equivalent ML stack incl. Kumo).
+#    `uv sync --locked` creates/reuses .venv from uv.lock, so re-running a
+#    trial doesn't reinstall the whole ML stack every time. torch resolves
+#    to the CUDA 12.8 build on Linux per pyproject.toml's [tool.uv.sources].
 # ---------------------------------------------------------------------------
-if ! conda env list | grep -qE "^\s*${CONDA_ENV}\s"; then
-    echo "[$(date)] Creating conda env '$CONDA_ENV' (python=3.11, per README.md's Setup section) ..."
-    conda create -n "$CONDA_ENV" python=3.11 -y
-fi
-conda activate "$CONDA_ENV"
-pip install -r requirements.txt
+uv sync --locked
 
 export HF_HOME="${SCRATCH:-/tmp}/.cache/huggingface"
 
@@ -117,12 +117,16 @@ echo "[$(date)] Data OK: $(find "$DATA_DIR" -name '*.csv' | wc -l) CSVs under $D
 #    here, don't assume either number.
 # ---------------------------------------------------------------------------
 echo "[$(date)] Checking installed model-backend versions ..."
-python -c "
-import tabpfn, tabicl, autogluon.tabular, xgboost
-print(f'  tabpfn       {tabpfn.__version__}')
-print(f'  tabicl       {tabicl.__version__}')
-print(f'  autogluon    {autogluon.tabular.__version__}')
-print(f'  xgboost      {xgboost.__version__}')
+uv run python -c "
+import importlib.metadata as metadata
+import tabpfn, tabicl, autogluon.tabular, xgboost  # noqa: F401 -- import-success is the check
+# tabicl and autogluon.tabular don't expose __version__ (verified 2026-10-26:
+# AttributeError / no package metadata under the bare 'autogluon' name) --
+# importlib.metadata is the only version source that works for every package here.
+print(f'  tabpfn       {metadata.version(\"tabpfn\")}')
+print(f'  tabicl       {metadata.version(\"tabicl\")}')
+print(f'  autogluon    {metadata.version(\"autogluon.tabular\")}')
+print(f'  xgboost      {metadata.version(\"xgboost\")}')
 try:
     from tabpfn import TabPFNClassifier
     import inspect
@@ -130,24 +134,22 @@ try:
 except Exception as e:
     print(f'  (could not introspect TabPFNClassifier: {e})')
 "
-echo "[$(date)] If this isn't the TabPFN generation you expect, stop and check the pin in requirements.txt"
+echo "[$(date)] If this isn't the TabPFN generation you expect, stop and check the pin in pyproject.toml"
 echo "  before trusting the sweep below."
 
 # ---------------------------------------------------------------------------
 # 5. Confirm the AutoGluon preset we want actually exists in this version
 #    AND actually includes Mitra -- verified by running this locally
-#    (2026-10-26) against whatever requirements.txt's unpinned
-#    autogluon.tabular resolved to (1.6.3): the old `PRESETS_CONFIGS` import
-#    no longer exists in 1.6.x (replaced by tabular_presets_dict), and
-#    "extreme_quality" does NOT include Mitra in 1.6.3 -- its hyperparameter
-#    set (commercial_2026_08_05) is TABICL/NORI/TABDPT-TURBO/GBM/CAT/REALMLP,
-#    no Mitra, no TabPFN. Only "tabarena" (zeroshot_2025_tabfm) has Mitra
-#    (REALTABPFN-V2, TABM, TABICL, GBM, CAT, XGB, MITRA) -- confirmed by
-#    actually importing the hyperparameter config, not guessed from docs.
-#    "noncommercial" has TabPFN-3 but still no Mitra, if you want that instead.
+#    (2026-10-26) against the locked autogluon-tabular==1.5.0: the old
+#    `PRESETS_CONFIGS` import no longer exists in 1.6.x (replaced by
+#    tabular_presets_dict) — this script tries both. Only "tabarena"
+#    (zeroshot_2025_tabfm) has Mitra (REALTABPFN-V2, TABM, TABICL, GBM, CAT,
+#    XGB, MITRA) -- confirmed by actually importing the hyperparameter
+#    config, not guessed from docs. "noncommercial" has TabPFN-3 but still
+#    no Mitra, if you want that instead.
 # ---------------------------------------------------------------------------
 echo "[$(date)] Checking AutoGluon preset '$AG_PRESET' is known to this install ..."
-python -c "
+uv run python -c "
 preset = '$AG_PRESET'
 try:
     from autogluon.tabular.configs.presets_configs import PRESETS_CONFIGS as presets
@@ -155,8 +157,8 @@ except ImportError:
     from autogluon.tabular.configs.presets_configs import tabular_presets_dict as presets
 if preset not in presets:
     print(f'  WARNING: preset {preset!r} not found. Available: {sorted(presets)}')
-    print('  No fallback reaches Mitra except tabarena itself (verified 2026-10-26,')
-    print('  AutoGluon 1.6.3) -- extreme_quality/noncommercial do NOT include Mitra.')
+    print('  No fallback reaches Mitra except tabarena itself -- extreme_quality/noncommercial')
+    print('  do NOT include Mitra (checked against the locked AutoGluon version).')
 else:
     cfg = presets[preset]
     print(f'  OK: {preset!r} -> {cfg}')
@@ -171,15 +173,15 @@ else:
 
 # ---------------------------------------------------------------------------
 # 6. Kumo Tabular import check — this wrapper (kumo_tabular_classifier.py)
-#    was written by reading NVIDIA's source, never actually run (no local
-#    GPU here). This is the single most important check in this script.
+#    is validated locally on CPU (macOS) against the fit20 cohort; this is
+#    the first time it will run on an actual GPU, so check the import first.
 # ---------------------------------------------------------------------------
 echo "[$(date)] Checking structured-data-models (Kumo Tabular) import ..."
-python -c "
+uv run python -c "
 import sdm
 print(f'  sdm (structured-data-models) {getattr(sdm, \"__version__\", \"unknown\")}')
 print(f'  sdm.models.KumoTabular: {sdm.models.KumoTabular}')
-" || echo "  WARNING: sdm import failed — 'kumo' will fail below. Check requirements.txt installed cleanly."
+" || echo "  WARNING: sdm import failed — 'kumo' will fail below. Check 'uv sync --locked' output above."
 
 # ---------------------------------------------------------------------------
 # 7. Run one short fit per model on direction=up, granularity=$GRANULARITY
@@ -188,6 +190,12 @@ cd src
 RESULTS_ROOT="${PROJECT_DIR}/slurm/logs/trial-${SLURM_JOB_ID:-local}"
 mkdir -p "$RESULTS_ROOT"
 
+# One model failing (e.g. a bad/missing token) must not hide whether the
+# other three are fine -- that's the whole point of a cheap trial before the
+# multi-hour full sweep. Collect failures, keep going, exit non-zero at the
+# end if any model failed (verified 2026-10-26: without this, `set -e` killed
+# the loop outright on tabpfn's license error and autogluon/kumo never ran).
+FAILED_MODELS=()
 for MODEL in "${MODELS[@]}"; do
     echo ""
     echo "============================================"
@@ -199,7 +207,8 @@ for MODEL in "${MODELS[@]}"; do
         EXTRA_ARGS=(--ag-presets "$AG_PRESET" --ag-time-limit "$AG_TIME_LIMIT_TRIAL")
     fi
 
-    python m2_pipeline.py \
+    set +e
+    uv run --project .. python m2_pipeline.py \
         --config config.yaml \
         --phase training \
         --m2 "$MODEL" \
@@ -207,13 +216,26 @@ for MODEL in "${MODELS[@]}"; do
         --granularity "$GRANULARITY" \
         "${EXTRA_ARGS[@]}" \
         2>&1 | tee "${RESULTS_ROOT}/${MODEL}.log"
+    MODEL_STATUS=${PIPESTATUS[0]}
+    set -e
+
+    if [ "$MODEL_STATUS" -ne 0 ]; then
+        echo "[$(date)] FAILED: model=$MODEL (exit $MODEL_STATUS) -- see ${RESULTS_ROOT}/${MODEL}.log"
+        FAILED_MODELS+=("$MODEL")
+    else
+        echo "[$(date)] OK: model=$MODEL"
+    fi
 done
 
 echo ""
 echo "[$(date)] Trial complete. Logs: $RESULTS_ROOT"
-echo "Pay particular attention to the 'kumo' log above — that wrapper is unverified until"
-echo "this trial actually runs it. The pipeline doesn't print a probability-sum check"
-echo "itself; if kumo's precision/coverage numbers look off, that's the first thing to"
-echo "verify by hand (predict_proba(X).sum(axis=1) should be ~1 for every row)."
-echo "If every model fit cleanly and the version/preset checks above look right, run:"
-echo "  sbatch slurm/m2-compare-full.sh"
+echo "Pay particular attention to the 'kumo' log above — cross-check its probability-sum"
+echo "sanity (predict_proba(X).sum(axis=1) should be ~1 for every row) if its precision/"
+echo "coverage numbers look off on this GPU vs. the local CPU run."
+if [ ${#FAILED_MODELS[@]} -eq 0 ]; then
+    echo "All models fit cleanly. If the version/preset checks above look right, run:"
+    echo "  sbatch slurm/m2-compare-full.sh"
+else
+    echo "FAILED: ${FAILED_MODELS[*]} -- fix these before running the full sweep."
+    exit 1
+fi

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.dates as mdates
 
-from src.Utils.ts_cross_validation._ts_cross_validation import BaseTimeSeriesCV
+from Utils.ts_cross_validation._ts_cross_validation import BaseTimeSeriesCV
 
 
 def plot_cv_splits(X_analysis: pd.DataFrame, y_analysis: np.ndarray, cv: BaseTimeSeriesCV, show=True):
