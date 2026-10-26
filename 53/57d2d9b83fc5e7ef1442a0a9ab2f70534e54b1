@@ -1,0 +1,27 @@
+src/m2_pipeline.py
+  s_391ef904b4389f::t_e73faadbb1790c 1310-1312
+  s_391ef904b4389f::t_3e62a7f77b6171 113-115
+  s_391ef904b4389f::t_ac5341ff7e589e 1260-1266
+  s_391ef904b4389f::t_7758dbb5853372 1338-1340
+  s_391ef904b4389f::t_4ce894bf98606b 694-696
+  s_391ef904b4389f::t_dc30733d200486 764-770
+  s_391ef904b4389f::t_a6762b1537611c 256-257
+  s_391ef904b4389f::t_53975ca5cee274 890-891
+  s_391ef904b4389f::t_6757a0fa614d35 547-549,555-558
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5357d2d9b83fc5e7ef1442a0a9ab2f70534e54b1",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
