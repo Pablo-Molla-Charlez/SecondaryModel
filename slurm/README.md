@@ -236,6 +236,11 @@ With both fixed, `tabpfn` now runs end-to-end on real data — Sharpe 1.23 (Tota
 ## Usage
 
 ```bash
+# 0. One-time, from this laptop: push the already-staged data onto Izar's /scratch
+#    (run slurm/stage-data.sh first if you haven't pulled it from gpu8 yet).
+slurm/stage-data-to-izar.sh <your-gaspar-username>
+
+# Then, logged into izar.hpc.epfl.ch, from this repo's checkout there:
 # 1. Trial: one direction (up), short AutoGluon time budget, fails fast on bad config.
 sbatch slurm/m2-compare-trial.sh
 
