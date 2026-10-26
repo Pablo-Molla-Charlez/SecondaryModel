@@ -65,25 +65,82 @@ that migration commit into this PR first (that's a bigger, separate scope decisi
      "TabPFN-2.5."** The trial script still prints `tabpfn.__version__` and the
      `TabPFNClassifier` signature — confirm which generation you actually got before
      citing a number, don't assume this note is still accurate by the time you read it.
-   - AutoGluon preset names shift between releases, and `requirements.txt` pins
-     `autogluon.tabular` **unversioned** (unlike `elie/sota`'s `pyproject.toml`, which pins
-     `==1.5.0` — this branch doesn't have that pin, so you may get a different release).
-     The trial script checks that `AG_PRESET` (default `tabarena`) actually exists in
-     whatever got installed and prints what it maps to. If it's missing, try
-     `extreme_quality` instead (`sbatch slurm/m2-compare-trial.sh --export=AG_PRESET=extreme_quality`)
-     — both reach Mitra/TabPFNv2/TabICL; `best_quality` (the old default) does not.
-   - **`kumo` (`kumo_tabular_classifier.py`) has never actually been run.** It was written
-     by reading NVIDIA's own AutoGluon-integration source
-     (`NVIDIA/structured-data-models`'s `benchmark/tabular/model.py`,
-     `SDMKumoTabularModel._fit`/`._predict_proba`) to get the `sdm.TableTensor`/
-     `model.fit(x=..., y=..., recipe=...)`/`model.predict(...)` call shape right, not by
-     installing and exercising the package (no local GPU here). The trial script's step 6
-     checks the import and prints `sdm.models.KumoTabular`; the real test is whether the
-     fit/predict call in the pipeline itself succeeds and produces sane probabilities. If
-     `kumo`'s precision/coverage numbers in the trial log look wrong, the probability
-     reconstruction in `predict_proba` (around the `out.numerical_columns` indexing) is
-     the first place to look — it has no `_convert_proba_to_unified_form` equivalent to
-     fall back on, just a defensive renormalisation.
+   - AutoGluon preset names and contents shift between releases, and
+     `requirements.txt` pins `autogluon.tabular` **unversioned**. Verified locally
+     2026-10-26 by actually installing it: you get **1.6.3**, not the `1.5.0` this was
+     originally researched against, and the old `PRESETS_CONFIGS` import doesn't exist
+     in 1.6.x (replaced by `tabular_presets_dict`) — the trial script handles both.
+     **Correction: `extreme_quality` is NOT an equivalent fallback for Mitra.** Verified
+     by importing the actual hyperparameter config in 1.6.3: `tabarena`
+     (`zeroshot_2025_tabfm`) includes `REALTABPFN-V2, TABM, TABICL, GBM, CAT, XGB, MITRA`.
+     `extreme_quality` (`commercial_2026_08_05`) is `NORI, TABICL, TABDPT-TURBO, GBM, CAT,
+     REALMLP` — **no Mitra, no TabPFN at all**. `noncommercial` gets `TABPFN-3` but still
+     no Mitra. If `tabarena` isn't available on whatever AutoGluon version you end up
+     with, there is no drop-in replacement that still reaches Mitra — the trial script's
+     preset check prints each preset's actual model-family list so you can see this
+     directly rather than trusting this note after the next AutoGluon release moves
+     things again.
+   - **`kumo` (`kumo_tabular_classifier.py`) — now actually run locally (CPU, small-scale,
+     see "Local validation" below) and confirmed working end-to-end**, including a real
+     backtest. Two real bugs from the initial NVIDIA-ported draft were found and fixed in
+     the process: integer column names broke `sdm.infer_stypes` (needs strings), and
+     `out.numerical_columns` (from NVIDIA's own AutoGluon glue) doesn't exist on this
+     installed `sdm==0.2.1` — `out.to_pandas()` does, and is simpler. Still not run on
+     GPU or at the full dataset scale (all 20 assets × both directions), so don't treat
+     this as fully validated — just no longer "read, not run."
+
+## Local validation (2026-10-26)
+
+Ran the actual pipeline locally (CPU, macOS, Python 3.11 venv + `pip install -r
+requirements.txt` — a conda-equivalent substitute for smoke-testing, not a cluster run) to
+check whether these scripts would actually work before spending real cluster time on them.
+They mostly didn't, at first — six real, concrete bugs found and fixed along the way:
+
+1. `config.yaml` had **hardcoded `/home/pablo/M2_DS/Secondary-Model/...` absolute paths**
+   for `csv_dir`/`output_root` — nothing could run from any location but Pablo's exact
+   gpu8 checkout. Fixed to relative paths (`Data_MLA/...`, `Output`).
+2. `xgboost` segfaulted — the classic macOS "duplicate OpenMP runtime" crash (`torch` and
+   `xgboost` each bundle their own `libomp`). Fixed with `KMP_DUPLICATE_LIB_OK=TRUE`,
+   added to both scripts; harmless on Linux where this rarely triggers.
+3. AutoGluon's old `PRESETS_CONFIGS` import is gone in the actually-installed 1.6.3
+   (`requirements.txt` pins it unversioned). Fixed the trial script's check to handle
+   both the old and new API — and in the process **found the `extreme_quality`-reaches-
+   Mitra claim in this README was wrong**; corrected above.
+4. `tabpfn` now requires an explicit `TABPFN_TOKEN` (license acceptance from
+   ux.priorlabs.ai) — it tries a browser login, which fails outright on a headless node.
+   Added a precondition check to both scripts. **Still blocked**: nobody has run `tabpfn`
+   end-to-end in this validation pass without one.
+5. `autogluon --ag-presets tabarena` crashed on CPU here, but AutoGluon itself warned the
+   Mitra/TabPFNv2 base learner "attends over the training context for every prediction,"
+   is "typically an order of magnitude slower" on CPU, and "may appear to hang" — **this
+   one is genuinely inconclusive locally**, not confirmed broken, since there's no GPU on
+   this machine to test the path AutoGluon actually expects.
+6. `kumo_tabular_classifier.py` had two real bugs (see above) — both found by actually
+   running it, both fixed, now confirmed working end-to-end including a real backtest.
+
+**What actually ran clean, on the real data (fit20 `up`/`1d` slice, single run, no
+significance testing — do not over-read these numbers, same caveat as everywhere else in
+this thesis):**
+
+| Model | Total Ret | MaxDD | Sharpe |
+|---|---|---|---|
+| M2 xgboost | +5.00% | -12.45% | 0.85 |
+| M2 kumo | +14.21% | -14.94% | 1.42 |
+| M1 Kronos (baseline, all trades) | +1.80% | -13.57% | 0.56 |
+| Buy & Hold | -36.21% | -42.17% | -2.68 |
+
+Kumo's number is the most eye-catching thing in this PR and the least justified to
+repeat anywhere — it's one run, one direction, one granularity, on CPU, with the default
+`size="large"`. Confirms the wrapper works, nothing about whether kumo is actually better.
+
+**Not re-triggered after the first attempt crashed:** `_resolve_caches` builds both
+`up`/`down` caches on first run regardless of which `--direction` you asked for, and
+building the `down` cache (all 7 granularities, ~1M rows) raw-segfaulted (no Python
+traceback) partway through — most likely memory pressure from building the full
+multi-granularity dataset twice on a resource-constrained laptop, not something SLURM's
+requested 16-32GB should hit, but genuinely unconfirmed. If the trial job dies here with
+no traceback, that's the first thing to suspect; `--cache_path` (pointing at an
+already-built cache) skips this entirely if you need to isolate it.
 
 ## Usage
 

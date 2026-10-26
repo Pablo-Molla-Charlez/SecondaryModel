@@ -93,6 +93,11 @@ class KumoTabularClassifier(BaseClassifier):
 
         X = X_train if isinstance(X_train, pd.DataFrame) else pd.DataFrame(
             np.asarray(X_train, dtype=np.float32))
+        # sdm.infer_stypes requires string column names -- pd.DataFrame(ndarray)
+        # without columns= gives an integer RangeIndex, which fails its
+        # isinstance(name, str) assertion. Caught by actually running this
+        # (2026-10-26): AssertionError inside sdm.stype.infer_stypes.
+        X.columns = [f"f{i}" for i in range(X.shape[1])]
         y = np.asarray(y_train)
 
         if len(X) > _KUMO_MAX_ROWS:
@@ -143,14 +148,17 @@ class KumoTabularClassifier(BaseClassifier):
         with torch.inference_mode():
             out = self._model.predict(x_query)
 
-        # Reconstruction mirrors NVIDIA's own SDMModel._predict_proba
-        # (benchmark/tabular/model.py) -- see module docstring. `columns`
-        # tells us which class-probability columns the model populated;
-        # anything it didn't populate stays 0.
-        n_classes = len(self.classes_)
-        probabilities = np.zeros((len(X), n_classes), dtype=np.float32)
-        columns = out.numerical_columns
-        probabilities[:, [int(c) for c in columns]] = out.numerical.float().cpu().numpy()
+        # Correction (2026-10-26, verified by actually running this against
+        # sdm==0.2.1): `out.numerical_columns` -- what NVIDIA's own
+        # benchmark/tabular/model.py AutoGluon glue reads -- does not exist
+        # on this version's TableTensor. `out.to_pandas()` does, and gives a
+        # plain (n, n_classes) frame with the class labels as column names
+        # (category codes from the y_df.astype("category") in fit, e.g.
+        # "0"/"1"), already summing to 1 per row. Index explicitly by
+        # self.classes_ rather than assuming column order matches it.
+        proba_df = out.to_pandas()
+        probabilities = np.column_stack(
+            [proba_df[str(cls)].to_numpy(dtype=np.float32) for cls in self.classes_])
 
         # Defensive renormalisation: we don't have NVIDIA's
         # _convert_proba_to_unified_form helper, so guard against rows that

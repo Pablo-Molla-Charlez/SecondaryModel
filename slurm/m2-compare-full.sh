@@ -70,6 +70,25 @@ pip install -r requirements.txt
 
 export HF_HOME="${SCRATCH:-/tmp}/.cache/huggingface"
 
+# Verified locally 2026-10-26: without this, xgboost segfaults on macOS
+# (torch and xgboost both bundle libomp, and the duplicate runtime init
+# crashes the process). Harmless no-op on Linux where this rarely triggers,
+# but cheap enough to always set.
+export KMP_DUPLICATE_LIB_OK=TRUE
+
+# Verified locally 2026-10-26: tabpfn now gates model downloads behind an
+# explicit license acceptance (tries a browser login, which fails outright
+# on a headless node) unless TABPFN_TOKEN is set. Get one from
+# https://ux.priorlabs.ai and export it before submitting, or every tabpfn
+# fit in this job will fail with TabPFNLicenseError.
+if [ -z "${TABPFN_TOKEN:-}" ]; then
+    echo "[$(date)] ERROR: TABPFN_TOKEN is not set."
+    echo "  tabpfn will fail to download its model on this headless node without it."
+    echo "  Get a token from https://ux.priorlabs.ai and: export TABPFN_TOKEN=... before sbatch,"
+    echo "  or sbatch --export=ALL,TABPFN_TOKEN=... slurm/m2-compare-trial.sh"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Data precondition — same check as the trial script. Don't start a
 #    6-hour job only to fail in the first minute.

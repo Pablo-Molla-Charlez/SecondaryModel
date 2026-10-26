@@ -7,8 +7,8 @@
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
-  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
+  csv_dir: "Data_MLA/Kronos/Crypto/TP/horizon_7"
+  output_root: "Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:

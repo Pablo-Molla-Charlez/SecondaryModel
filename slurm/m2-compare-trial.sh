@@ -71,6 +71,25 @@ pip install -r requirements.txt
 
 export HF_HOME="${SCRATCH:-/tmp}/.cache/huggingface"
 
+# Verified locally 2026-10-26: without this, xgboost segfaults on macOS
+# (torch and xgboost both bundle libomp, and the duplicate runtime init
+# crashes the process). Harmless no-op on Linux where this rarely triggers,
+# but cheap enough to always set.
+export KMP_DUPLICATE_LIB_OK=TRUE
+
+# Verified locally 2026-10-26: tabpfn now gates model downloads behind an
+# explicit license acceptance (tries a browser login, which fails outright
+# on a headless node) unless TABPFN_TOKEN is set. Get one from
+# https://ux.priorlabs.ai and export it before submitting, or every tabpfn
+# fit in this job will fail with TabPFNLicenseError.
+if [ -z "${TABPFN_TOKEN:-}" ]; then
+    echo "[$(date)] ERROR: TABPFN_TOKEN is not set."
+    echo "  tabpfn will fail to download its model on this headless node without it."
+    echo "  Get a token from https://ux.priorlabs.ai and: export TABPFN_TOKEN=... before sbatch,"
+    echo "  or sbatch --export=ALL,TABPFN_TOKEN=... slurm/m2-compare-trial.sh"
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # 3. Data precondition — Data_MLA/* is gitignored and lives on gpu8 (the lab
 #    GPU server), not in this checkout. Fail fast with a clear message rather
@@ -116,19 +135,38 @@ echo "  before trusting the sweep below."
 
 # ---------------------------------------------------------------------------
 # 5. Confirm the AutoGluon preset we want actually exists in this version
-#    (preset names have shifted across AutoGluon releases, and
-#    requirements.txt pins autogluon.tabular unversioned — don't assume
-#    which release you got).
+#    AND actually includes Mitra -- verified by running this locally
+#    (2026-10-26) against whatever requirements.txt's unpinned
+#    autogluon.tabular resolved to (1.6.3): the old `PRESETS_CONFIGS` import
+#    no longer exists in 1.6.x (replaced by tabular_presets_dict), and
+#    "extreme_quality" does NOT include Mitra in 1.6.3 -- its hyperparameter
+#    set (commercial_2026_08_05) is TABICL/NORI/TABDPT-TURBO/GBM/CAT/REALMLP,
+#    no Mitra, no TabPFN. Only "tabarena" (zeroshot_2025_tabfm) has Mitra
+#    (REALTABPFN-V2, TABM, TABICL, GBM, CAT, XGB, MITRA) -- confirmed by
+#    actually importing the hyperparameter config, not guessed from docs.
+#    "noncommercial" has TabPFN-3 but still no Mitra, if you want that instead.
 # ---------------------------------------------------------------------------
 echo "[$(date)] Checking AutoGluon preset '$AG_PRESET' is known to this install ..."
 python -c "
-from autogluon.tabular.configs.presets_configs import PRESETS_CONFIGS
 preset = '$AG_PRESET'
-if preset not in PRESETS_CONFIGS:
-    print(f'  WARNING: preset {preset!r} not found. Available: {sorted(PRESETS_CONFIGS)}')
-    print('  Falling back to extreme_quality if present, else best_quality.')
+try:
+    from autogluon.tabular.configs.presets_configs import PRESETS_CONFIGS as presets
+except ImportError:
+    from autogluon.tabular.configs.presets_configs import tabular_presets_dict as presets
+if preset not in presets:
+    print(f'  WARNING: preset {preset!r} not found. Available: {sorted(presets)}')
+    print('  No fallback reaches Mitra except tabarena itself (verified 2026-10-26,')
+    print('  AutoGluon 1.6.3) -- extreme_quality/noncommercial do NOT include Mitra.')
 else:
-    print(f'  OK: {preset!r} -> {PRESETS_CONFIGS[preset]}')
+    cfg = presets[preset]
+    print(f'  OK: {preset!r} -> {cfg}')
+    try:
+        from autogluon.tabular.configs.hyperparameter_configs import get_hyperparameter_config
+        families = list(get_hyperparameter_config(cfg['hyperparameters']).keys())
+        print(f'  Model families in this preset: {families}')
+        print(f'  Includes Mitra: {\"MITRA\" in families}')
+    except Exception as e:
+        print(f'  (could not resolve hyperparameter families: {e})')
 "
 
 # ---------------------------------------------------------------------------
