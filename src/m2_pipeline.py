@@ -110,7 +110,9 @@ def temporal_eval(dataset: dict,
                   forecast_horizon: int = 1,
                   split_indices_raw: tuple = None,
                   granularity: str = "1d",
-                  best_params: dict | None = None) -> dict:
+                  best_params: dict | None = None,
+                  ag_presets: str | None = None,
+                  ag_time_limit: int | None = None) -> dict:
     """
     Fit an M2 classifier and select a decision threshold on the validation split.
 
@@ -251,7 +253,8 @@ def temporal_eval(dataset: dict,
                               len(y_train),
                               cw_ratio,
                               feature_names = feature_cols,
-                              presets       = _AG_PRESETS,
+                              time_limit    = ag_time_limit,
+                              presets       = ag_presets or _AG_PRESETS,
                               params        = best_params)
     
     # ┏━━━━━━━━━━ TabM and CTTS get the merged Val window as early-stopping signal ━━━━━━━━━━┓
@@ -541,12 +544,18 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                  train_end: str = None, val_end: str = None, model_name: str = "rf",
                  cfg: dict = None,
                  thres_mode: str = "utility",
-                 best_params: dict | None = None):
+                 best_params: dict | None = None,
+                 ag_presets: str | None = None,
+                 ag_time_limit: int | None = None):
     """Run full feature analysis for one direction/granularity.
 
     Args:
         dataset_override: if provided, use this dict instead of loading cache_path.
                           Used when iterating sub-granularities from a multi cache.
+        ag_presets: AutoGluon quality preset override (autogluon only); None keeps
+                    factory.py's default ('best_quality').
+        ag_time_limit: AutoGluon per-fit time budget in seconds (autogluon only);
+                       None keeps factory.py's default (3600).
     """
 
     # ┏━━━━━━━━━━ Load dataset ━━━━━━━━━━┓
@@ -682,7 +691,9 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                     forecast_horizon=fh,
                                                     split_indices_raw=split_indices_raw,
                                                     granularity=granularity,
-                                                    best_params=best_params)
+                                                    best_params=best_params,
+                                                    ag_presets=ag_presets,
+                                                    ag_time_limit=ag_time_limit)
 
         # ┏━━━━━━━━━━ Persist final production model (train+cal+opt fitted model used for Test) ━━━━━━━━━━┓
         _save_final_model(artifacts_all,
@@ -750,8 +761,13 @@ def run_unified_analysis(cache_path: Path,
                          val_end: str,
                          model_name: str = "rf",
                          cfg: dict = None,
-                         thres_mode: str = "utility"):
-    """Train ONE model on all granularities (with gran-balancing weights), evaluate per-gran."""
+                         thres_mode: str = "utility",
+                         ag_presets: str | None = None,
+                         ag_time_limit: int | None = None):
+    """Train ONE model on all granularities (with gran-balancing weights), evaluate per-gran.
+
+    ag_presets/ag_time_limit: see run_analysis / temporal_eval docstrings (autogluon only).
+    """
 
     # ┏━━━━━━━━━━ Models and Path Setup ━━━━━━━━━━┓
     mlabel = _model_label(model_name)
@@ -871,7 +887,8 @@ def run_unified_analysis(cache_path: Path,
                               len(y_train_all),
                               cw_ratio,
                               feature_names=feature_names,
-                              presets=_AG_PRESETS)
+                              time_limit=ag_time_limit,
+                              presets=ag_presets or _AG_PRESETS)
     model.fit(X_train_all, y_train_all, sample_weight=w_train_all)
     print(f"  Training complete.\n")
     
@@ -1240,6 +1257,13 @@ def main():
     parser.add_argument("--m2", type=str, help="M2 model to use", required=True)
     parser.add_argument("--direction", type=str, help="Direction to use", required=True)
     parser.add_argument("--granularity", type=str, help="Granularity to use", required=True)
+    parser.add_argument("--ag-presets", type=str, default=None,
+                        help="AutoGluon quality preset override (autogluon only), e.g. 'extreme_quality' or "
+                             "'tabarena' to reach foundation-model base learners (Mitra, TabPFNv2, TabICL) that "
+                             "'best_quality' excludes. Defaults to factory.py's _AG_PRESETS ('best_quality').")
+    parser.add_argument("--ag-time-limit", type=int, default=None,
+                        help="AutoGluon training time budget in seconds, per direction/granularity fit "
+                             "(autogluon only). Defaults to factory.py's _AG_TIME_LIMIT (3600).")
 
     args = parser.parse_args()
 
@@ -1283,7 +1307,9 @@ def main():
                                  val_end=args.config['data']['split']['val_end'],
                                  model_name=args.m2,
                                  cfg=args.config,
-                                 thres_mode=args.config['runtime'][args.phase]["thres"])
+                                 thres_mode=args.config['runtime'][args.phase]["thres"],
+                                 ag_presets=args.ag_presets,
+                                 ag_time_limit=args.ag_time_limit)
             return
         
         else:
@@ -1309,7 +1335,9 @@ def main():
                          model_name=args.m2,
                          cfg=args.config,
                          thres_mode=args.config['runtime'][args.phase]["thres"],
-                         best_params=best_params)
+                         best_params=best_params,
+                         ag_presets=args.ag_presets,
+                         ag_time_limit=args.ag_time_limit)
             print(f"\nAnalysis complete ({args.m2}/{args.direction}/{args.granularity}).")
             return
 
