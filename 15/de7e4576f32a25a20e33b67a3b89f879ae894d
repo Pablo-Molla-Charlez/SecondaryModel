@@ -1,0 +1,21 @@
+slurm/README.md
+  s_391ef904b4389f::t_f82eb3d7c7b6ca 239-243
+slurm/stage-data-to-izar.sh
+  s_391ef904b4389f::t_ded4d0e5f8f9d5 1-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "15de7e4576f32a25a20e33b67a3b89f879ae894d",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
