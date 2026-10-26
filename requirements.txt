@@ -51,3 +51,6 @@ tabicl
 # ┏━━━━━━━━━━ TabM (tabular MLP-Mixer ensemble — deep-learning M2 baseline) ━━━━━━━━━━┓
 tabm
 rtdl_num_embeddings
+
+# ┏━━━━━━━━━━ Kumo Tabular (NVIDIA in-context foundation model; needs Python>=3.11, torch>=2.7) ━━━━━━━━━━┓
+structured-data-models==0.2.1

@@ -12,12 +12,17 @@
 # ============================================================================
 # M2 model-comparison full run — xgboost (GBM baseline) / tabpfn / autogluon
 # (AG_PRESET, default "tabarena" to reach Mitra + TabPFNv2 + TabICL as base
-# learners) across both directions, on the fit20 cohort's granularity (1d by
-# default). Run slurm/m2-compare-trial.sh first and read its output before
-# submitting this.
+# learners) / kumo (NVIDIA Kumo Tabular) across both directions, on the
+# fit20 cohort's granularity (1d by default). Run slurm/m2-compare-trial.sh
+# first and read its output before submitting this — the kumo wrapper in
+# particular has never actually been run.
 #
 # Same features, same splits, same k/target for every model — only the model
 # family changes between runs, so the comparison is actually fair.
+#
+# Environment: this branch is based on upstream/main, which predates
+# Elie's uv/pyproject.toml migration (that's on elie/sota, not here) — it
+# still uses conda + requirements.txt, per README.md's own "Setup" section.
 #
 # Usage:
 #   sbatch slurm/m2-compare-full.sh
@@ -29,27 +34,39 @@ set -euo pipefail
 
 DIRECTIONS=("up" "down")
 GRANULARITY="${GRANULARITY:-1d}"
-MODELS=("xgboost" "tabpfn" "autogluon")
+MODELS=("xgboost" "tabpfn" "autogluon" "kumo")
 AG_PRESET="${AG_PRESET:-tabarena}"
 AG_TIME_LIMIT="${AG_TIME_LIMIT:-3600}"   # matches factory.py's _AG_TIME_LIMIT default; raise if autogluon times out in the trial
+CONDA_ENV="${CONDA_ENV:-S2_m2compare}"
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 cd "$PROJECT_DIR"
 mkdir -p slurm/logs
 
 # ---------------------------------------------------------------------------
-# 1. Clean environment
+# 1. Load conda — same approach as the trial script.
 # ---------------------------------------------------------------------------
 module purge
+if ! command -v conda &> /dev/null; then
+    module load miniconda3 2>/dev/null || module load anaconda3 2>/dev/null || true
+fi
+if ! command -v conda &> /dev/null; then
+    echo "[$(date)] ERROR: no 'conda' on PATH and no miniconda3/anaconda3 module found."
+    echo "  Load your cluster's conda module before submitting this job."
+    exit 1
+fi
+eval "$(conda shell.bash hook)"
 
 # ---------------------------------------------------------------------------
-# 2. Install dependencies
+# 2. Reuse the env the trial script created (CONDA_ENV, default S2_m2compare).
+#    Create it here too in case this is run standalone.
 # ---------------------------------------------------------------------------
-export PATH="$HOME/.local/bin:$PATH"
-if ! command -v uv &> /dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+if ! conda env list | grep -qE "^\s*${CONDA_ENV}\s"; then
+    echo "[$(date)] Creating conda env '$CONDA_ENV' (python=3.11) — did the trial script not run first?"
+    conda create -n "$CONDA_ENV" python=3.11 -y
 fi
-uv sync --locked
+conda activate "$CONDA_ENV"
+pip install -r requirements.txt
 
 export HF_HOME="${SCRATCH:-/tmp}/.cache/huggingface"
 
@@ -89,7 +106,7 @@ for MODEL in "${MODELS[@]}"; do
             EXTRA_ARGS=(--ag-presets "$AG_PRESET" --ag-time-limit "$AG_TIME_LIMIT")
         fi
 
-        uv run python m2_pipeline.py \
+        python m2_pipeline.py \
             --config config.yaml \
             --phase training \
             --m2 "$MODEL" \
