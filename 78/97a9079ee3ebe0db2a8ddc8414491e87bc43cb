@@ -1,0 +1,31 @@
+slurm/README.md
+  s_391ef904b4389f::t_c179cf14571d13 1-23,41-95
+  s_391ef904b4389f::t_2d819e5efab934 24-40
+slurm/.gitignore
+  s_391ef904b4389f::t_e78225c0e53b4e 1
+slurm/stage-data.sh
+  s_391ef904b4389f::t_4f044943db8610 1-30
+slurm/m2-compare-trial.sh
+  s_391ef904b4389f::t_c8e25e7c5a9017 60-66
+  s_391ef904b4389f::t_ecbaedd7d9895f 1-59,67-139
+slurm/m2-compare-full.sh
+  s_391ef904b4389f::t_21122eb227d4dd 1-62,65-112,115-117
+  s_391ef904b4389f::t_a72a2b0ee4852b 113-114
+  s_391ef904b4389f::t_2e7d7260505bfa 63-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7897a9079ee3ebe0db2a8ddc8414491e87bc43cb",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
