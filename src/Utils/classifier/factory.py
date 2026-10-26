@@ -11,11 +11,13 @@ import pickle
 from pathlib import Path
 
 # ┏━━━━━━━━━━ Model registry ━━━━━━━━━━┓
-MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm", "ctts")
+MODEL_CHOICES = ("rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm", "ctts", "kumo")
 
 # ┏━━━━━━━━━━ Models that must NOT receive StandardScaler-transformed data ━━━━━━━━━━┓
 # TabM benefits from standardised inputs (it's an MLP), so it stays out of this set.
-MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl", "ctts"}
+# Kumo Tabular is an in-context foundation model like TabPFN/TabICL (own internal
+# stype/recipe-based preprocessing via sdm.infer_stypes) -- same rationale, raw features.
+MODELS_NO_SCALING = {"tabpfn", "tabpfn_ft", "tabicl", "ctts", "kumo"}
 
 # ┏━━━━━━━━━━ TabPFN soft row limit ━━━━━━━━━━┓
 _TABPFN_MAX_ROWS = 50_000
@@ -117,6 +119,15 @@ def _build_tree_model(model_name:         str,
                           softmax_temperature = params.get("softmax_temperature", 0.9),
                           random_state        = 42)
         return TabICL()
+
+    # ┏━━━━━━━━━━ Kumo Tabular (NVIDIA in-context foundation model) ━━━━━━━━━━┓
+    elif model_name == "kumo":
+        from Utils.classifier.kumo_tabular_classifier import KumoTabularClassifier
+        if params:
+            return KumoTabularClassifier(size           = params.get("size", "large"),
+                                         num_estimators = params.get("num_estimators"),
+                                         random_state   = 42)
+        return KumoTabularClassifier()
 
     # ┏━━━━━━━━━━ TabM (deep tabular MLP-Mixer ensemble) ━━━━━━━━━━┓
     elif model_name == "tabm":

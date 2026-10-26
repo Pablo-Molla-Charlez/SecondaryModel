@@ -40,7 +40,7 @@ class TabPFN(BaseClassifier):
 
     # ┏━━━━━━━━━━ Constructor ━━━━━━━━━━┓
     def __init__(self,
-                 device:                 str   = "cuda",
+                 device:                 str   = "auto",
                  n_estimators:           int   = 16,
                  softmax_temperature:    float = 0.9,
                  balance_probabilities:  bool  = False,

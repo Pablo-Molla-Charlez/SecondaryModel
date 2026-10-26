@@ -269,21 +269,27 @@ All models share a 50 000-row soft sub-sampling guard (`_TABPFN_MAX_ROWS`) that 
 
 ## Setup
 
-### 1. Conda environment
+### 1. Environment (uv + mise, locked)
+
+Dependencies are locked in `uv.lock` (Python 3.11) and are the packages `src/` imports.
+The ML stack that pickled M2 bundles depend on (numpy, pandas, scikit-learn, torch, tabpfn,
+tabicl, tabm, xgboost, autogluon) is pinned; torch is the CUDA 12.8 build on Linux, PyPI
+on macOS.
 
 ```bash
-conda create -n S2 python=3.11
-conda activate S2
-pip install -r Secondary-Model/requirements.txt
+mise install && mise run install   # uv at the locked version, then `uv sync --locked` + git hooks
+mise run check                      # lint, feature-contract tests, import smoke test of every module
+mise run pipeline                   # = cd src && uv run python m2_pipeline.py
 ```
+
+Without mise: `uv sync --locked`, then `cd src && uv run python m2_pipeline.py`.
 
 ### 2. Working directory
 
-All commands below assume you are in `Secondary-Model/src/`:
+All commands below assume you are in `SecondaryModel/src/`:
 
 ```bash
-cd Secondary-Model/src
-conda activate S2
+cd SecondaryModel/src
 ```
 
 ---
@@ -295,7 +301,7 @@ conda activate S2
 The primary way to run a single training slice is to invoke `m2_pipeline.py` directly. You must always specify `--config`, `--phase`, `--m2`, `--direction`, and `--granularity`:
 
 ```bash
-conda run -n S2 python m2_pipeline.py \
+uv run python m2_pipeline.py \
   --config config.yaml \
   --phase training \
   --m2 rf \
@@ -310,7 +316,7 @@ Each invocation trains, thresholds, and backtests exactly the `(m2, direction, g
 For running the full cross-product of models, directions, and granularities defined in `config.yaml`, use `experiments.py`. It reads the `experiment.{m2, direction, granularity}` lists from the config and fans out one `m2_pipeline.py` subprocess per slice automatically:
 
 ```bash
-conda run -n S2 python Utils/experiments.py --config config.yaml
+uv run python Utils/experiments.py --config config.yaml
 ```
 
 `experiments.py` also orchestrates the downstream phases (edge, combined backtest, feature selection) in sequence. Configure which phases run via the `runtime.skip` flags in `config.yaml` — no CLI flags needed.
@@ -415,7 +421,7 @@ HPO is integrated as **Phase 0** of `experiments.py` (enabled with `runtime.skip
 
 ```bash
 # ┏━━━━━━━━━━ HPO for Random Forest — up direction, 4h granularity, 50 trials ━━━━━━━━━━┓
-conda run -n S2 python -m Utils.hpo \
+uv run python -m Utils.hpo \
   --config config.yaml \
   --models rf \
   --directions up \
@@ -423,7 +429,7 @@ conda run -n S2 python -m Utils.hpo \
   --n-trials 50
 
 # ┏━━━━━━━━━━ TabPFN + TabICL — both directions, multiple granularities ━━━━━━━━━━┓
-conda run -n S2 python -m Utils.hpo \
+uv run python -m Utils.hpo \
   --config config.yaml \
   --models tabpfn tabicl \
   --directions up down \

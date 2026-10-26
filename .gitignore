@@ -42,3 +42,9 @@ src/Data_MLA/Tirex/Commodities/
 # IDE specific files
 .idea
 src/sandbox.py
+.env.local
+
+# Tooling
+.venv/
+.pytest_cache/
+.ruff_cache/

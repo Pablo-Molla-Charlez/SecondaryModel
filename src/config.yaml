@@ -7,8 +7,8 @@
 
 # ┏━━━━━━━━━━ Paths ━━━━━━━━━━┓
 paths:
-  csv_dir: "/home/pablo/M2_DS/Secondary-Model/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
-  output_root: "/home/pablo/M2_DS/Secondary-Model/src/Output"
+  csv_dir: "Data_MLA/Kronos/Crypto/TP/horizon_7"
+  output_root: "Output"
 
 # ┏━━━━━━━━━━ Data Configuration ━━━━━━━━━━┓
 data:
@@ -45,7 +45,7 @@ evaluation:
 # ┏━━━━━━━━━━ Experiment Configuration ━━━━━━━━━━┓
 experiment:
   m1: "kronos"                                                       # choice:  ["chronos2", "fincast", "tirex", "kronos"]
-  m2: ["autogluon"]              # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm"]
+  m2: ["autogluon"]              # choice:  ["rf", "xgboost", "autogluon", "tabpfn", "tabpfn_ft", "tabicl", "tabm", "kumo"]
   direction: [ "up", "down" ]                                       # choices: ["up", "down"]
   granularity: [ "1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]  # choices: ["1d", "12h", "8h", "6h", "4h", "2h", "1h", "30m"]
 
