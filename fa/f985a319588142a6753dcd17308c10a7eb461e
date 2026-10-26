@@ -1,0 +1,28 @@
+slurm/README.md
+  s_391ef904b4389f::t_27cb089ecd401a 137,145-146
+  s_391ef904b4389f::t_721b6f54711425 119-120
+  s_391ef904b4389f::t_6c268deddf07ff 192-227
+slurm/m2-compare-full.sh
+  s_391ef904b4389f::t_d7701db0a4c66c 84-86
+  s_391ef904b4389f::t_d1c4ad57bdfd28 87
+slurm/m2-compare-trial.sh
+  s_391ef904b4389f::t_d7701db0a4c66c 88-90
+src/Utils/classifier/tabpfn_classifier.py
+  s_391ef904b4389f::t_39410a4cb5968a 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "faf985a319588142a6753dcd17308c10a7eb461e",
+  "prompts": {},
+  "sessions": {
+    "s_391ef904b4389f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc059e5d-9ccf-4e28-9c35-72f7f9b33212",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
