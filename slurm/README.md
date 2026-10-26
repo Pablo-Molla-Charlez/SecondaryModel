@@ -116,8 +116,8 @@ They mostly didn't, at first — six real, concrete bugs found and fixed along t
    Mitra claim in this README was wrong**; corrected above.
 4. `tabpfn` now requires an explicit `TABPFN_TOKEN` (license acceptance from
    ux.priorlabs.ai) — it tries a browser login, which fails outright on a headless node.
-   Added a precondition check to both scripts. **Still blocked**: nobody has run `tabpfn`
-   end-to-end in this validation pass without one.
+   Added a precondition check to both scripts. **Unblocked (2026-10-26, see below)**:
+   now confirmed running end-to-end with a real token.
 5. `autogluon --ag-presets tabarena` crashed on CPU here, but AutoGluon itself warned the
    Mitra/TabPFNv2 base learner "attends over the training context for every prediction,"
    is "typically an order of magnitude slower" on CPU, and "may appear to hang" — **this
@@ -134,6 +134,7 @@ this thesis):**
 |---|---|---|---|
 | M2 xgboost | +5.00% | -12.45% | 0.85 |
 | M2 autogluon (tabarena/Mitra, 600s budget) | +4.59% | -13.11% | 0.86 |
+| M2 tabpfn | +7.61% | -12.48% | 1.23 |
 | M2 kumo | +14.21% | -14.94% | 1.42 |
 | M1 Kronos (baseline, all trades) | +1.80% | -13.57% | 0.56 |
 | Buy & Hold | -36.21% | -42.17% | -2.68 |
@@ -141,8 +142,8 @@ this thesis):**
 Kumo's number is the most eye-catching thing in this PR and the least justified to
 repeat anywhere — it's one run, one direction, one granularity, on CPU, with the default
 `size="large"`. Confirms the wrapper works, nothing about whether kumo is actually better.
-`tabpfn` is still the one model with zero successful runs in this validation pass — every
-attempt needs a real `TABPFN_TOKEN`, which this validation never had.
+**All four models now have at least one confirmed clean end-to-end run** (see "TabPFN
+unblocked" below for how the last one, `tabpfn`, got there).
 
 **Not re-triggered after the first attempt crashed:** `_resolve_caches` builds both
 `up`/`down` caches on first run regardless of which `--direction` you asked for, and
@@ -187,6 +188,42 @@ Ruff (`select = ["F", "E9", "B", "PLE"]`) found ~32 further pre-existing issues 
 analysis/plotting code (missing `import json`, a dead `if __name__: main()`, an undefined
 `r_zone` in a radar plot, a few more) — left as-is, documented in `pyproject.toml`'s
 per-file-ignores, since fixing them is a separate bug-fix pass, not this PR's scope.
+
+## TabPFN unblocked (2026-10-26)
+
+Two separate things were wrong, found by actually trying a real token rather than
+continuing to treat `tabpfn` as abstractly "blocked":
+
+1. **The first token tried was the wrong kind.** PriorLabs' dashboard has two unrelated
+   credentials: an **API Key** (under API → API Keys, prefixed `tabpfn_sk_...`) for
+   `tabpfn-client`, their hosted/cloud inference package — a different package than the
+   one this repo uses — and an **Access Token** (Account → Settings, at `/account`) for
+   the local `tabpfn` package's license-verification flow, which is what `TABPFN_TOKEN`
+   actually checks (`tabpfn/browser_auth.py`'s `verify_token()` calls
+   `{api_url}/protected/` with the token as a bearer; an API Key gets a 401 there, which
+   looks identical to "browser login failed" because the code falls back to trying a
+   browser login when the cached token is rejected). Confirmed by reading that module's
+   source rather than guessing. Licenses had already been accepted on the account, which
+   ruled out the license step itself and pointed at the token.
+2. **The fix that actually worked**: run the pipeline once, interactively, in a real
+   terminal (not through a tool call — the browser-login flow in `try_browser_login()`
+   explicitly checks `sys.stdin.isatty()` and refuses to run otherwise) with no
+   `TABPFN_TOKEN` set at all. That opened a browser, logged in against the
+   already-accepted licenses, and cached a JWT to `~/.cache/tabpfn/auth_token` — which
+   `get_cached_token()` reads automatically on every later run, no env var needed, on
+   *this* machine. For the actual headless EPFL cluster, the real Access Token (not an
+   API Key) from `/account` still needs to be exported as `TABPFN_TOKEN` there, since a
+   compute node can't open a browser.
+3. **A second, unrelated bug surfaced right after**, once the license check passed:
+   `tabpfn_classifier.py` hardcoded `device="cuda"`, which raised `AssertionError: Torch
+   not compiled with CUDA enabled` on this Mac. Changed the default to `"auto"` — TabPFN's
+   own `TabPFNClassifier` already supports `device="auto"` natively (confirmed from its
+   `__init__` signature), so this defers to the library's own resolution instead of
+   duplicating it, and is a no-op change on the actual GPU cluster (`"auto"` resolves to
+   `cuda` there too).
+
+With both fixed, `tabpfn` now runs end-to-end on real data — Sharpe 1.23 (Total Ret
++7.61%, MaxDD -12.48%), added to the table above.
 
 ## Usage
 

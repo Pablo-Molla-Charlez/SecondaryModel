@@ -85,7 +85,9 @@ export KMP_DUPLICATE_LIB_OK=TRUE
 if [ -z "${TABPFN_TOKEN:-}" ]; then
     echo "[$(date)] ERROR: TABPFN_TOKEN is not set."
     echo "  tabpfn will fail to download its model on this headless node without it."
-    echo "  Get a token from https://ux.priorlabs.ai and: export TABPFN_TOKEN=... before sbatch,"
+    echo "  Get the ACCESS TOKEN (not an API Key -- that's for the unrelated tabpfn-client"
+    echo "  package) from https://ux.priorlabs.ai -> Account -> Settings, then:"
+    echo "  export TABPFN_TOKEN=... before sbatch,"
     echo "  or sbatch --export=ALL,TABPFN_TOKEN=... slurm/m2-compare-trial.sh"
     exit 1
 fi
