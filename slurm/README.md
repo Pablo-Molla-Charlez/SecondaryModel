@@ -30,11 +30,17 @@ exits with a clear message only if both fail.
 
 ## Before you run anything
 
-1. **EPFL cluster access.** These scripts use generic `#SBATCH --partition=gpu` /
-   `--qos=normal|debug` directives, and try `module load uv` (common name, not
-   guaranteed — falls back to installing uv directly if the module doesn't exist). Once
-   you know your cluster's actual partition/qos/module names (SCITAS Jed/Izar, RCP, etc.),
-   edit accordingly.
+1. **EPFL cluster access — granted 2026-10-26, live 2026-10-27** (SCITAS ticket
+   RITM0523861: `hpc-masters` group, temporary for this semester, max 16 GPUs
+   simultaneously). These jobs target **Izar** (the GPU cluster): `ssh
+   <gaspar>@izar.hpc.epfl.ch`. Confirmed directly against SCITAS's docs
+   (`slurm-qos-partitions`, 2026-10-26) that `#SBATCH --partition=gpu` /
+   `--qos=debug` (trial, 1h/2-GPU limit — fits) / `--qos=normal` (full, 3-day
+   limit — fits) are the **real** Izar values already in both scripts, not
+   placeholders — no edit needed there. `module load uv` may or may not exist
+   on Izar (Lmod, "stable" release by default); the curl-install fallback
+   covers it either way, *if* the compute node has outbound internet — that
+   part is still unconfirmed one way or the other.
 
 2. **Stage the training data — two hops.** `Data_MLA/Kronos/Crypto/TP/horizon_7/`
    (referenced by `config.yaml`'s `paths.csv_dir`) is gitignored and lives on **gpu8**
@@ -43,12 +49,14 @@ exits with a clear message only if both fail.
    nothing staged on it yet).
    - **Hop 1 (done):** pulled onto this machine with `slurm/stage-data.sh`
      (341M, 280 files, via the `gpu8-pablo` SSH alias already in `~/.ssh/config`).
-   - **Hop 2 (you do this once you have cluster access):** EPFL compute/login nodes can't
-     reach `gpu8-pablo` with your laptop's keys, so rsync your now-local
-     `src/Data_MLA/Kronos/Crypto/TP/horizon_7/` onto EPFL scratch storage, e.g.:
+   - **Hop 2 (now unblocked — cluster access is live 2026-10-27):** EPFL compute/login
+     nodes can't reach `gpu8-pablo` with your laptop's keys, so rsync your now-local
+     `src/Data_MLA/Kronos/Crypto/TP/horizon_7/` onto Izar's own `/scratch` (not `/home`
+     — `/scratch` is free and fine for this, just remember it's auto-deleted after 30
+     days):
      ```bash
      rsync -avz src/Data_MLA/Kronos/Crypto/TP/horizon_7/ \
-       <your-epfl-cluster-login>:<project-path>/SecondaryModel/src/Data_MLA/Kronos/Crypto/TP/horizon_7/
+       <gaspar>@izar.hpc.epfl.ch:/scratch/<gaspar>/SecondaryModel/src/Data_MLA/Kronos/Crypto/TP/horizon_7/
      ```
    Both scripts check for the data on the cluster side and exit immediately with
    instructions if it's missing. Everything downstream (cache building, in
