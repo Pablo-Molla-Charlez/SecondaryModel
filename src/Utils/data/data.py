@@ -951,13 +951,16 @@ def load_dataset_from_config(config: dict) -> pd.DataFrame:
     asset_cfg   = dataset_cfg.get('symbol', None)
     
     # ┏━━━━━━━━━━ Dynamically adjust data_dir for granularity & meta_label_mode ━━━━━━━━━━┓
+    # meta_label_mode is "tp"/"fp"/"og" (meta-labeling modes — "tp" = true-positive, NOT
+    # take-profit; there is no take-profit exit anywhere in this fixed-horizon pipeline)
+    # or "tb_ref"/"tb_kNNN" (the triple-barrier pilot, src/tb_pilot/).
     granularity = dataset_cfg.get('granularity', '1h')
     meta_mode   = dataset_cfg.get('meta_label_mode', 'og')
     data_dir_path = Path(data_dir)
 
     def _resolve_mode_root(path: Path) -> Optional[Path]:
-        """Resolve TP/FP/OG root if present; otherwise return None."""
-        if path.name.lower() in ("tp", "fp", "og"):
+        """Resolve TP/FP/OG/TB root if present; otherwise return None."""
+        if path.name.lower() in ("tp", "fp", "og", "tb"):
             return path
         for candidate in (path / meta_mode.upper(), path / meta_mode.lower()):
             if candidate.exists():

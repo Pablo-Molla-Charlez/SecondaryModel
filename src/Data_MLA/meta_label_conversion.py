@@ -8,7 +8,10 @@ from tqdm import tqdm
 def convert_meta_label(df, target_mode):
     """
     Applies the conversion logic based on 'pred' and 'lab' columns.
-    
+
+    'tp'/'fp' name a meta-labeling MODE (which M1 calls get rewarded), not a trade's
+    take-profit/stop-loss exit — those don't exist in this fixed-horizon pipeline at all.
+
     Logic for 'tp' (True Positives):
     - pred=1, lab=1 -> meta_label=1
     - pred=1, lab=0 -> meta_label=0

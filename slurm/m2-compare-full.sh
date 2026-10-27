@@ -27,6 +27,7 @@
 #   sbatch slurm/m2-compare-full.sh
 #   sbatch slurm/m2-compare-full.sh --export=GRANULARITY=4h
 #   sbatch slurm/m2-compare-full.sh --export=AG_PRESET=extreme_quality
+#   sbatch slurm/m2-compare-full.sh --export=ALL,CONFIG=tb_pilot/configs/tb_ref.yaml,DATA_DIR=.../TB/horizon_7
 # ============================================================================
 
 set -euo pipefail
@@ -37,6 +38,7 @@ MODELS=("xgboost" "tabpfn" "autogluon" "kumo")
 AG_PRESET="${AG_PRESET:-tabarena}"
 AG_TIME_LIMIT="${AG_TIME_LIMIT:-3600}"   # matches factory.py's _AG_TIME_LIMIT default; raise if autogluon times out in the trial
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+CONFIG="${CONFIG:-config.yaml}"          # relative to src/ (same as --config always was); the TB pilot passes tb_pilot/configs/<mode>.yaml
 
 cd "$PROJECT_DIR"
 mkdir -p slurm/logs
@@ -92,7 +94,7 @@ fi
 # 3. Data precondition — same check as the trial script. Don't start a
 #    6-hour job only to fail in the first minute.
 # ---------------------------------------------------------------------------
-DATA_DIR="${PROJECT_DIR}/src/Data_MLA/Kronos/Crypto/TP/horizon_7"
+DATA_DIR="${DATA_DIR:-${PROJECT_DIR}/src/Data_MLA/Kronos/Crypto/TP/horizon_7}"
 if [ ! -d "$DATA_DIR" ] || [ -z "$(find "$DATA_DIR" -maxdepth 2 -type f -name '*.csv' -print -quit 2>/dev/null)" ]; then
     echo "[$(date)] ERROR: no CSVs found under $DATA_DIR"
     echo "  Stage it (local machine: slurm/stage-data.sh pulls from gpu8-pablo), then rsync it"
@@ -129,7 +131,7 @@ for MODEL in "${MODELS[@]}"; do
 
         set +e
         uv run --project .. python m2_pipeline.py \
-            --config config.yaml \
+            --config "$CONFIG" \
             --phase training \
             --m2 "$MODEL" \
             --direction "$DIRECTION" \
@@ -148,17 +150,24 @@ done
 
 # ---------------------------------------------------------------------------
 # 5. Final report — point at where each model's analysis_summary.json landed
-#    (Output/<M1>/<model>/<DIRECTION>/.../analysis_summary.json per
-#    run_analysis()'s save_dir convention in m2_pipeline.py)
+#    (<output_root>/<M1>/<model>/<DIRECTION>/.../<gran>_<mode>/analysis_summary.json
+#    per run_analysis()'s save_dir convention in m2_pipeline.py). output_root and
+#    meta_label_mode are read back out of $CONFIG rather than assumed, since the
+#    TB pilot's per-mode configs override both (tb_pilot_plan.md item 5).
 # ---------------------------------------------------------------------------
+OUTPUT_ROOT="$(grep -m1 'output_root:' "$CONFIG" | sed -E 's/^[^:]*:[[:space:]]*"?([^"#]+)"?.*/\1/' | xargs)"
+OUTPUT_ROOT="${OUTPUT_ROOT:-Output}"
+MODE="$(grep -m1 'meta_label_mode:' "$CONFIG" | sed -E 's/^[^:]*:[[:space:]]*"?([^"#]+)"?.*/\1/' | xargs)"
+MODE="${MODE:-tp}"
+
 echo ""
 echo "============================================"
 echo "  FULL COMPARISON RESULTS"
 echo "============================================"
 echo "Logs:    $RESULTS_ROOT"
-echo "Outputs: ${PROJECT_DIR}/src/Output/Kronos/<model>/<UP|DOWN>/Utility_Score*/<gran>_tp/analysis_summary.json"
+echo "Outputs: ${PROJECT_DIR}/src/${OUTPUT_ROOT}/Kronos/<model>/<UP|DOWN>/Utility_Score*/<gran>_${MODE}/analysis_summary.json"
 echo "Found this run's summaries:"
-find "${PROJECT_DIR}/src/Output/Kronos" -name "analysis_summary.json" -newer "$RESULTS_ROOT" 2>/dev/null | sort || true
+find "${PROJECT_DIR}/src/${OUTPUT_ROOT}/Kronos" -name "analysis_summary.json" -newer "$RESULTS_ROOT" 2>/dev/null | sort || true
 echo ""
 if [ ${#FAILED_RUNS[@]} -eq 0 ]; then
     echo "[$(date)] Full comparison complete. All $TOTAL runs succeeded."

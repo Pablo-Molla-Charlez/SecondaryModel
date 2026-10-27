@@ -6,6 +6,8 @@ __pycache__/
 # Ignore generated analysis/output artifacts in the active src layout
 src/Analysis/**
 src/Output/**
+src/Output_tbpilot/**
+src/tb_pilot/configs/*.yaml
 
 # Deep Learning isolates
 src/Bi_FAST/

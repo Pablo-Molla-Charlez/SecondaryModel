@@ -627,6 +627,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
     # ┏━━━━━━━━━━ Steps 6-7: temporal train/val/test evaluation ━━━━━━━━━━┓
     temporal_all = {}
     backtest_all = {}
+    backtest_val = {}
     if train_end and val_end:
         ((idx_train_t, idx_train_raw),
          (idx_meta_t, idx_meta_raw),
@@ -724,7 +725,26 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                 file_prefix="10_backtest_all",
                                                 fee=fee,
                                                 thres_mode=thres_mode)
-    
+
+            # ┏━━━━━━━━━━ Validation-split backtest (TB-target pilot only, gated) ━━━━━━━━━━┓
+            if cfg.get("evaluation", {}).get("val_backtest", False):
+                print(f"\n  [7/7] {mlabel} financial backtest (validation split):")
+                idx_val_e = np.sort(np.concatenate([idx_cal_e, idx_opt_e]))
+                backtest_val = run_feature_backtest(dataset,
+                                                    (idx_train_e, idx_val_e),
+                                                    artifacts_all,
+                                                    cfg,
+                                                    save_dir,
+                                                    class_names=class_names,
+                                                    meta_mode=mode,
+                                                    granularity=granularity,
+                                                    direction=direction,
+                                                    model_name=model_name,
+                                                    desc="all features (validation)",
+                                                    file_prefix="10_backtest_val",
+                                                    fee=fee,
+                                                    thres_mode=thres_mode)
+
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     summary = {"cache": str(cache_path),
                "m1_model": cfg.get("data", {}).get("load", {}).get("m1", "kronos") if cfg else "kronos",
@@ -740,7 +760,8 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                "features_used": list(df_train.columns),
                "dropped_features": to_drop,
                f"{model_name}_temporal_all_features": temporal_all,
-               f"{model_name}_backtest_all_features": backtest_all}
+               f"{model_name}_backtest_all_features": backtest_all,
+               f"{model_name}_backtest_val_all_features": backtest_val}
     
     # ┏━━━━━━━━━━ Save summary JSON ━━━━━━━━━━┓
     with open(save_dir / "analysis_summary.json", "w") as f:

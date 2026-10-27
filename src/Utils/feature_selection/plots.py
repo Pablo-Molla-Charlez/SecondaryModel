@@ -207,7 +207,9 @@ def plot_confusion_matrix(targets: np.ndarray,
         classes: List of class names
         save_path: Path to save the plot
         title: Plot title
-        meta_mode: 'fp', 'tp', or 'og' — determines the "interested" class
+        meta_mode: 'fp', 'tp', or 'og' — determines the "interested" class. These are
+            meta-labeling modes ("tp" = true-positive, NOT take-profit); there is no
+            take-profit exit in this pipeline.
         baseline_targets: Full dataset labels for baseline win-rate
         m1_prec: Optional explicit M1 precision
         m1_acc: Optional explicit M1 accuracy

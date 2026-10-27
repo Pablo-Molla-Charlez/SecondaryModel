@@ -41,6 +41,7 @@ dependencies = [
     # Data, IO, config
     "pyarrow>=20,<21",  # CTTS has 23.0.1, which violates autogluon 1.5 (pyarrow<21)
     "pyyaml>=6.0.3",
+    "pydantic>=2.9",  # tb_pilot/schemas.py: validated config.yaml overrides
     "requests>=2.32",
     "openpyxl>=3.1",  # pd.read_excel in Data_MLA/XFeatures
     "tqdm>=4.67.1",

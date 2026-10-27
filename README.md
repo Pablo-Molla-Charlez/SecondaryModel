@@ -391,7 +391,7 @@ Output/<M1>/<m2>/<DIR>/<thres_mode>/<gran>_<mode>/final_model/
                                              # features_used, model_name, best_params, meta
 ```
 
-`<DIR>` is `UP` or `DOWN` (from `--direction`); `<gran>` is the CLI `--granularity`; `<mode>` is `data.load.meta_label_mode` (`tp`/`fp`/`og`).
+`<DIR>` is `UP` or `DOWN` (from `--direction`); `<gran>` is the CLI `--granularity`; `<mode>` is `data.load.meta_label_mode` — a meta-labeling mode (`tp`/`fp`/`og`; `tp` = true-positive, **not** take-profit — there's no take-profit exit in this fixed-horizon pipeline) or, for the triple-barrier pilot (`src/tb_pilot/`), `tb_ref`/`tb_kNNN`.
 
 CPCV fold models, seed-experiment replicas, and per-trial HPO models are **not** saved — only the final model returned by `temporal_eval(all features)`. The logic lives in [`Utils/classifier/factory.py:_save_final_model`](src/Utils/classifier/factory.py). For AutoGluon, `save_best_hyperparameters()` additionally writes a JSON file with such parameters.
 
@@ -532,7 +532,8 @@ data:
     symbol:           null           # null → all assets (required for meaningful training)
     m1:               "kronos"       # MUST match experiment.m1 and paths.csv_dir
     target_col:       "meta_label"
-    meta_label_mode:  "tp"           # fp | tp | og
+    meta_label_mode:  "tp"           # fp | tp | og (meta-labeling modes; tp = true-positive, NOT take-profit)
+                                      #   | tb_ref | tb_kNNN (triple-barrier pilot, src/tb_pilot/)
     direction:        "up"
     granularity:      "all"          # "all" = multi-granularity cache
     forecast_horizon: 7

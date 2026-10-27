@@ -29,7 +29,7 @@ def run_comparison(per_gran_dir: Path, unified_dir: Path, output_dir: Path = Non
     model_name = unified_data.get("model", "rf")
     mkey = model_name
     uni_direction = unified_data.get("direction", "up")
-    uni_mode = unified_data.get("meta_label_mode", "tp")
+    uni_mode = unified_data.get("meta_label_mode", "tp")  # meta-labeling mode; "tp" != take-profit
 
     per_gran_results = {}
     for summary_path in sorted(per_gran_dir.glob("*/analysis_summary.json")):

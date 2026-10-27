@@ -98,6 +98,8 @@ def _load_ag_best_hyperparameters(cfg: dict,
     Returns a dict with keys ``best_model_name``, ``model_type``, ``hyperparameters``,
     ``eval_metric``, and ``feature_names``, or None if the file does not exist.
     """
+    # "tp"/"fp"/"og" are meta-labeling modes ("tp" = true-positive, not take-profit) or
+    # "tb_ref"/"tb_kNNN" (the triple-barrier pilot, src/tb_pilot/).
     meta_mode = cfg.get("data", {}).get("load", {}).get("meta_label_mode", "tp")
     thres_mode = cfg.get("runtime", {}).get("training", {}).get("thres", "utility")
     thres_folder = "Utility_Score_NoCal" if thres_mode == "utility_nocal" else "Utility_Score"

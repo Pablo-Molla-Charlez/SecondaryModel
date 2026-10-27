@@ -1,10 +1,20 @@
 # M2 model comparison — EPFL SLURM jobs
 
-Compares four M2 backends on the fit20 cohort (20 assets, both UP/DOWN directions):
+Compares four M2 backends on this repo's own 20-asset universe (both UP/DOWN directions):
 `xgboost` (GBM baseline), `tabpfn`, `autogluon` configured to reach **Mitra** (and
 TabPFNv2/TabICL) as base learners, and `kumo` (NVIDIA Kumo Tabular). Same features, same
 splits, same target for every model — only the model family changes, so the comparison is
 actually fair.
+
+**Correction (2026-10-26):** every "fit20" reference below is a mislabel. `fit20` is an
+unrelated Synthetic-Generation regime-model calibration cohort
+(`Synthetic-Generation/data/utils/build_complete.py:47,125`) — it is not tied to this
+repo's Kronos/M2 coverage at all, and only 13 of its 20 symbols overlap with this repo's
+own universe (`src/Data_MLA/Kronos/Crypto/TP/horizon_7/1d_tp/`: AAVE, ADA, AVAX, BCH, BNB,
+BTC, DOGE, DOT, ETH, HBAR, LINK, LTC, NEAR, SHIB, SOL, SUI, TON, TRX, XLM, XRP). Every
+result and script in this file always ran on this repo's own 20, never on `fit20` itself —
+left uncorrected below (rather than rewritten) so the local-validation numbers' provenance
+stays traceable to what was actually run.
 
 `xgboost`/`tabpfn`/`autogluon` were already wired into `src/Utils/classifier/factory.py` as
 `--m2` choices before this PR. `kumo` is new (`kumo_tabular_classifier.py` + a `factory.py`
@@ -281,12 +291,60 @@ lists the summaries it produced. Per-model/direction stdout is also saved under
   but don't cite it as "the same LightGBM baseline from the TBM deck" without saying so.
 - **No `tabicl` comparison yet.** `tabicl` is also a valid `--m2` choice already wired in
   `factory.py` if you want to add it to `MODELS=(...)` in either script.
-- **Granularity defaults to `1d`** (matches the fit20 cohort's scope from the Prendinger
-  brief). Nothing stops you from sweeping other granularities, but each one is a separate
-  config/data signature — don't assume a `1d` result generalizes.
+- **Granularity defaults to `1d`** (matches this repo's own 20-asset universe's scope from
+  the Prendinger brief). Nothing stops you from sweeping other granularities, but each one
+  is a separate config/data signature — don't assume a `1d` result generalizes.
 - **Kumo Tabular's `size` is fixed at `"large"` (215M params) by default.** `small`/
-  `medium` are cheaper and may generalise better on a dataset this small (fit20 is
+  `medium` are cheaper and may generalise better on a dataset this small (this universe is
   thousands of rows, not the millions Kumo's large size was benchmarked on) — worth a
   sweep once the default run is confirmed to work at all, via
   `_load_best_params`'s HPO path or a manual `params={"size": "small"}` override in
   `factory.py`'s kumo branch.
+
+## TB-target pilot
+
+A separate experiment from everything above: instead of comparing M2 *backends* on the
+fixed J+7 label, this compares M2's *target* — the existing fixed-horizon label (`tp`)
+against a triple-barrier (TBM) label at several `k` (barrier width = `k * sigma *
+sqrt(h)`) — holding backend, features, splits and execution fixed. Full design in
+`nii-thesis/report/triple_barrier/tb_pilot_plan.md` (outside this repo, on the thesis
+side); the implementation lives here, in `src/Data_MLA/triple_barrier.py`,
+`src/Data_MLA/meta_label_tb.py`, `src/tb_pilot/`, and `slurm/tb-pilot.sh`.
+
+```bash
+# From the login node — this launches sbatch itself, don't sbatch it directly.
+slurm/tb-pilot.sh
+
+# Override the k-grid or granularity:
+KS="0.5 1.0 1.5 2.0" GRANULARITY=1d slurm/tb-pilot.sh
+```
+
+This chains two jobs: a `prepare` job (generates the TB label trees, writes one
+`config.yaml` override per mode under `src/tb_pilot/configs/`, pre-builds every mode's
+dataset cache), then an `afterok`-dependent array job sweeping every (mode, model) pair,
+each task running both directions — same `m2_pipeline.py` flags `m2-compare-full.sh`
+uses (AG `tabarena`, 3600s/fit). Every mode writes to its own `Output_tbpilot/<mode>/`,
+never to the `Output/` tree the rest of this README's results live under.
+
+Three invariants this pilot depends on, enforced as hard-fail checks in
+`src/tb_pilot/compare.py` rather than assumed: the M2 training/validation/test split
+dates, the feature set, and — since execution (entry, horizon, fee) never changes with
+the label — the entire M1 ("all trades") trade set must come out byte-identical across
+every mode for a given (model, direction, split). Any difference means a mode's cache
+leaked into another's run; `compare.py` refuses to produce a report rather than silently
+comparing apples to oranges.
+
+**Selection vs. confirmation.** `compare.py --phase selection` reads validation only and
+never touches test. Choosing `k` happens there, against a pre-registered rule, before
+`frozen_choice.json` is written (`freeze_choice()`) and its hash recorded. Only then does
+`compare.py --phase confirmation --unseal --frozen-choice <path>` read test — it refuses
+to run without both the `--unseal` flag and that file already existing. This is a
+procedural guard against motivated re-selection after seeing test numbers, not a security
+boundary — don't bypass it by hand-editing `frozen_choice.json` after the fact.
+
+**Methodology decisions this pilot still needs** (not something the code can decide):
+the pre-registered k-selection objective and its margins, the final `k` itself, whether
+test-2 (2026-01-26 onward) is genuinely held out given the earlier Synthetic-Generation
+benchmark may have touched it, and whether to keep or drop TON (its candles start
+2024-08-08, so its early forecasts lack the 120-bar warmup). See
+`tb_pilot_plan.md`'s "Decisions that need you" section.
