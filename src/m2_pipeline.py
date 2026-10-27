@@ -639,7 +639,7 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         
         # ┏━━━━━━━━━━ Compute 4-way split with embargo ━━━━━━━━━━┓
         from Utils.edge import _compute_embargo_splits, _gran_to_timedelta
-        
+
         # ┏━━━━━━━━━━ Get Dates and Labels ━━━━━━━━━━┓
         fh = int(cfg.get("data", {}).get("load", {}).get("forecast_horizon", 7)) if cfg else 7
         dates_all = dataset["dates"] if isinstance(dataset, dict) else dataset.dates
@@ -647,18 +647,35 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
         if isinstance(labels_all, torch.Tensor): labels_all = labels_all.numpy()
         valid_mask = ~np.isnan(labels_all)
         dates_valid = [dates_all[i] for i in range(len(dates_all)) if valid_mask[i]]
-        
-        # ┏━━━━━━━━━━ Compute Embargo Splits ━━━━━━━━━━┓
-        embargo = _compute_embargo_splits(dates_valid, train_end, val_end, fh, granularity)
-        
-        # ┏━━━━━━━━━━ Map embargo indices (into valid-only) to full-dataset indices ━━━━━━━━━━┓
         valid_indices = np.where(valid_mask)[0]
+
+        # ┏━━━━━━━━━━ Compute Embargo Splits (identical for every mode, pilot or not) ━━━━━━━━━━┓
+        embargo = _compute_embargo_splits(dates_valid, train_end, val_end, fh, granularity)
+
+        # ┏━━━━━━━━━━ Map embargo indices (into valid-only) to full-dataset indices ━━━━━━━━━━┓
         idx_train_e = valid_indices[embargo["idx_train"]]
         idx_cal_e = valid_indices[embargo["idx_cal"]]
         idx_opt_e = valid_indices[embargo["idx_opt"]]
         idx_test_e = valid_indices[embargo["idx_test"]]
         split_indices = (idx_train_e, idx_cal_e, idx_opt_e, idx_test_e)
         split_indices_raw = (idx_train_raw, idx_val_raw, idx_test_raw)
+
+        # ┏━━━━━━━━━━ TB-target pilot only: a 2nd, shrunk-window split for an honest ━━━━━━━━━━┓
+        # validation-selection backtest (tb_pilot_plan.md Phase 3). Val-Cal/Val-Opt feed
+        # _find_best_utility_threshold, which directly maximizes return/utility over that
+        # exact window -- backtesting on it would measure the threshold's fit to its own
+        # optimization data, not held-out performance. idx_val_bt_e is carved from Train's
+        # tail instead. This needs its OWN model fit on the shrunk train window (below) --
+        # reusing artifacts_all would silently shrink the production model's training data
+        # for every pilot mode, diverging from Pablo's own method on the Test split too.
+        idx_train_shrunk_e = None
+        idx_val_bt_e = None
+        want_val_backtest = bool(cfg.get("evaluation", {}).get("val_backtest", False)) if cfg else False
+        if want_val_backtest:
+            from tb_pilot.held_out_split import compute_held_out_split
+            held_out = compute_held_out_split(dates_valid, train_end, val_end, fh, granularity)
+            idx_train_shrunk_e = valid_indices[held_out["idx_train"]]
+            idx_val_bt_e = valid_indices[held_out["idx_val_bt"]]
         
         # ┏━━━━━━━━━━ Get Purge and Cal End ━━━━━━━━━━┓
         purge_td = embargo["purge_td"]
@@ -727,12 +744,38 @@ def run_analysis(cache_path: Path, direction: str, mode: str, granularity: str, 
                                                 thres_mode=thres_mode)
 
             # ┏━━━━━━━━━━ Validation-split backtest (TB-target pilot only, gated) ━━━━━━━━━━┓
-            if cfg.get("evaluation", {}).get("val_backtest", False):
+            # A SEPARATE model, fit on the shrunk train window, so the production model
+            # above (and its Test-split backtest_all) stays on Pablo's exact method --
+            # full train window, untouched by this. idx_val_bt_e is the held-out slice
+            # carved from Train's tail, NOT Val-Cal/Val-Opt (which _find_best_utility_
+            # threshold already optimized return/utility over -- backtesting there would
+            # be circular). Calibration/threshold selection still uses Val-Cal/Val-Opt
+            # (unaffected by the train-window shrink), so only the fit changes.
+            if want_val_backtest and idx_val_bt_e is not None and idx_train_shrunk_e is not None:
+                print(f"\n  [val] {mlabel} fitting a shrunk-train model for the validation backtest:")
+                _, artifacts_val_only = temporal_eval(dataset,
+                                                      active_features,
+                                                      save_dir,
+                                                      class_names=class_names,
+                                                      meta_mode=mode,
+                                                      split_indices=(idx_train_shrunk_e, idx_cal_e, idx_opt_e, idx_test_e),
+                                                      direction=direction,
+                                                      fee=fee,
+                                                      model_name=model_name,
+                                                      desc="all features (val-only fit)",
+                                                      file_prefix="8_valonly",
+                                                      thres_mode=thres_mode,
+                                                      forecast_horizon=fh,
+                                                      split_indices_raw=split_indices_raw,
+                                                      granularity=granularity,
+                                                      best_params=best_params,
+                                                      ag_presets=ag_presets,
+                                                      ag_time_limit=ag_time_limit)
+
                 print(f"\n  [7/7] {mlabel} financial backtest (validation split):")
-                idx_val_e = np.sort(np.concatenate([idx_cal_e, idx_opt_e]))
                 backtest_val = run_feature_backtest(dataset,
-                                                    (idx_train_e, idx_val_e),
-                                                    artifacts_all,
+                                                    (idx_train_shrunk_e, idx_val_bt_e),
+                                                    artifacts_val_only,
                                                     cfg,
                                                     save_dir,
                                                     class_names=class_names,
