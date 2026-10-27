@@ -48,6 +48,7 @@ dependencies = [
     # Plots
     "matplotlib>=3.9.3",
     "seaborn>=0.13.2",
+    "tabulate>=0.10.0",
 ]
 
 [dependency-groups]

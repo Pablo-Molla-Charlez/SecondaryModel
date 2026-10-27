@@ -28,6 +28,8 @@ from tb_pilot.compare import (
     per_asset_table,
     require_unseal,
     target_characterization,
+    write_confirmation_report,
+    write_selection_report,
 )
 
 BASE_CFG = {
@@ -283,6 +285,42 @@ def test_per_asset_table_is_equal_weight_and_m2_approved_only():
     row = out[out["asset"] == "BTC"].iloc[0]
     assert row["avg_return"] == pytest.approx(0.02)
     assert row["n_trades"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Report writers -- exercises to_markdown() for real (needs the `tabulate` dep)
+# ---------------------------------------------------------------------------
+
+
+def test_write_selection_report_writes_csv_and_markdown_with_no_test_columns(tmp_path):
+    runs = [_run(mode="tb_ref", model="xgboost"), _run(mode="tb_k100", model="xgboost")]
+    economics_val = economics_table(runs, split="val")
+    characterization = {"tb_k100": {"n_eligible_total": 900, "flip_rate": 0.2}}
+
+    csv_path, md_path = write_selection_report(tmp_path, economics_val, characterization)
+
+    assert csv_path.exists() and md_path.exists()
+    csv_text = csv_path.read_text()
+    assert "m2_sharpe" in csv_text
+    assert "test" not in csv_text.lower()  # no test-split column ever entered this table
+    md_text = md_path.read_text()
+    assert "selection" in md_text.lower()
+    assert "tb_k100" in md_text
+
+
+def test_write_confirmation_report_writes_csv_and_markdown_with_the_frozen_choice(tmp_path):
+    runs = [_run(mode="tb_ref", model="xgboost"), _run(mode="tb_k100", model="xgboost")]
+    economics_test = economics_table(runs, split="test")
+    frozen = {"chosen_mode": "tb_k100", "rule": "median val Sharpe"}
+    delta_sharpe = {"tb_k100": {"xgboost": {"delta_sharpe": 0.1, "ci_low": -0.05, "ci_high": 0.25}}}
+
+    csv_path, md_path = write_confirmation_report(tmp_path, frozen, economics_test, delta_sharpe)
+
+    assert csv_path.exists() and md_path.exists()
+    md_text = md_path.read_text()
+    assert "tb_k100" in md_text
+    assert "+0.100" in md_text
+    assert "confirmation" in md_text.lower()
 
 
 # ---------------------------------------------------------------------------
