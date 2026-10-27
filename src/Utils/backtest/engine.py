@@ -117,7 +117,9 @@ def _z_size(prob: float) -> float:
 
 # ┏━━━━━━━━━━ Build Cash-Account Equity (NEW engine) ━━━━━━━━━━┓
 def _build_cash_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, horizon: int,
-                       capital_log: bool = False, flat_size: bool = False):
+                       capital_log: bool = False, flat_size: bool = False,
+                       close: pd.DataFrame | None = None, fee: float = 0.002,
+                       direction: str | None = None):
     """Stateful CASH-FLOW equity simulator (QuantConnect-style), normalized to start at 1.0.
 
     Models a real cash account instead of a vectorized concurrency average. Equity =
@@ -130,7 +132,13 @@ def _build_cash_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, hori
          free_cash`, where frac = _z_size(m2_prob) unless ``flat_size=True`` (then
          frac = 1.0). Over-subscribed bars are filled PRO-RATA, so the result does not
          depend on trade ordering.
-      3. Equity is marked as free cash + locked capital.
+      3. Equity is marked as free cash + the value of open positions. With ``close``
+         (bar closes, columns = assets) each open position is MARKED TO MARKET:
+         locked capital × (1 + signed move since entry − fee), the sign taken from the
+         trades' ``direction`` column (or ``direction``). Without ``close`` positions are
+         held at entry cost until exit, so moves inside the horizon never reach the curve
+         and drawdown is understated. Exits always book the stored ``return``, so the
+         final equity is the same either way; only the path between exits differs.
 
     ``flat_size=True`` MUST be used for the M1 "trade-all" baseline: otherwise M1 borrows
     the M2 model's probabilities to size its positions, and the (fixed) M1 trade set would
@@ -160,18 +168,28 @@ def _build_cash_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, hori
     rets = trades_df["return"].values
     probs = (trades_df["m2_prob"].values if "m2_prob" in trades_df.columns
              else np.full(len(trades_df), np.nan))
-    entries_at = {}   # bar_idx → list of (return, prob)
+    mtm = close is not None
+    if mtm:
+        C = close.reindex(timeline).ffill()
+        if "direction" in trades_df.columns:
+            signs = np.where(trades_df["direction"].astype(str).str.lower() == "down", -1.0, 1.0)
+        elif direction is not None:
+            signs = np.full(len(trades_df), -1.0 if direction.lower() == "down" else 1.0)
+        else:
+            raise ValueError("mark-to-market needs a 'direction' column or the direction argument")
+        assets = trades_df["asset"].values
+    entries_at = {}   # bar_idx → list of (return, prob, k)
     for k in range(len(trades_df)):
         bi = bar_map.get(trades_df["date"].iloc[k])
         if bi is None:
             continue
         entries_at.setdefault(bi, []).append(
-            (float(rets[k]), float(probs[k]) if probs[k] == probs[k] else np.nan))
+            (float(rets[k]), float(probs[k]) if probs[k] == probs[k] else np.nan, k))
 
     # ┏━━━━━━━━━━ Sequential cash walk ━━━━━━━━━━┓
     cash = 1.0                          # free cash (fraction of starting capital)
     equity_curve = np.empty(n_bars)
-    open_pos = []                       # [exit_bar_idx, locked_capital, trade_return]
+    open_pos = []                       # [exit_bar_idx, locked_capital, trade_return, mark_fn]
     realized = []
     led_cash = np.empty(n_bars); led_locked = np.empty(n_bars)
     led_inv = np.zeros(n_bars); led_pnl = np.zeros(n_bars)
@@ -180,35 +198,42 @@ def _build_cash_equity(trades_df: pd.DataFrame, timeline: pd.DatetimeIndex, hori
     for b in range(n_bars):
         # 1) EXITS at this bar → return capital×(1+ret) to cash
         still_open = []
-        for ex_bar, cap, r in open_pos:
+        for ex_bar, cap, r, mk in open_pos:
             if ex_bar <= b:
                 cash += cap * (1.0 + r)
                 realized.append(r)
                 led_pnl[b] += cap * r
             else:
-                still_open.append([ex_bar, cap, r])
+                still_open.append([ex_bar, cap, r, mk])
         open_pos = still_open
 
         # 2) ENTRIES at this bar → request exposure×frac×free_cash, pro-rata if over-subscribed
         todays = entries_at.get(b, [])
         if todays and cash > 1e-12:
-            reqs = [(exposure * (1.0 if flat_size else _z_size(p)) * cash, r) for (r, p) in todays]
-            total_req = sum(q for q, _ in reqs)
+            reqs = [(exposure * (1.0 if flat_size else _z_size(p)) * cash, r, k) for (r, p, k) in todays]
+            total_req = sum(q for q, _, _ in reqs)
             scale = min(1.0, cash / total_req) if total_req > 1e-12 else 0.0
             # Clamp to the LAST bar: the exit loop only runs for b ≤ n_bars-1, so an
             # exit_bar of n_bars would never liquidate and its P&L would be lost.
             exit_bar = min(b + horizon, n_bars - 1)
-            for q, r in reqs:
+            for q, r, k in reqs:
                 cap = q * scale
                 if cap <= 1e-12:
                     continue
                 cash -= cap
                 led_inv[b] += cap
-                open_pos.append([exit_bar, cap, r])
+                # (asset column, entry close, direction sign) for marking; None = hold at cost
+                mk = (C[assets[k]], float(C[assets[k]].iloc[b]), signs[k]) if mtm else None
+                open_pos.append([exit_bar, cap, r, mk])
 
-        # 3) Mark equity = free cash + locked capital (book value of open positions)
-        locked = sum(cap for _, cap, _ in open_pos)
-        equity_curve[b] = cash + locked
+        # 3) Mark equity = free cash + open positions (marked to market when close is given)
+        locked = sum(cap for _, cap, _, _ in open_pos)
+        if mtm:
+            held = sum(cap * (1.0 + mk[2] * (mk[0].iloc[b] / mk[1] - 1.0) - fee)
+                       for _, cap, _, mk in open_pos)
+        else:
+            held = locked
+        equity_curve[b] = cash + held
         led_cash[b] = cash; led_locked[b] = locked; led_nopen[b] = len(open_pos)
 
     equity = pd.Series(equity_curve, index=timeline)
@@ -262,7 +287,7 @@ def _emit_cash_engine_artifacts(*, df_trades, m2_df, full_idx, horizon, save_dir
                                 meta_mode, desc, threshold, constraint_tag, fee,
                                 execution_rate, test_start, test_end, n_total, n_approved,
                                 m1_wr, m2_wr, m1_good, n_m2_good, avg_app, avg_rej,
-                                asset_m2_rets, asset_m1_rets, asset_bh_rets):
+                                asset_m2_rets, asset_m1_rets, asset_bh_rets, close=None):
     """Emit the NEW cash-account engine's own curve / ROI / trades CSV.
 
     Mirrors the old engine's three artifacts under a distinct ``file_prefix`` so both
@@ -272,9 +297,12 @@ def _emit_cash_engine_artifacts(*, df_trades, m2_df, full_idx, horizon, save_dir
     save_dir = Path(save_dir)
 
     # ┏━━━━━━━━━━ Equity curves (M1 flat-sized; M2 confidence-sized) ━━━━━━━━━━┓
-    m1_equity_c, _m1_real = _build_cash_equity(df_trades, full_idx, horizon, flat_size=True)
+    # open positions marked to market at the bar closes (see _build_cash_equity)
+    m1_equity_c, _m1_real = _build_cash_equity(df_trades, full_idx, horizon, flat_size=True,
+                                               close=close, fee=fee, direction=direction)
     m2_equity_c, _m2_real, m2_ledger = _build_cash_equity(m2_df, full_idx, horizon,
-                                                          capital_log=True)
+                                                          capital_log=True, close=close,
+                                                          fee=fee, direction=direction)
 
     # ┏━━━━━━━━━━ Strategy statistics ━━━━━━━━━━┓
     strats = {}
@@ -907,6 +935,7 @@ def run_feature_backtest(dataset,
         n_m2_good=n_m2_good, avg_app=avg_app, avg_rej=avg_rej,
         asset_m2_rets=asset_m2_rets, asset_m1_rets=asset_m1_rets,
         asset_bh_rets=asset_bh_rets if has_bh else pd.Series(dtype=float),
+        close=bh_pivot if has_bh else None,
     )
 
     return {

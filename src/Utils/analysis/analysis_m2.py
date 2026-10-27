@@ -5416,8 +5416,12 @@ def plot_equity_curves(m1: str = "Kronos",
                         tl = pv.index
                 if tl is None:
                     tl = pd.DatetimeIndex(sorted(tr["date"].unique()))
-                m2_eq, _ = _build_cash_equity(tr[tr["m2_approved"].astype(bool)], tl, horizon)
-                m1_eq, _ = _build_cash_equity(tr, tl, horizon, flat_size=True)
+                # open positions marked to market at the bar closes
+                _px = pv if tl is not None and len(rt) else None
+                m2_eq, _ = _build_cash_equity(tr[tr["m2_approved"].astype(bool)], tl, horizon,
+                                              close=_px, fee=fee, direction=d)
+                m1_eq, _ = _build_cash_equity(tr, tl, horizon, flat_size=True,
+                                              close=_px, fee=fee, direction=d)
                 series = [(m2_eq, _EQ_C_M2, "-", 1.6, _lab_pair),
                           (m1_eq, _EQ_C_M1, "-", 1.3, _lab_solo)]
                 # Counter-trend exposure, DOWN only: the alignment is defined
@@ -5453,6 +5457,10 @@ def plot_equity_curves(m1: str = "Kronos",
                 if s.empty or "path" not in s.columns:
                     ax.set_visible(False); continue
                 tl = pd.DatetimeIndex(sorted(s["date"].unique()))
+                # bar closes over the CV window, to mark open positions to market
+                _rc = _load_raw_close_prices(_cfg(), g, direction=d.lower())
+                _px = _rc[(_rc["date"] >= tl[0]) & (_rc["date"] <= tl[-1])].pivot_table(
+                    index="date", columns="asset", values="close")
                 curves = {}
                 for p_, gg in s.groupby("path"):
                     sel = gg[gg["sel"] == 1].copy()
@@ -5460,7 +5468,8 @@ def plot_equity_curves(m1: str = "Kronos",
                         continue
                     sel = sel.rename(columns={"prob": "m2_prob"})
                     sel["return"] = sel["ret"] - fee
-                    curves[p_], _ = _build_cash_equity(sel, tl, horizon)
+                    curves[p_], _ = _build_cash_equity(sel, tl, horizon, close=_px, fee=fee,
+                                                       direction=d)
                 if not curves:
                     ax.set_visible(False); continue
                 M = pd.concat([e.rename(k) for k, e in sorted(curves.items())], axis=1).ffill()
@@ -5469,7 +5478,8 @@ def plot_equity_curves(m1: str = "Kronos",
                                 color=_EQ_C_M2, alpha=.18, lw=0, zorder=3,
                                 label="%s  range of %d paths" % (_lab_pair, M.shape[1]))
                 df_m1 = s.copy(); df_m1["return"] = df_m1["ret"] - fee
-                m1_eq, _ = _build_cash_equity(df_m1, tl, horizon, flat_size=True)
+                m1_eq, _ = _build_cash_equity(df_m1, tl, horizon, flat_size=True, close=_px,
+                                              fee=fee, direction=d)
                 series = [(med, _EQ_C_M2, "-", 1.6, "%s  median" % _lab_pair),
                           (m1_eq, _EQ_C_M1, "-", 1.3, _lab_solo)]
                 # Exposure for the band is taken from the path whose final
