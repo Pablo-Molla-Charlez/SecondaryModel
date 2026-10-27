@@ -1,0 +1,126 @@
+src/Utils/utils.py
+  s_e530fcdfd88334::t_2c68996e511504 101-102
+src/Data_MLA/meta_label_conversion.py
+  s_e530fcdfd88334::t_4d4093da8bcddc 11-14
+src/tb_pilot/build_caches.py
+  s_2d949a17b65c84::t_707636207b9d9d 1-66
+README.md
+  s_e530fcdfd88334::t_db4e4d90b1d379 394
+  s_e530fcdfd88334::t_0d24c69e19a994 535-536
+slurm/tb-pilot.sh
+  s_2d949a17b65c84::t_fc38a32faa079c 145-150
+  s_2d949a17b65c84::t_4cc1cf31426559 1-144,151-193
+tests/test_make_configs.py
+  s_e530fcdfd88334::t_8b416befa094a5 1-5,7-101,110-112,118-129
+  s_e530fcdfd88334::t_11b1d65be8a09f 6,113-117
+  s_e530fcdfd88334::t_4dae490c2513da 130-138
+  s_e530fcdfd88334::t_bc6ef266ba0042 102-109
+tests/test_build_caches.py
+  s_2d949a17b65c84::t_f77c0ce41725ba 1-83
+src/tb_pilot/schemas.py
+  s_e530fcdfd88334::t_25b2cd1b8f2d6c 1-19,23-161
+  s_e530fcdfd88334::t_15f1b7b3f06233 20-22
+src/Utils/backtest/comparison.py
+  s_e530fcdfd88334::t_061355d7800b3f 32
+.gitignore
+  s_e530fcdfd88334::t_1559ebac4a0004 9-10
+tests/test_tb_pilot_compare.py
+  s_2d949a17b65c84::t_f2ac2705ea20ae 10
+  s_2d949a17b65c84::t_535c6c3eb51f85 90
+  s_2d949a17b65c84::t_85605a710956ad 1-9,11-89,91-330
+src/Data_MLA/triple_barrier.py
+  s_e530fcdfd88334::t_a1c786a7959a5c 1-3,9-21,23-29,32-44,49-110,112-114,116-118
+  s_e530fcdfd88334::t_e910cba753ebe4 4-8
+  s_e530fcdfd88334::t_f57fd7d08a72bb 22,30-31,45-48,111,115
+tests/test_meta_label_tb.py
+  s_e530fcdfd88334::t_a06d0bc8c96bff 188
+  s_e530fcdfd88334::t_7e5138f3ee6c43 1-5,7-34,46-111,115-187,189
+  s_e530fcdfd88334::t_f57fd7d08a72bb 6,35-45,112-114
+src/config.yaml
+  s_e530fcdfd88334::t_f10378cd27e423 19-20
+  s_e530fcdfd88334::t_0c20ed48dfc65d 45
+src/Data_MLA/meta_label_tb.py
+  s_e530fcdfd88334::t_9db133cfda7457 212-221
+  s_e530fcdfd88334::t_e624668614fa64 263-267,272-273,344,367-369
+  s_e530fcdfd88334::t_0a5db08d34911d 274-313,325-330,338-340,352,372,374-377
+  s_e530fcdfd88334::t_98e6e676843bb2 365,371,378
+  s_e530fcdfd88334::t_12852b5ca78f95 268-270
+  s_e530fcdfd88334::t_4563c24d7f81af 271
+  s_e530fcdfd88334::t_135b99c1d95e99 237-238
+  s_e530fcdfd88334::t_e88a2b9b81ba42 186-189
+  s_e530fcdfd88334::t_f57fd7d08a72bb 14,30-42,117-120,122,142-144,181,314-324,331-337,356-362
+  s_e530fcdfd88334::t_1d50b81ebba982 1-13,15-29,43-116,121,123-141,145-180,182-185,190-198,210-211,222-230,234-236,239-262,341-343,345-351,353-355,363-364,366,370,373,379-386
+  s_e530fcdfd88334::t_89aa7149a00f57 199-209,231-233
+pyproject.toml
+  s_e530fcdfd88334::t_12ff5a5859e5cf 44
+tests/test_tb_pilot_schemas.py
+  s_e530fcdfd88334::t_fde32b0dd7d310 16,18
+  s_e530fcdfd88334::t_11b1d65be8a09f 7
+  s_e530fcdfd88334::t_71012bb3b61d4d 1-6,8-15,17,19-77
+src/Utils/feature_selection/plots.py
+  s_e530fcdfd88334::t_6a870ed31833e7 210-212
+tests/test_triple_barrier.py
+  s_e530fcdfd88334::t_05a29664ab431e 1-5,7-97,101-103,105-125
+  s_e530fcdfd88334::t_55bc11e2ea0726 104
+  s_e530fcdfd88334::t_f57fd7d08a72bb 6,98-100
+src/m2_pipeline.py
+  s_2d949a17b65c84::t_6aea24f2130148 763-764
+  s_2d949a17b65c84::t_8326770be5dfe6 630
+  s_2d949a17b65c84::t_249f9838255871 728-747
+src/tb_pilot/compare.py
+  s_2d949a17b65c84::t_8e5bf8fe5398ef 32
+  s_2d949a17b65c84::t_8c15714553d3de 1-31,33-369,371-376,378,381-390,392,394,400-442,445-452,455-461,476-478,494-498
+  s_2d949a17b65c84::t_0759073cd2d7d6 443-444,453-454,462-475,479-493
+  s_2d949a17b65c84::t_3671a0a8849497 377,379-380,391,393,395-399
+  s_2d949a17b65c84::t_b35e4df3036648 370
+slurm/README.md
+  s_2d949a17b65c84::t_d54343a96aeb2a 294-296,298
+  s_2d949a17b65c84::t_c929586abe897d 303-350
+  s_2d949a17b65c84::t_37c698a9d6f339 3,9-17
+  s_1bb5f37ed7d0b9::t_2a4e36e657585f 18
+src/tb_pilot/make_configs.py
+  s_e530fcdfd88334::t_8091b61502172d 56-59,61-62,65-69,82-93
+  s_e530fcdfd88334::t_fd5977bbce1c37 114-120,123-124
+  s_e530fcdfd88334::t_cd2301420f53a6 1-55,60,63-64,70-81,94-113,121-122,125-160
+src/Utils/data/data.py
+  s_e530fcdfd88334::t_d66f5e3933b2b9 954-956,962-963
+slurm/m2-compare-full.sh
+  s_2d949a17b65c84::t_f0c2c260782d04 153-156,158-162,168,170
+  s_2d949a17b65c84::t_6b3eb6822f5588 134
+  s_2d949a17b65c84::t_8cd4c4a6876a99 97
+  s_2d949a17b65c84::t_34d85449cbfe95 30,41
+uv.lock
+  s_e530fcdfd88334::t_39b7e1e55597ff 1427,1467
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "23e77cb7d2b4385a98ab7bebb9426b3ed25dc56d",
+  "prompts": {},
+  "sessions": {
+    "s_1bb5f37ed7d0b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b0c9468-ba5a-411b-a73d-299eefac064d",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    },
+    "s_2d949a17b65c84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "da813a26-3154-4de1-bd60-29a8da836273",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    },
+    "s_e530fcdfd88334": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e376c8f8-c66d-4d46-b17e-2c31e50e8952",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Elie BRUNO <contact@eliebruno.com>"
+    }
+  }
+}
